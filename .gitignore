@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 本地 conda 环境（可重建，不入库）
+.conda/
+.conda-pkgs/
+
+# Node-RED 本地运行时与缓存
+.node-red/
+.npm-cache/
+.appdata/
+.localappdata/
+
+# 构建/下载/临时目录
+.tmp/
+.build/
+.wheels/
+
+# 本地 Git 元数据（本环境 .git 只读时的备用目录）
+.git/
+.gitstore/
+
+# 运行时产物
+*.log
+data/
+
+# 系统文件
+.DS_Store
+Thumbs.db

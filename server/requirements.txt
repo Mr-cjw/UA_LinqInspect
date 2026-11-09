@@ -1,0 +1,2 @@
+# OPC UA Server 依赖（M1 已验证版本）
+asyncua==2.1.0

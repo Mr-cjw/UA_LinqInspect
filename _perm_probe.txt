@@ -1,0 +1,8 @@
+LastMesOrderNo: AccessLevel=3, UserAccessLevel=3
+  write LastMesOrderNo: OK
+CurrentWorkOrderId: AccessLevel=3, UserAccessLevel=3
+  write CurrentWorkOrderId: OK
+DeviceStatus: AccessLevel=3, UserAccessLevel=3
+  write DeviceStatus: BadTypeMismatch
+CurrentPartSN: AccessLevel=3, UserAccessLevel=3
+  write CurrentPartSN: OK

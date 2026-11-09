@@ -1,0 +1,1 @@
+nodes=39 typeCounts={"tab":1,"OpcUa-Endpoint":1,"comment":5,"OpcUa-Event":1,"function":16,"inject":7,"http request":1,"OpcUa-Client":1,"catch":1,"http in":2,"http response":2,"debug":1} brokenWires=0

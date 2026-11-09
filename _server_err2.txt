@@ -1,0 +1,74 @@
+﻿
+>     + FullyQualifiedErrorId : NativeCommandError
+   
+  2026-11-08 08:55:01,045 asyncua.server.internal_session INFO Created internal
+ session Internal
+  2026-11-08 08:55:01,060 asyncua.server.address_space INFO add_node: while add
+ing node NumericNodeId(Identifier=15957, N
+> 2026-11-08 08:56:20,323 asyncua.server.uaprocessor ERROR Error while processi
+ng message
+> Traceback (most recent call last):
+    File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\server\uaprocessor.py", 
+> line 176, in process_message
+      return await self._process_message(typeid, requesthdr, seqhdr, body)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\server\uaprocessor.py", 
+> line 542, in _process_message
+      self.send_response(requesthdr.RequestHandle, seqhdr, response)
+      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\server\uaprocessor.py", 
+> line 59, in send_response
+      struct_to_binary(response), message_type=msgtype, request_id=seqhdr.Reque
+stId
+      ~~~~~~~~~~~~~~~~^^^^^^^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 4
+  30, in struct_to_binary
+      return serializer(obj)
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 4
+  22, in serialize
+      parts.append(serializer(getattr(obj, name)))
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 5
+  05, in serialize
+      return data_size + b"".join(type_serializer(el) for el in val)
+                         ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 5
+  05, in <genexpr>
+      return data_size + b"".join(type_serializer(el) for el in val)
+                                  ~~~~~~~~~~~~~~~^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 4
+  22, in serialize
+      parts.append(serializer(getattr(obj, name)))
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 5
+  05, in serialize
+      return data_size + b"".join(type_serializer(el) for el in val)
+                         ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 5
+  05, in <genexpr>
+      return data_size + b"".join(type_serializer(el) for el in val)
+                                  ~~~~~~~~~~~~~~~^^^^
+>   File "C:\Users\XunMengTong\.workbuddy\binaries\python\envs\default\Lib\site
+-packages\asyncua\ua\ua_binary.py", line 5
+  85, in variant_to_binary
+      encoding = var.VariantType.value & 0b0011_1111
+                 ^^^^^^^^^^^^^^^
+> AttributeError: 'bool' object has no attribute 'VariantType'
+  2026-11-08 08:56:20,326 asyncua.server.uaprocessor INFO Close session request
+ (None)
+  2026-11-08 08:56:20,326 asyncua.server.internal_session INFO close session ('
+127.0.0.1', 6825)
+  2026-11-08 08:56:20,326 asyncua.server.subscription_service INFO delete subsc
+riptions: [80]
+
+

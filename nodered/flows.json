@@ -1,0 +1,884 @@
+[
+  {
+    "id": "qcflow",
+    "type": "tab",
+    "label": "AI质检-MES闭环(基础骨架)",
+    "disabled": false,
+    "info": "M2 基础骨架：OpcUa-Event 订阅 QCStation.Events -> 事件解析/陈旧过滤 -> NG 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 回执写回 LastMesOrderNo。队列为内存态，重部署即清空；SQLite 持久化见 Phase0 §6-5。",
+    "env": []
+  },
+  {
+    "id": "ep1",
+    "type": "OpcUa-Endpoint",
+    "z": "",
+    "name": "本机UA Server",
+    "endpoint": "opc.tcp://localhost:4840",
+    "secpolicy": "None",
+    "secmode": "None",
+    "keepsession": true,
+    "autoconnect": true,
+    "login": false,
+    "usecert": false
+  },
+  {
+    "id": "c_event",
+    "type": "comment",
+    "z": "qcflow",
+    "name": "① UA 事件接入：显式订阅 NG / 完工事件",
+    "x": 60,
+    "y": 20,
+    "wires": []
+  },
+  {
+    "id": "opcea",
+    "type": "OpcUa-Event",
+    "z": "qcflow",
+    "name": "订阅 NgDetectedEventType",
+    "endpoint": "ep1",
+    "item": "ns=2;s=QCStation.Events",
+    "eventtype": "i=2041",
+    "queueSize": 100,
+    "x": 260,
+    "y": 80,
+    "wires": [
+      [
+        "fn_sub_log_ng"
+      ]
+    ],
+    "root": "ns=2;s=QCStation.Events",
+    "activatecustomevent": true,
+    "customeventtype": "ns=2;s=NgDetectedEventType"
+  },
+  {
+    "id": "inj_event_ng",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "启动 NG 事件订阅",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 2,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 60,
+    "y": 80,
+    "wires": [
+      [
+        "opcea"
+      ]
+    ]
+  },
+  {
+    "id": "opc_evt",
+    "type": "OpcUa-Client",
+    "z": "qcflow",
+    "name": "UA 事件订阅(NG)",
+    "endpoint": "ep1",
+    "action": "events",
+    "time": 1000,
+    "timeUnit": "ms",
+    "certificate": "n",
+    "useTransport": false,
+    "absoluteDeadLine": false,
+    "applyBadValues": true,
+    "localfile": "",
+    "localkeyfile": "",
+    "folderName4PKI": "",
+    "x": 520,
+    "y": 80,
+    "wires": [
+      [
+        "fn_parse"
+      ]
+    ]
+  },
+  {
+    "id": "inj_event_done",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "启动完工事件订阅",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 3,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 60,
+    "y": 160,
+    "wires": [
+      [
+        "opcea_done"
+      ]
+    ]
+  },
+  {
+    "id": "opcea_done",
+    "type": "OpcUa-Event",
+    "z": "qcflow",
+    "name": "订阅 WorkOrderCompletedEventType",
+    "root": "ns=2;s=QCStation.Events",
+    "item": "ns=2;s=QCStation.Events",
+    "activatecustomevent": true,
+    "customeventtype": "ns=2;s=WorkOrderCompletedEventType",
+    "eventtype": "i=2041",
+    "queueSize": 100,
+    "x": 260,
+    "y": 160,
+    "wires": [
+      [
+        "fn_sub_log_done"
+      ]
+    ]
+  },
+  {
+    "id": "opc_evt_done",
+    "type": "OpcUa-Client",
+    "z": "qcflow",
+    "name": "UA 事件订阅(完工)",
+    "endpoint": "ep1",
+    "action": "events",
+    "time": 1000,
+    "timeUnit": "ms",
+    "certificate": "n",
+    "useTransport": false,
+    "absoluteDeadLine": false,
+    "applyBadValues": true,
+    "localfile": "",
+    "localkeyfile": "",
+    "folderName4PKI": "",
+    "x": 520,
+    "y": 160,
+    "wires": [
+      [
+        "fn_parse"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse",
+    "type": "function",
+    "z": "qcflow",
+    "name": "事件解析+陈旧过滤(>60s)",
+    "func": "// 只消费 NgDetectedEvent / WorkOrderCompletedEvent，兼容 node-red-contrib-opcua\n// 的 eventFields 数组、Variant({value})，以及自定义字段的 \"2:Field\" 键名。\nlet p = msg.payload;\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = {}; }\n}\nconst fromFieldArray = arr => {\n    const o = {};\n    for (let i = 0; i < arr.length; i++) {\n        const f = arr[i];\n        if (!f || typeof f !== 'object') continue;\n        let k = f.name || f.browseName || f.displayName || f.key;\n        if (k && typeof k === 'object') k = k.text || k.Text || k.value || JSON.stringify(k);\n        if (k) o[String(k)] = f.value !== undefined ? f.value : f.Value;\n    }\n    return o;\n};\nif (Array.isArray(p)) p = fromFieldArray(p);\nif (!p || typeof p !== 'object') p = {};\nif (Array.isArray(p.eventFields)) {\n    p = Object.assign({}, p, fromFieldArray(p.eventFields));\n} else if (p.eventFields && typeof p.eventFields === 'object') {\n    p = Object.assign({}, p, p.eventFields);\n}\n\n// 事件过滤字段写成 \"2:WorkOrderId\" 时，contrib 会原样作为 payload key 输出。\n// 保留原 key，同时补一份去命名空间前缀的别名，供后续统一读取。\nObject.keys(p).forEach(k => {\n    const nk = String(k).replace(/^ns=\\d+;/i, '').replace(/^\\d+:/, '');\n    if (nk !== k && p[nk] === undefined) p[nk] = p[k];\n});\n\nconst unwrap = v => (v && typeof v === 'object' && !Array.isArray(v) && v.value !== undefined) ? v.value : v;\nconst asText = v => {\n    v = unwrap(v);\n    if (v === undefined || v === null) return '';\n    if (typeof v === 'object') return String(v.text || v.Text || v.value || JSON.stringify(v));\n    return String(v);\n};\nconst pickRaw = (obj, names, dflt) => {\n    for (let i = 0; i < names.length; i++) {\n        const v = obj[names[i]];\n        if (v !== undefined && v !== null) return v;\n    }\n    return dflt;\n};\nconst toMs = v => {\n    v = unwrap(v);\n    if (v === undefined || v === null) return NaN;\n    if (typeof v === 'number') return v;\n    if (typeof v === 'string') return Date.parse(v);\n    if (typeof v.getTime === 'function') return v.getTime();\n    if (typeof v.valueOf === 'function') {\n        const n = v.valueOf();\n        if (typeof n === 'number' && isFinite(n)) return n;\n    }\n    if (v.date && typeof v.date.getTime === 'function') return v.date.getTime();\n    return Date.parse(String(v));\n};\n\n// contrib 遇到 EventType(NodeId) 时会用事件类型的 BrowseName 作为 key，\n// 因此优先从 key 识别事件类型。\nconst typeKey = Object.keys(p).find(k => /(?:NgDetected|WorkOrderCompleted|InspectionFinished)EventType$/i.test(k));\nconst rawEt = typeKey || pickRaw(p, ['eventType', 'EventType', 'eventTypeName', 'EventTypeName'], '') || msg.eventType || '';\nconst et = asText(rawEt);\nconst now = Date.now();\nconst rawSrc = pickRaw(p, ['sourceTimestamp', 'SourceTimestamp', 'time', 'Time', 'receiveTime', 'ReceiveTime'], null);\nconst parsedTs = toMs(rawSrc);\nconst ts = isFinite(parsedTs) ? parsedTs : now;\nconst age = now - ts;\nif (age > 60000) {\n    node.warn('[陈旧事件丢弃] age=' + Math.round(age / 1000) + 's type=' + et);\n    return null;\n}\nconst occurredAt = new Date(ts).toISOString();\nconst workOrderId = asText(pickRaw(p, ['workOrderId', 'WorkOrderId'], '')).trim();\nconst serialNumber = asText(pickRaw(p, ['serialNumber', 'SerialNumber'], '')).trim();\nconst imageId = asText(pickRaw(p, ['imageId', 'ImageId'], '')).trim();\nconst confidenceRaw = unwrap(pickRaw(p, ['confidence', 'Confidence'], null));\nlet confidence = confidenceRaw === null || confidenceRaw === '' ? null : Number(confidenceRaw);\nif (confidence !== null && (!isFinite(confidence) || confidence < 0 || confidence > 1)) confidence = null;\nconst rawResult = asText(pickRaw(p, ['result', 'Result'], ''));\nconst defectType = asText(pickRaw(p, ['defectType', 'DefectType'], '')).trim();\nconst asNumber = (v, dflt) => {\n    v = unwrap(v);\n    if (Array.isArray(v)) {\n        if (v.length === 2) return Number(v[0]) * 4294967296 + Number(v[1]);\n        if (v.length === 1) return Number(v[0]);\n        return dflt;\n    }\n    const n = Number(v);\n    return isFinite(n) ? n : dflt;\n};\nconst hasDoneFields = p.InspectCount !== undefined || p.inspectCount !== undefined ||\n                      p.NgRate !== undefined || p.ngRate !== undefined;\n\n// 唯一发令枪：NG 只认 NgDetectedEvent，完工只认 WorkOrderCompletedEvent。\nconst isDone = /WorkOrderCompleted/i.test(et) || (hasDoneFields && !/InspectionFinished/i.test(et));\nconst isNg = /NgDetected/i.test(et) ||\n             (!/InspectionFinished/i.test(et) && !isDone && !rawResult && defectType !== '');\n\nif (isNg) {\n    if (!workOrderId || !serialNumber || !defectType) {\n        node.error('[契约校验失败] NgDetectedEvent 缺少 workOrderId/serialNumber/defectType，已丢弃', msg);\n        return null;\n    }\n    return [{\n        workOrderId: workOrderId,\n        serialNumber: serialNumber,\n        defectType: defectType,\n        confidence: confidence,\n        imageId: imageId,\n        occurredAt: occurredAt\n    }, null];\n}\nif (isDone) {\n    if (!workOrderId) {\n        node.error('[契约校验失败] WorkOrderCompletedEvent 缺少 workOrderId，已丢弃', msg);\n        return null;\n    }\n    const inspectCount = asNumber(pickRaw(p, ['inspectCount', 'InspectCount'], 0), 0);\n    const okCount = asNumber(pickRaw(p, ['okCount', 'OkCount'], 0), 0);\n    const ngCount = asNumber(pickRaw(p, ['ngCount', 'NgCount'], 0), 0);\n    const ngRate = asNumber(pickRaw(p, ['ngRate', 'NgRate'], -1), -1);\n    return [null, {\n        workOrderId: workOrderId,\n        inspectCount: isFinite(inspectCount) ? inspectCount : 0,\n        okCount: isFinite(okCount) ? okCount : 0,\n        ngCount: isFinite(ngCount) ? ngCount : 0,\n        ngRate: isFinite(ngRate) ? ngRate : -1,\n        occurredAt: occurredAt\n    }];\n}\nreturn null;\n",
+    "outputs": 2,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 80,
+    "wires": [
+      [
+        "fn_dedup_ng"
+      ],
+      [
+        "fn_dedup_done"
+      ]
+    ]
+  },
+  {
+    "id": "c_ng",
+    "type": "comment",
+    "z": "qcflow",
+    "name": "② NG 分支：告警削峰只影响告警，不阻断开单；去重后入缓冲队列",
+    "x": 160,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "fn_dedup_ng",
+    "type": "function",
+    "z": "qcflow",
+    "name": "NG指纹去重",
+    "func": "// 防重：同时按 serialNumber+occurredAt（M2）与 serialNumber（M1 单件唯一）兜底\nconst sn = String(msg.serialNumber || '').trim();\nif (!sn) { node.error('[契约校验失败] NG 事件缺少 serialNumber，已丢弃'); return null; }\nconst occurredAt = String(msg.occurredAt || '');\nconst fp = sn + '|' + occurredAt;\nconst seen = flow.get('ngSeen') || {};\nconst snSeen = flow.get('ngSnSeen') || {};\nif (seen[fp] || snSeen[sn]) {\n    node.warn('[重复NG丢弃] serialNumber=' + sn + ' occurredAt=' + occurredAt);\n    return null;\n}\nseen[fp] = 1;\nsnSeen[sn] = 1;\nconst keys = Object.keys(seen);\nif (keys.length > 500) delete seen[keys[0]];\nconst snKeys = Object.keys(snSeen);\nif (snKeys.length > 500) delete snSeen[snKeys[0]];\nflow.set('ngSeen', seen);\nflow.set('ngSnSeen', snSeen);\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 720,
+    "y": 280,
+    "wires": [
+      [
+        "fn_enq_ng",
+        "fn_alarm"
+      ]
+    ]
+  },
+  {
+    "id": "fn_alarm",
+    "type": "function",
+    "z": "qcflow",
+    "name": "报警削峰(10s抑制窗)",
+    "func": "// 只做告警削峰，不阻断 NG 开单：10s 窗内合并计数，超窗亮一次灯\nconst last = flow.get('lastAlarmAt') || 0;\nconst now = Date.now();\nif (now - last < 10000) {\n    flow.set('alarmSuppressed', (flow.get('alarmSuppressed') || 0) + 1);\n    node.status({ fill: 'yellow', shape: 'ring', text: 'NG告警抑制中' });\n    return null;\n}\nconst merged = flow.get('alarmSuppressed') || 0;\nflow.set('lastAlarmAt', now);\nflow.set('alarmSuppressed', 0);\nnode.warn('[NG报警] serialNumber=' + msg.serialNumber + ' defect=' + msg.defectType +\n          (merged ? '（已合并抑制 ' + merged + ' 条）' : ''));\nnode.status({ fill: 'red', shape: 'dot', text: 'NG' });\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 980,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "fn_enq_ng",
+    "type": "function",
+    "z": "qcflow",
+    "name": "NG开单入队",
+    "func": "// NG 开单入队：报文严格按 M1 §3.1，字段名不增不减\nconst MAX_QUEUE = 100;\nconst q = flow.get('buf') || [];\nconst id = 'ng|' + msg.serialNumber + '|' + msg.occurredAt;\nif (q.some(it => it.id === id)) {\n    node.warn('[重复入队丢弃] ' + id);\n    return null;\n}\nwhile (q.length >= MAX_QUEUE) {\n    let dropIdx = -1;\n    for (let i = 0; i < q.length; i++) {\n        if (q[i].status === 'PENDING') { dropIdx = i; break; }\n    }\n    const dropped = q.splice(dropIdx >= 0 ? dropIdx : 0, 1)[0];\n    node.warn('[缓冲溢出] 上限 ' + MAX_QUEUE + '，丢弃最旧 ' + dropped.id);\n}\nq.push({\n    id: id,\n    type: 'ng',\n    url: 'http://127.0.0.1:1880/mes/ng-order',\n    body: {\n        workOrderId: msg.workOrderId,\n        serialNumber: msg.serialNumber,\n        defectType: msg.defectType,\n        confidence: msg.confidence,\n        imageId: msg.imageId,\n        occurredAt: msg.occurredAt\n    },\n    attempts: 0,\n    nextAt: 0,\n    status: 'PENDING'\n});\nflow.set('buf', q);\nnode.status({ fill: 'yellow', shape: 'dot', text: '队列=' + q.length });\nnode.warn('[入队] NG ' + msg.serialNumber + ' 队列=' + q.length);\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 980,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "c_done",
+    "type": "comment",
+    "z": "qcflow",
+    "name": "③ 报工分支：唯一发令枪 WorkOrderCompletedEvent，Node-RED 不自行推断",
+    "x": 160,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "fn_dedup_done",
+    "type": "function",
+    "z": "qcflow",
+    "name": "报工去重(workOrderId)",
+    "func": "// 报工防重：workOrderId 指纹，同一工单只报工一次\nconst wo = String(msg.workOrderId || '').trim();\nif (!wo) { node.error('[契约校验失败] 报工事件缺少 workOrderId，已丢弃'); return null; }\nconst seen = flow.get('doneSeen') || {};\nif (seen[wo]) { node.warn('[重复报工丢弃] ' + wo); return null; }\nseen[wo] = 1;\nconst keys = Object.keys(seen);\nif (keys.length > 500) delete seen[keys[0]];\nflow.set('doneSeen', seen);\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 720,
+    "y": 500,
+    "wires": [
+      [
+        "fn_enq_done"
+      ]
+    ]
+  },
+  {
+    "id": "fn_enq_done",
+    "type": "function",
+    "z": "qcflow",
+    "name": "报工入队",
+    "func": "// 报工入队：字段严格按 M1 §3.1 接口 2\nconst MAX_QUEUE = 100;\nconst q = flow.get('buf') || [];\nconst id = 'done|' + msg.workOrderId;\nif (q.some(it => it.id === id)) {\n    node.warn('[重复入队丢弃] ' + id);\n    return null;\n}\nwhile (q.length >= MAX_QUEUE) {\n    let dropIdx = -1;\n    for (let i = 0; i < q.length; i++) {\n        if (q[i].status === 'PENDING') { dropIdx = i; break; }\n    }\n    const dropped = q.splice(dropIdx >= 0 ? dropIdx : 0, 1)[0];\n    node.warn('[缓冲溢出] 上限 ' + MAX_QUEUE + '，丢弃最旧 ' + dropped.id);\n}\nq.push({\n    id: id,\n    type: 'complete',\n    url: 'http://127.0.0.1:1880/mes/complete',\n    body: {\n        workOrderId: msg.workOrderId,\n        inspectCount: msg.inspectCount,\n        okCount: msg.okCount,\n        ngCount: msg.ngCount,\n        ngRate: msg.ngRate\n    },\n    createdAt: msg.occurredAt,\n    attempts: 0,\n    nextAt: 0,\n    status: 'PENDING'\n});\nflow.set('buf', q);\nnode.status({ fill: 'yellow', shape: 'dot', text: '队列=' + q.length });\nnode.warn('[入队] 报工 ' + msg.workOrderId + ' 队列=' + q.length);\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 980,
+    "y": 500,
+    "wires": []
+  },
+  {
+    "id": "c_queue",
+    "type": "comment",
+    "z": "qcflow",
+    "name": "④ 单飞行发送泵：PENDING → SENDING → SUCCESS/退避(1s/2s/4s)/FAILED 死信",
+    "x": 160,
+    "y": 600,
+    "wires": []
+  },
+  {
+    "id": "in_tick",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "1s 泵驱动",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "1",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.5,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 180,
+    "y": 660,
+    "wires": [
+      [
+        "fn_pump"
+      ]
+    ]
+  },
+  {
+    "id": "fn_pump",
+    "type": "function",
+    "z": "qcflow",
+    "name": "发送泵(单飞行)",
+    "func": "// 单飞行发送泵：PENDING -> SENDING -> SUCCESS 出队 / PENDING 退避 / FAILED 死信\n// 同一时刻只允许一条 SENDING；1s 定时器只负责“找下一条”\nconst q = flow.get('buf') || [];\nconst now = Date.now();\nconst RETRY_DELAYS = [1000, 2000, 4000];\n\nconst sendDead = (item, reason) => {\n    const idx = q.findIndex(it => it.id === item.id);\n    if (idx >= 0) q.splice(idx, 1);\n    const dead = flow.get('dead') || [];\n    dead.push(Object.assign({}, item, { lastStatus: reason, failedAt: new Date().toISOString() }));\n    if (dead.length > 100) dead.shift();\n    flow.set('buf', q);\n    flow.set('dead', dead);\n    node.error('[死信FAILED] ' + item.type + ' ' + item.id + ' 重试3次仍失败(' + reason + ')，需人工处置', item.body);\n};\n\n// 看门狗：防止 HTTP 节点异常未触发 catch 时 SENDING 永久卡死\nconst inflight = q.find(it => it.status === 'SENDING');\nif (inflight) {\n    if (inflight.sentAt && now - inflight.sentAt > 15000) {\n        inflight.attempts = (inflight.attempts || 0) + 1;\n        inflight.lastStatus = 'watchdog-timeout';\n        delete inflight.sentAt;\n        if (inflight.attempts > 3) {\n            sendDead(inflight, 'watchdog-timeout');\n        } else {\n            inflight.status = 'PENDING';\n            inflight.nextAt = now + RETRY_DELAYS[inflight.attempts - 1];\n            flow.set('buf', q);\n            node.warn('[重试] ' + inflight.id + ' 看门狗判定超时，' +\n                      RETRY_DELAYS[inflight.attempts - 1] + 'ms 后第 ' + inflight.attempts + ' 次重试');\n        }\n    } else {\n        node.status({ fill: 'blue', shape: 'dot', text: '在途 1 条，队列=' + q.length });\n    }\n    return null; // 单飞行守卫：有 SENDING 时绝不再发\n}\n\nconst item = q.find(it => it.status === 'PENDING' && (it.nextAt || 0) <= now);\nif (!item) {\n    node.status({ fill: 'green', shape: 'dot', text: '空闲，队列=' + q.length });\n    return null;\n}\nitem.status = 'SENDING';\nitem.sentAt = now;\nitem.attempts = item.attempts || 0;\nflow.set('buf', q);\nmsg.url = item.url;\nmsg.payload = item.body;\nmsg._qc = { id: item.id, type: item.type };\nnode.status({ fill: 'blue', shape: 'dot', text: '发送 ' + item.type + ' ' + item.id });\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 660,
+    "wires": [
+      [
+        "http1"
+      ]
+    ]
+  },
+  {
+    "id": "http1",
+    "type": "http request",
+    "z": "qcflow",
+    "name": "POST 模拟MES(3s超时)",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": false,
+    "url": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "tls": "",
+    "timeout": "3000",
+    "x": 720,
+    "y": 660,
+    "wires": [
+      [
+        "fn_resp"
+      ]
+    ]
+  },
+  {
+    "id": "n_catch_http",
+    "type": "catch",
+    "z": "qcflow",
+    "name": "HTTP超时/异常捕获",
+    "scope": [
+      "http1"
+    ],
+    "uncaught": false,
+    "x": 460,
+    "y": 740,
+    "wires": [
+      [
+        "fn_resp"
+      ]
+    ]
+  },
+  {
+    "id": "fn_resp",
+    "type": "function",
+    "z": "qcflow",
+    "name": "响应处理(回执/退避/死信)",
+    "func": "// HTTP 响应 / 超时异常统一入口：成功出队；失败 1s/2s/4s 退避，3 次重试后死信\nconst q = flow.get('buf') || [];\nconst meta = msg._qc || {};\nlet i = q.findIndex(it => it.id === meta.id);\nif (i < 0 && !meta.id) i = q.findIndex(it => it.status === 'SENDING');\nif (i < 0) {\n    node.warn('[响应忽略] 队列项不存在或已完成：' + (meta.id || '(无指纹)'));\n    return null;\n}\nconst item = q[i];\nif (item.status !== 'SENDING') {\n    node.warn('[响应忽略] 非在途状态 ' + item.status + '：' + item.id);\n    return null;\n}\nconst st = Number(msg.statusCode) || 0;\nconst body = (msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload)) ? msg.payload : {};\nconst errText = msg.error ? String(msg.error.message || msg.error.code || msg.error) : '';\nconst ok = !msg.error && st >= 200 && st < 300;\n\nif (ok) {\n    if (body.accepted === false) {\n        q.splice(i, 1);\n        flow.set('buf', q);\n        node.warn('[MES拒绝] ' + item.id + ' accepted=false，按 M1 契约不重试：' + (body.error || ''));\n        node.status({ fill: 'red', shape: 'ring', text: 'MES拒绝' });\n        return null;\n    }\n    q.splice(i, 1);\n    flow.set('buf', q);\n    if (item.type === 'ng') {\n        const orderNo = body.mesOrderNo || '';\n        if (!orderNo) {\n            node.warn('[回执缺失] NG单 ' + item.id + ' 已出队，但 MES 未返回 mesOrderNo');\n            return null;\n        }\n        node.warn('[回执] MES工单号=' + orderNo + ' → 写回 LastMesOrderNo（不覆盖 CurrentWorkOrderId）');\n        node.status({ fill: 'green', shape: 'dot', text: '开单成功 ' + orderNo });\n        return {\n            topic: 'ns=2;s=QCStation.LastMesOrderNo',\n            action: 'write',\n            payload: orderNo,\n            datatype: 'String',\n            _uaKind: 'write'\n        };\n    }\n    const receiptNo = body.receiptNo || '';\n    if (!receiptNo) {\n        node.warn('[回执缺失] 报工 ' + item.id + ' 已出队，但 MES 未返回 receiptNo');\n        return null;\n    }\n    node.warn('[报工回执] receiptNo=' + receiptNo + ' → 写回 LastMesOrderNo');\n    node.status({ fill: 'green', shape: 'dot', text: '报工成功 ' + receiptNo });\n    return {\n        topic: 'ns=2;s=QCStation.LastMesOrderNo',\n        action: 'write',\n        payload: receiptNo,\n            datatype: 'String',\n        _uaKind: 'write'\n    };\n}\n\nconst reason = errText || ('HTTP ' + st);\nitem.attempts = (item.attempts || 0) + 1;\nitem.lastStatus = reason;\ndelete item.sentAt;\nif (item.attempts > 3) {\n    q.splice(i, 1);\n    flow.set('buf', q);\n    const dead = flow.get('dead') || [];\n    dead.push(Object.assign({}, item, { failedAt: new Date().toISOString() }));\n    if (dead.length > 100) dead.shift();\n    flow.set('dead', dead);\n    node.error('[死信FAILED] ' + item.type + ' ' + item.id + ' 重试3次仍失败(' + reason + ')，需人工处置', item.body);\n    node.status({ fill: 'red', shape: 'dot', text: '死信 ' + item.id });\n    return null;\n}\nconst delay = [1000, 2000, 4000][item.attempts - 1];\nitem.status = 'PENDING';\nitem.nextAt = Date.now() + delay;\nq[i] = item;\nflow.set('buf', q);\nnode.warn('[重试] ' + item.type + ' ' + item.id + ' 失败(' + reason + ')，' +\n          delay + 'ms 后第 ' + item.attempts + ' 次重试');\nnode.status({ fill: 'yellow', shape: 'ring', text: '退避 ' + delay + 'ms' });\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 980,
+    "y": 660,
+    "wires": [
+      [
+        "opcua"
+      ]
+    ]
+  },
+  {
+    "id": "c_ua",
+    "type": "comment",
+    "z": "qcflow",
+    "name": "⑤ UA 客户端：回执写回 LastMesOrderNo、Method 调用、5s 心跳读",
+    "x": 160,
+    "y": 820,
+    "wires": []
+  },
+  {
+    "id": "opcua",
+    "type": "OpcUa-Client",
+    "z": "qcflow",
+    "name": "UA客户端(读/写/调Method)",
+    "endpoint": "ep1",
+    "action": "read",
+    "time": 100,
+    "timeUnit": "ms",
+    "certificate": "n",
+    "useTransport": false,
+    "absoluteDeadLine": false,
+    "applyBadValues": true,
+    "x": 1240,
+    "y": 660,
+    "wires": [
+      [
+        "fn_ua_result"
+      ]
+    ],
+    "localfile": "",
+    "localkeyfile": "",
+    "folderName4PKI": ""
+  },
+  {
+    "id": "fn_ua_result",
+    "type": "function",
+    "z": "qcflow",
+    "name": "UA结果校验",
+    "func": "// UA 读写/Method 结果校验；Method accepted=false 必须打印原因并阻断后续动作\nconst kind = msg._uaKind || '';\nif (kind === 'write' || /LastMesOrderNo$/.test(String(msg.topic || ''))) {\n    node.warn('[UA写回成功] ' + (msg.topic || ''));\n    return null;\n}\nif (kind === 'read' || /DeviceStatus$/.test(String(msg.topic || ''))) {\n    flow.set('hbFails', 0);\n    return null;\n}\nconst p = msg.payload;\nlet outs = null;\nif (Array.isArray(p)) outs = p;\nelse if (p && Array.isArray(p.OutputArguments)) outs = p.OutputArguments;\nelse if (p && Array.isArray(p.outputArguments)) outs = p.outputArguments;\nelse if (p && Array.isArray(p.value)) outs = p.value;\nconst unwrap = v => (v && typeof v === 'object' && !Array.isArray(v) && v.value !== undefined) ? v.value : v;\nconst asText = v => {\n    v = unwrap(v);\n    if (v === undefined || v === null) return '';\n    if (typeof v === 'object') return String(v.text || v.Text || JSON.stringify(v));\n    return String(v);\n};\nif (outs && outs.length) {\n    const accepted = unwrap(outs[0]);\n    const summary = outs.length > 1 ? asText(outs[1]) : '';\n    if (accepted === false) node.error('[UA拒绝] ' + summary + ' —— 已阻断后续动作', msg);\n    else if (accepted === true) node.warn('[UA成功] ' + summary);\n    else node.warn('[UA返回] ' + JSON.stringify(outs));\n} else {\n    node.warn('[UA返回] ' + JSON.stringify(p));\n}\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1520,
+    "y": 660,
+    "wires": []
+  },
+  {
+    "id": "n_catch_ua",
+    "type": "catch",
+    "z": "qcflow",
+    "name": "UA异常捕获",
+    "scope": [
+      "opcua",
+      "opc_evt",
+      "opc_evt_done"
+    ],
+    "uncaught": false,
+    "x": 1240,
+    "y": 740,
+    "wires": [
+      [
+        "fn_ua_err"
+      ]
+    ]
+  },
+  {
+    "id": "fn_ua_err",
+    "type": "function",
+    "z": "qcflow",
+    "name": "UA假死/断网检测",
+    "func": "// UA 异常计数：心跳成功会由 fn_ua_result 清零；连续 3 次异常判定假死/断网\nconst n = Math.min((flow.get('hbFails') || 0) + 1, 3);\nflow.set('hbFails', n);\nconst detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';\nnode.error('[UA异常 ' + n + '/3] ' + detail, msg);\nif (n >= 3) node.error('[连接告警] 连续3次UA异常，疑似断网/假死；检查 SecureChannel 与订阅状态');\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1520,
+    "y": 740,
+    "wires": []
+  },
+  {
+    "id": "inj_hb",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "心跳5s(读DeviceStatus)",
+    "props": [
+      {
+        "p": "_hb",
+        "vt": "date"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 2,
+    "topic": "ns=2;s=QCStation.DeviceStatus",
+    "x": 180,
+    "y": 880,
+    "wires": [
+      [
+        "fn_hb"
+      ]
+    ]
+  },
+  {
+    "id": "fn_hb",
+    "type": "function",
+    "z": "qcflow",
+    "name": "构造心跳读",
+    "func": "msg.action = 'read';\nmsg._uaKind = 'read';\nmsg.topic = 'ns=2;s=QCStation.DeviceStatus';\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 880,
+    "wires": [
+      [
+        "opcua"
+      ]
+    ]
+  },
+  {
+    "id": "inj_start",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "开检 WO-20261109-001",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "topic": "",
+    "payload": "WO-20261109-001",
+    "payloadType": "str",
+    "x": 180,
+    "y": 940,
+    "wires": [
+      [
+        "fn_call_start"
+      ]
+    ]
+  },
+  {
+    "id": "fn_call_start",
+    "type": "function",
+    "z": "qcflow",
+    "name": "调 StartInspection",
+    "func": "const wo = String(msg.payload || 'WO-20261109-001').trim();\nmsg.action = 'method';\nmsg._uaKind = 'method';\nmsg.objectId = 'ns=2;s=QCStation';\nmsg.methodId = 'ns=2;s=QCStation.StartInspection';\nmsg.topic = msg.methodId;\nmsg.inputArguments = [\n    { dataType: 'String', value: wo },\n    { dataType: 'UInt32', value: 5 }\n];\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 940,
+    "wires": [
+      [
+        "opcua"
+      ]
+    ]
+  },
+  {
+    "id": "inj_done",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "完工 WO-20261109-001",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "topic": "",
+    "payload": "WO-20261109-001",
+    "payloadType": "str",
+    "x": 180,
+    "y": 1000,
+    "wires": [
+      [
+        "fn_call_done"
+      ]
+    ]
+  },
+  {
+    "id": "fn_call_done",
+    "type": "function",
+    "z": "qcflow",
+    "name": "调 CompleteWorkOrder",
+    "func": "const wo = String(msg.payload || 'WO-20261109-001').trim();\nmsg.action = 'method';\nmsg._uaKind = 'method';\nmsg.objectId = 'ns=2;s=QCStation';\nmsg.methodId = 'ns=2;s=QCStation.CompleteWorkOrder';\nmsg.topic = msg.methodId;\nmsg.inputArguments = [{ dataType: 'String', value: wo }];\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 1000,
+    "wires": [
+      [
+        "opcua"
+      ]
+    ]
+  },
+  {
+    "id": "c_mes",
+    "type": "comment",
+    "z": "qcflow",
+    "name": "⑥ 模拟 MES（http in）：故障注入 ok/5xx/timeout + 同指纹防重返回原单号",
+    "x": 160,
+    "y": 1100,
+    "wires": []
+  },
+  {
+    "id": "inj_ok",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "注入:正常",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.5,
+    "topic": "",
+    "payload": "ok",
+    "payloadType": "str",
+    "x": 180,
+    "y": 1160,
+    "wires": [
+      [
+        "fn_failmode"
+      ]
+    ]
+  },
+  {
+    "id": "inj_5xx",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "注入:5xx",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "topic": "",
+    "payload": "5xx",
+    "payloadType": "str",
+    "x": 180,
+    "y": 1200,
+    "wires": [
+      [
+        "fn_failmode"
+      ]
+    ]
+  },
+  {
+    "id": "inj_to",
+    "type": "inject",
+    "z": "qcflow",
+    "name": "注入:超时",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "topic": "",
+    "payload": "timeout",
+    "payloadType": "str",
+    "x": 180,
+    "y": 1240,
+    "wires": [
+      [
+        "fn_failmode"
+      ]
+    ]
+  },
+  {
+    "id": "fn_failmode",
+    "type": "function",
+    "z": "qcflow",
+    "name": "设置MES故障模式",
+    "func": "const mode = String(msg.payload || 'ok').toLowerCase();\nflow.set('mesMode', mode);\nflow.set('timeoutUntil', mode === 'timeout' ? Date.now() + 10000 : 0);\nnode.warn('[MES故障注入] mode=' + mode +\n          (mode === 'timeout' ? '（10s 后自动恢复 ok，用于验证 1s/2s/4s 退避）' : ''));\nreturn null;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 1200,
+    "wires": []
+  },
+  {
+    "id": "httpin_ng",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "MES接收NG开单",
+    "url": "/mes/ng-order",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 180,
+    "y": 1320,
+    "wires": [
+      [
+        "fn_mes_ng"
+      ]
+    ]
+  },
+  {
+    "id": "fn_mes_ng",
+    "type": "function",
+    "z": "qcflow",
+    "name": "MES处理NG单",
+    "func": "// 模拟 MES：NG 开单 + 同 SN 防重 + 故障注入\nconst now = Date.now();\nlet mode = String(flow.get('mesMode') || 'ok').toLowerCase();\nconst until = Number(flow.get('timeoutUntil') || 0);\nif (mode === 'timeout' && until && now >= until) {\n    mode = 'ok';\n    flow.set('mesMode', 'ok');\n    flow.set('timeoutUntil', 0);\n}\nconst body = msg.payload;\nif (!body || typeof body !== 'object' || Array.isArray(body)) {\n    msg.statusCode = 400;\n    msg.payload = { accepted: false, error: 'invalid JSON body' };\n    return [msg, null];\n}\nconst required = ['workOrderId', 'serialNumber', 'defectType', 'confidence', 'imageId', 'occurredAt'];\nconst missing = required.filter(k => !(k in body));\nif (missing.length) {\n    msg.statusCode = 400;\n    msg.payload = { accepted: false, error: 'missing fields: ' + missing.join(',') };\n    return [msg, null];\n}\nif (typeof body.occurredAt !== 'string' || !/Z$/.test(body.occurredAt)) {\n    msg.statusCode = 400;\n    msg.payload = { accepted: false, error: 'occurredAt must be ISO8601 UTC with Z' };\n    return [msg, null];\n}\nconst orders = flow.get('orders') || {};\nconst makeOrder = () => {\n    const seq = (flow.get('mesSeq') || 0) + 1;\n    flow.set('mesSeq', seq);\n    const d = new Date();\n    const no = 'MES-' + d.toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(seq).padStart(4, '0');\n    orders[body.serialNumber] = no;\n    flow.set('orders', orders);\n    return no;\n};\nconst existing = orders[body.serialNumber];\nif (existing) {\n    msg.statusCode = 200;\n    msg.payload = { accepted: true, mesOrderNo: existing, duplicated: true };\n    return [msg, null];\n}\nif (mode === '5xx') {\n    msg.statusCode = 500;\n    msg.payload = { accepted: false, error: 'simulated 5xx' };\n    return [msg, null];\n}\nif (mode === 'timeout') {\n    node.warn('[MES注入timeout] NG单 ' + body.serialNumber + ' 延迟 10s 响应');\n    setTimeout(() => {\n        try {\n            if (msg.res && (msg.res.finished || msg.res.writableEnded)) {\n                node.warn('[MES超时模拟] 客户端已超时断开，丢弃延迟响应');\n                return;\n            }\n            const current = orders[body.serialNumber];\n            const no = current || makeOrder();\n            msg.statusCode = 200;\n            msg.payload = { accepted: true, mesOrderNo: no };\n            if (current) msg.payload.duplicated = true;\n            node.send([msg, null]);\n        } catch (e) {\n            node.warn('[MES超时模拟] 响应失败：' + e.message);\n        }\n    }, 10000);\n    return null;\n}\nconst no = makeOrder();\nmsg.statusCode = 200;\nmsg.payload = { accepted: true, mesOrderNo: no };\nreturn [msg, null];",
+    "outputs": 2,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 1320,
+    "wires": [
+      [
+        "httpres_ng"
+      ],
+      [
+        "dbg_mes"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_ng",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 760,
+    "y": 1320,
+    "wires": []
+  },
+  {
+    "id": "httpin_done",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "MES接收报工",
+    "url": "/mes/complete",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 180,
+    "y": 1400,
+    "wires": [
+      [
+        "fn_mes_done"
+      ]
+    ]
+  },
+  {
+    "id": "fn_mes_done",
+    "type": "function",
+    "z": "qcflow",
+    "name": "MES处理报工",
+    "func": "// 模拟 MES：完工报工 + 同 workOrderId 防重 + 故障注入\nconst now = Date.now();\nlet mode = String(flow.get('mesMode') || 'ok').toLowerCase();\nconst until = Number(flow.get('timeoutUntil') || 0);\nif (mode === 'timeout' && until && now >= until) {\n    mode = 'ok';\n    flow.set('mesMode', 'ok');\n    flow.set('timeoutUntil', 0);\n}\nconst body = msg.payload;\nif (!body || typeof body !== 'object' || Array.isArray(body)) {\n    msg.statusCode = 400;\n    msg.payload = { accepted: false, error: 'invalid JSON body' };\n    return [msg, null];\n}\nconst required = ['workOrderId', 'inspectCount', 'okCount', 'ngCount', 'ngRate'];\nconst missing = required.filter(k => !(k in body));\nif (missing.length) {\n    msg.statusCode = 400;\n    msg.payload = { accepted: false, error: 'missing fields: ' + missing.join(',') };\n    return [msg, null];\n}\nconst receipts = flow.get('receipts') || {};\nconst makeReceipt = () => {\n    const seq = (flow.get('rcSeq') || 0) + 1;\n    flow.set('rcSeq', seq);\n    const d = new Date();\n    const no = 'RC-' + d.toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(seq).padStart(4, '0');\n    receipts[body.workOrderId] = no;\n    flow.set('receipts', receipts);\n    return no;\n};\nconst existing = receipts[body.workOrderId];\nif (existing) {\n    msg.statusCode = 200;\n    msg.payload = { accepted: true, receiptNo: existing, duplicated: true };\n    return [msg, null];\n}\nif (mode === '5xx') {\n    msg.statusCode = 500;\n    msg.payload = { accepted: false, error: 'simulated 5xx' };\n    return [msg, null];\n}\nif (mode === 'timeout') {\n    node.warn('[MES注入timeout] 报工 ' + body.workOrderId + ' 延迟 10s 响应');\n    setTimeout(() => {\n        try {\n            if (msg.res && (msg.res.finished || msg.res.writableEnded)) {\n                node.warn('[MES超时模拟] 客户端已超时断开，丢弃延迟响应');\n                return;\n            }\n            const current = receipts[body.workOrderId];\n            const no = current || makeReceipt();\n            msg.statusCode = 200;\n            msg.payload = { accepted: true, receiptNo: no };\n            if (current) msg.payload.duplicated = true;\n            node.send([msg, null]);\n        } catch (e) {\n            node.warn('[MES超时模拟] 响应失败：' + e.message);\n        }\n    }, 10000);\n    return null;\n}\nconst no = makeReceipt();\nmsg.statusCode = 200;\nmsg.payload = { accepted: true, receiptNo: no };\nreturn [msg, null];",
+    "outputs": 2,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 460,
+    "y": 1400,
+    "wires": [
+      [
+        "httpres_done"
+      ],
+      [
+        "dbg_mes"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_done",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 760,
+    "y": 1400,
+    "wires": []
+  },
+  {
+    "id": "dbg_mes",
+    "type": "debug",
+    "z": "qcflow",
+    "name": "MES侧日志",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 760,
+    "y": 1480,
+    "wires": []
+  },
+  {
+    "id": "fn_sub_log_ng",
+    "type": "function",
+    "z": "qcflow",
+    "name": "Event subscription burst (NG)",
+    "func": "// node-red-contrib-opcua 0.2.355 的已知行为：首条 events 消息只建立 Subscription，\n// 不会立即创建 Event MonitoredItem。这里在 5s 后再发一次，确保真正挂上事件过滤器。\nconst label = 'NG';\nnode.warn('[EventSub] arm ' + label + ' -> ' + String(msg.topic || '') + ' / ' + String(msg.eventTypeIds || ''));\nconst sendOne = () => node.send(RED.util.cloneMessage(msg));\nsendOne();\nconst timer = setTimeout(sendOne, 5000);\ntimer.unref && timer.unref();\nreturn null;\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 80,
+    "wires": [
+      [
+        "opc_evt"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sub_log_done",
+    "type": "function",
+    "z": "qcflow",
+    "name": "Event subscription burst (DONE)",
+    "func": "// node-red-contrib-opcua 0.2.355 的已知行为：首条 events 消息只建立 Subscription，\n// 不会立即创建 Event MonitoredItem。这里在 5s 后再发一次，确保真正挂上事件过滤器。\nconst label = 'DONE';\nnode.warn('[EventSub] arm ' + label + ' -> ' + String(msg.topic || '') + ' / ' + String(msg.eventTypeIds || ''));\nconst sendOne = () => node.send(RED.util.cloneMessage(msg));\nsendOne();\nconst timer = setTimeout(sendOne, 5000);\ntimer.unref && timer.unref();\nreturn null;\n",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 160,
+    "wires": [
+      [
+        "opc_evt_done"
+      ]
+    ]
+  }
+]
