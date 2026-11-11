@@ -92,8 +92,10 @@ class QCStation:
         self.nd["work_order"] = await _rw(await root.add_variable(nid("QCStation.CurrentWorkOrderId"), "2:CurrentWorkOrderId", ""))
         # Part Traceability：单件序列号（ReadWrite，由数据源/Node-RED 写入，追溯基石）
         self.nd["part_sn"] = await _rw(await root.add_variable(nid("QCStation.CurrentPartSN"), "2:CurrentPartSN", ""))
-        # MES 回执落地：独立变量，绝不覆盖 CurrentWorkOrderId（派工单号与 MES 回执号语义分离）
+        # MES 回执落地：按业务语义拆分；LastMesOrderNo 仅作为最近回执的兼容镜像
         self.nd["mes_order"] = await _rw(await root.add_variable(nid("QCStation.LastMesOrderNo"), "2:LastMesOrderNo", ""))
+        self.nd["ng_mes_order"] = await _rw(await root.add_variable(nid("QCStation.LastNgMesOrderNo"), "2:LastNgMesOrderNo", ""))
+        self.nd["completion_receipt"] = await _rw(await root.add_variable(nid("QCStation.LastCompletionReceiptNo"), "2:LastCompletionReceiptNo", ""))
 
         self.nd["last_result"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastResult"), "2:LastResult", False))
         self.nd["last_defect"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastDefectType"), "2:LastDefectType", ""))
@@ -185,7 +187,8 @@ class QCStation:
             "InspectCount": self.inspect_count,
             "OkCount": self.ok_count,
             "NgCount": self.ng_count,
-            "NgRate": ng_rate if ng_rate >= 0 else 0.0,
+            # 空窗口保持 -1.0 哨兵语义，MES 侧据此显示“样本不足”，不得误报为 0 不良率
+            "NgRate": ng_rate,
         }, severity=2, message=f"WorkOrder {self.work_order_id} completed")
         self.status = ST_IDLE
         self.work_order_id = ""

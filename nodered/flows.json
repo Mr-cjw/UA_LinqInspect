@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "AI质检-MES闭环(基础骨架)",
     "disabled": false,
-    "info": "M2 基础骨架：OpcUa-Event 订阅 QCStation.Events -> 事件解析/陈旧过滤 -> NG 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 回执写回 LastMesOrderNo。队列为内存态，重部署即清空；SQLite 持久化见 Phase0 §6-5。",
+    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信存于 flow context，由 localfilesystem 近实时落盘；事务型 SQLite 队列见 Phase0 §6-5。",
     "env": []
   },
   {
@@ -394,8 +394,8 @@
     "type": "function",
     "z": "qcflow",
     "name": "响应处理(回执/退避/死信)",
-    "func": "// HTTP 响应 / 超时异常统一入口：成功出队；失败 1s/2s/4s 退避，3 次重试后死信\nconst q = flow.get('buf') || [];\nconst meta = msg._qc || {};\nlet i = q.findIndex(it => it.id === meta.id);\nif (i < 0 && !meta.id) i = q.findIndex(it => it.status === 'SENDING');\nif (i < 0) {\n    node.warn('[响应忽略] 队列项不存在或已完成：' + (meta.id || '(无指纹)'));\n    return null;\n}\nconst item = q[i];\nif (item.status !== 'SENDING') {\n    node.warn('[响应忽略] 非在途状态 ' + item.status + '：' + item.id);\n    return null;\n}\nconst st = Number(msg.statusCode) || 0;\nconst body = (msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload)) ? msg.payload : {};\nconst errText = msg.error ? String(msg.error.message || msg.error.code || msg.error) : '';\nconst ok = !msg.error && st >= 200 && st < 300;\n\nif (ok) {\n    if (body.accepted === false) {\n        q.splice(i, 1);\n        flow.set('buf', q);\n        node.warn('[MES拒绝] ' + item.id + ' accepted=false，按 M1 契约不重试：' + (body.error || ''));\n        node.status({ fill: 'red', shape: 'ring', text: 'MES拒绝' });\n        return null;\n    }\n    q.splice(i, 1);\n    flow.set('buf', q);\n    if (item.type === 'ng') {\n        const orderNo = body.mesOrderNo || '';\n        if (!orderNo) {\n            node.warn('[回执缺失] NG单 ' + item.id + ' 已出队，但 MES 未返回 mesOrderNo');\n            return null;\n        }\n        node.warn('[回执] MES工单号=' + orderNo + ' → 写回 LastMesOrderNo（不覆盖 CurrentWorkOrderId）');\n        node.status({ fill: 'green', shape: 'dot', text: '开单成功 ' + orderNo });\n        return {\n            topic: 'ns=2;s=QCStation.LastMesOrderNo',\n            action: 'write',\n            payload: orderNo,\n            datatype: 'String',\n            _uaKind: 'write'\n        };\n    }\n    const receiptNo = body.receiptNo || '';\n    if (!receiptNo) {\n        node.warn('[回执缺失] 报工 ' + item.id + ' 已出队，但 MES 未返回 receiptNo');\n        return null;\n    }\n    node.warn('[报工回执] receiptNo=' + receiptNo + ' → 写回 LastMesOrderNo');\n    node.status({ fill: 'green', shape: 'dot', text: '报工成功 ' + receiptNo });\n    return {\n        topic: 'ns=2;s=QCStation.LastMesOrderNo',\n        action: 'write',\n        payload: receiptNo,\n            datatype: 'String',\n        _uaKind: 'write'\n    };\n}\n\nconst reason = errText || ('HTTP ' + st);\nitem.attempts = (item.attempts || 0) + 1;\nitem.lastStatus = reason;\ndelete item.sentAt;\nif (item.attempts > 3) {\n    q.splice(i, 1);\n    flow.set('buf', q);\n    const dead = flow.get('dead') || [];\n    dead.push(Object.assign({}, item, { failedAt: new Date().toISOString() }));\n    if (dead.length > 100) dead.shift();\n    flow.set('dead', dead);\n    node.error('[死信FAILED] ' + item.type + ' ' + item.id + ' 重试3次仍失败(' + reason + ')，需人工处置', item.body);\n    node.status({ fill: 'red', shape: 'dot', text: '死信 ' + item.id });\n    return null;\n}\nconst delay = [1000, 2000, 4000][item.attempts - 1];\nitem.status = 'PENDING';\nitem.nextAt = Date.now() + delay;\nq[i] = item;\nflow.set('buf', q);\nnode.warn('[重试] ' + item.type + ' ' + item.id + ' 失败(' + reason + ')，' +\n          delay + 'ms 后第 ' + item.attempts + ' 次重试');\nnode.status({ fill: 'yellow', shape: 'ring', text: '退避 ' + delay + 'ms' });\nreturn null;",
-    "outputs": 1,
+    "func": "// HTTP 响应 / 超时异常统一入口：成功出队；失败 1s/2s/4s 退避，3 次重试后死信\nconst q = flow.get('buf') || [];\nconst meta = msg._qc || {};\nlet i = q.findIndex(it => it.id === meta.id);\nif (i < 0 && !meta.id) i = q.findIndex(it => it.status === 'SENDING');\nif (i < 0) {\n    node.warn('[响应忽略] 队列项不存在或已完成：' + (meta.id || '(无指纹)'));\n    return null;\n}\nconst item = q[i];\nif (item.status !== 'SENDING') {\n    node.warn('[响应忽略] 非在途状态 ' + item.status + '：' + item.id);\n    return null;\n}\nconst st = Number(msg.statusCode) || 0;\nconst body = (msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload)) ? msg.payload : {};\nconst errText = msg.error ? String(msg.error.message || msg.error.code || msg.error) : '';\nconst ok = !msg.error && st >= 200 && st < 300;\n\nif (ok) {\n    if (body.accepted === false) {\n        q.splice(i, 1);\n        flow.set('buf', q);\n        node.warn('[MES拒绝] ' + item.id + ' accepted=false，按 M1 契约不重试：' + (body.error || ''));\n        node.status({ fill: 'red', shape: 'ring', text: 'MES拒绝' });\n        return null;\n    }\n    q.splice(i, 1);\n    flow.set('buf', q);\n    if (item.type === 'ng') {\n        const orderNo = body.mesOrderNo || '';\n        if (!orderNo) {\n            node.warn('[回执缺失] NG单 ' + item.id + ' 已出队，但 MES 未返回 mesOrderNo');\n            return null;\n        }\n        node.warn('[回执] MES工单号=' + orderNo + ' → 写回 LastNgMesOrderNo / LastMesOrderNo（不覆盖 CurrentWorkOrderId）');\n        node.status({ fill: 'green', shape: 'dot', text: '开单成功 ' + orderNo });\n        return [\n            { topic: 'ns=2;s=QCStation.LastNgMesOrderNo', action: 'write', payload: orderNo, datatype: 'String', _uaKind: 'write' },\n            { topic: 'ns=2;s=QCStation.LastMesOrderNo', action: 'write', payload: orderNo, datatype: 'String', _uaKind: 'write' }\n        ];\n    }\n    const receiptNo = body.receiptNo || '';\n    if (!receiptNo) {\n        node.warn('[回执缺失] 报工 ' + item.id + ' 已出队，但 MES 未返回 receiptNo');\n        return null;\n    }\n    node.warn('[报工回执] receiptNo=' + receiptNo + ' → 写回 LastCompletionReceiptNo / LastMesOrderNo');\n    node.status({ fill: 'green', shape: 'dot', text: '报工成功 ' + receiptNo });\n    return [\n        { topic: 'ns=2;s=QCStation.LastCompletionReceiptNo', action: 'write', payload: receiptNo, datatype: 'String', _uaKind: 'write' },\n        { topic: 'ns=2;s=QCStation.LastMesOrderNo', action: 'write', payload: receiptNo, datatype: 'String', _uaKind: 'write' }\n    ];\n}\n\nconst reason = errText || ('HTTP ' + st);\nitem.attempts = (item.attempts || 0) + 1;\nitem.lastStatus = reason;\ndelete item.sentAt;\nif (item.attempts > 3) {\n    q.splice(i, 1);\n    flow.set('buf', q);\n    const dead = flow.get('dead') || [];\n    dead.push(Object.assign({}, item, { failedAt: new Date().toISOString() }));\n    if (dead.length > 100) dead.shift();\n    flow.set('dead', dead);\n    node.error('[死信FAILED] ' + item.type + ' ' + item.id + ' 重试3次仍失败(' + reason + ')，需人工处置', item.body);\n    node.status({ fill: 'red', shape: 'dot', text: '死信 ' + item.id });\n    return null;\n}\nconst delay = [1000, 2000, 4000][item.attempts - 1];\nitem.status = 'PENDING';\nitem.nextAt = Date.now() + delay;\nq[i] = item;\nflow.set('buf', q);\nnode.warn('[重试] ' + item.type + ' ' + item.id + ' 失败(' + reason + ')，' +\n          delay + 'ms 后第 ' + item.attempts + ' 次重试');\nnode.status({ fill: 'yellow', shape: 'ring', text: '退避 ' + delay + 'ms' });\nreturn null;",
+    "outputs": 2,
     "timeout": "",
     "noerr": 0,
     "initialize": "",
@@ -404,6 +404,9 @@
     "x": 980,
     "y": 660,
     "wires": [
+      [
+        "opcua"
+      ],
       [
         "opcua"
       ]
@@ -880,5 +883,53 @@
         "opc_evt_done"
       ]
     ]
+  },
+  {
+    "id": "httpin_status",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "QC运行状态",
+    "url": "/qc/status",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 160,
+    "y": 1540,
+    "wires": [
+      [
+        "fn_status"
+      ]
+    ]
+  },
+  {
+    "id": "fn_status",
+    "type": "function",
+    "z": "qcflow",
+    "name": "输出队列/死信/心跳状态",
+    "func": "const q = flow.get('buf') || [];\nconst dead = flow.get('dead') || [];\nconst counts = { PENDING: 0, SENDING: 0, FAILED: 0 };\nconst startedAt = flow.get('edgeStartedAt') || Date.now();\nif (!flow.get('edgeStartedAt')) flow.set('edgeStartedAt', startedAt);\nlet oldest = 0;\nfor (const item of q) {\n    if (counts[item.status] !== undefined) counts[item.status] += 1;\n    const ts = item.createdAt ? Date.parse(item.createdAt) : (item.sentAt || 0);\n    if (ts && (!oldest || ts < oldest)) oldest = ts;\n}\nconst seen = flow.get('ngSeen') || {};\nconst snSeen = flow.get('ngSnSeen') || {};\nconst doneSeen = flow.get('doneSeen') || {};\nconst summarize = item => item ? {\n    id: item.id || '',\n    type: item.type || '',\n    status: item.status || '',\n    attempts: item.attempts || 0,\n    lastStatus: item.lastStatus || '',\n    failedAt: item.failedAt || ''\n} : null;\nmsg.payload = {\n    ok: true,\n    service: 'ua-linqinspect-edge',\n    uptimeSec: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),\n    mesMode: flow.get('mesMode') || 'ok',\n    heartbeatFailures: flow.get('hbFails') || 0,\n    queue: {\n        total: q.length,\n        pending: counts.PENDING,\n        sending: counts.SENDING,\n        oldestAgeSec: oldest ? Math.max(0, Math.round((Date.now() - oldest) / 1000)) : 0\n    },\n    deadLetters: {\n        total: dead.length,\n        last: summarize(dead.length ? dead[dead.length - 1] : null)\n    },\n    dedup: {\n        ngFingerprints: Object.keys(seen).length,\n        ngSerialNumbers: Object.keys(snSeen).length,\n        completedWorkOrders: Object.keys(doneSeen).length\n    }\n};\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 410,
+    "y": 1540,
+    "wires": [
+      [
+        "httpres_status"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_status",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 640,
+    "y": 1540,
+    "wires": []
   }
 ]

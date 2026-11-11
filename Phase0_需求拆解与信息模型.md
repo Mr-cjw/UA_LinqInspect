@@ -1,6 +1,8 @@
 # Phase 0 交付：AI质检 → OPC UA → Node-RED → 模拟MES 工单闭环原型
 
 > 主理人：乔贯通（FDE方案架构师）｜ 日期：2026-11-08 ｜ 环境：零成本软件仿真（WSL/本机，无硬件投入）
+>
+> 文档导航：[docs/README.md](docs/README.md)｜全景：[00_项目全景与架构.md](docs/00_项目全景与架构.md)｜速查：[01_信息模型与业务规则速查.md](docs/01_信息模型与业务规则速查.md)
 
 ---
 
@@ -13,14 +15,14 @@
 ```
 [虚拟AI质检] ──写入──> [asyncua OPC UA Server] ──订阅/事件──> [Node-RED]
                                                             │  ├─ NG分支：报警
-                                                            │  ├─ 边缘缓冲（内存队列/SQLite）：
+                                                            │  ├─ 边缘缓冲（Node-RED flow context / SQLite）：
                                                             │  │    MES 不可达时暂存待补传
                                                             │  └─ 回调 ──> [模拟MES (http in 假扮)]
                                                             │                    │ 工单回执
                                                             └──────── 写回 UA <──┘
 ```
 
-> **边缘缓冲设计**（支撑 M3 断网重连测试）：缓冲组件位于 Node-RED 与模拟 MES 之间——这是链路中唯一的跨进程 HTTP 断点，也是现场网络不稳定时最可能失败的位置。网络中断时，NG 开单/报工请求先进缓冲队列（M2 用 Node-RED 内部队列实现，进阶可换 SQLite，见 §6-5），恢复后按 FIFO 补传。
+> **边缘缓冲设计**（支撑 M3 断网重连测试）：缓冲组件位于 Node-RED 与模拟 MES 之间——这是链路中唯一的跨进程 HTTP 断点，也是现场网络不稳定时最可能失败的位置。网络中断时，NG 开单/报工请求先进缓冲队列（M2 用 Node-RED flow context 实现，并由 localfilesystem 近实时落盘；事务型 SQLite 队列见 §6-5），恢复后按 FIFO 补传。
 >
 > **UA↔Node-RED 断网恢复机制（精确化，不做乐观的"自愈"表述）**：
 > - **短时断网（秒级）**：客户端应在新 SecureChannel 上 **ActivateSession 原会话**（而非新建会话），Subscription/MonitoredItem 才能继续存活、无需重建即恢复推送；`transferSubscriptions()` 列为进阶验证项。
@@ -63,7 +65,9 @@
 | `...s=QCStation.DeviceStatus` | DeviceStatus | Variable | Int32 | ReadWrite | 数字枚举含义：**0=Idle（空闲）、1=Running（运行中）、2=Fault（故障）**。工程化做法是定义自定义 EnumDataType（Part 3 §8.42），教学期以 Int32 + 注释简化，后续可升级 |
 | `...s=QCStation.CurrentWorkOrderId` | CurrentWorkOrderId | Variable | String | ReadWrite | 当前工单号，Node-RED/MES 写入 |
 | `...s=QCStation.CurrentPartSN` | CurrentPartSN | Variable | String | ReadWrite | **单件序列号（Part Traceability）**：本次检测产品的唯一 SN，由数据源/Node-RED 写入，是跨系统质量追溯的基石（关联 imageId → SN → 工单） |
-| `...s=QCStation.LastMesOrderNo` | LastMesOrderNo | Variable | String | ReadWrite | **MES 回执落地**：最近的 MES 工单号/回执号。**独立变量，绝不写回 CurrentWorkOrderId**——派工单号（我方下发）与 MES 回执号（对方返回）语义不同，混写会破坏工单状态机（M2 评审红线 4 采纳） |
+| `...s=QCStation.LastMesOrderNo` | LastMesOrderNo | Variable | String | ReadWrite | **兼容镜像**：最近一次 MES 回执号，便于旧客户端继续读取；新逻辑不得依赖它区分开单与报工。绝不写回 CurrentWorkOrderId |
+| `...s=QCStation.LastNgMesOrderNo` | LastNgMesOrderNo | Variable | String | ReadWrite | **NG 开单回执落地**：最近一次 `mesOrderNo`（`MES-*`），与完工报工回执语义分离 |
+| `...s=QCStation.LastCompletionReceiptNo` | LastCompletionReceiptNo | Variable | String | ReadWrite | **完工报工回执落地**：最近一次 `receiptNo`（`RC-*`），不被后续 NG 开单覆盖 |
 | `...s=QCStation.Inspection.LastResult` | LastResult | Variable | Boolean | ReadOnly | 最近一次判定：True=OK，False=NG |
 | `...s=QCStation.Inspection.LastDefectType` | LastDefectType | Variable | String | ReadOnly | 缺陷码（OK 时为空串），如 SCRATCH/DENT/STAIN |
 | `...s=QCStation.Inspection.LastConfidence` | LastConfidence | Variable | Double | ReadOnly | 置信度 0.0~1.0 |
@@ -99,7 +103,7 @@
 | 下发/绑定工单 | 调用 `StartInspection` Method | MES侧(Node-RED) → UA Server |
 | 读取实时判定 | 订阅 Inspection 变量 / 事件 | Node-RED ← UA Server |
 | NG 工单生成 | Node-RED 订阅 NgDetectedEvent 后 POST 模拟MES | Node-RED → 模拟MES |
-| 完工报工 | 调用 `CompleteWorkOrder`，模拟MES 回执后 Node-RED 将回执写入 `LastMesOrderNo`（**不覆盖** `CurrentWorkOrderId`） | 双向闭环 |
+| 完工报工 | 调用 `CompleteWorkOrder`，模拟MES 回执后 Node-RED 将 `receiptNo` 写入 `LastCompletionReceiptNo`，并同步 `LastMesOrderNo` 兼容镜像（**不覆盖** `CurrentWorkOrderId`） | 双向闭环 |
 
 ### 2.6 编码硬约束（全体成员遵守，评审依据）
 
@@ -129,7 +133,7 @@
 | 里程碑 | 交付物 | 前置依赖 | 责任成员 | 验收标准 |
 |---|---|---|---|---|
 | **M1** 业务口径 + UA Server 骨架（并行） | ① MES 消费契约表 ② asyncua Server 可运行代码 + requirements.txt | Phase 0 信息模型初稿（本文件） | 郝讲明 ＋ 苏跑通 | UaExpert 连上服务端口能读到全部变量、订阅到事件；**契约表必须含缺陷码枚举集合、NgRate 滑动窗口规则（含空窗口保护）、MES 调用契约细节三项，缺一不验收** |
-| **M2** Node-RED 流 + 模拟 MES | 可导入 flows.json（带状态的边缘节点，非透传管道）：事件解析/陈旧过滤 → 报警削峰 → 去重 → **缓冲队列状态机**（PENDING→SENDING→SUCCESS/FAILED，单飞行）→ 3次指数退避1s/2s/4s → 死信 → 回执写回 LastMesOrderNo；模拟MES 含故障注入（ok/5xx/timeout）+ 侧防重 | M1 确认后的节点名与事件字段 | 连得通 | **四种场景全部验证**：①正常 NG 流（回执写回 LastMesOrderNo）②MES 超时流（3 次退避后成功）③MES 5xx 流（转 FAILED 死信 + 红灯）④UA Method 拒绝流（原因打印且阻断报工）；报文与 M1 契约 §3.1 字段完全一致，occurredAt 为 ISO8601 UTC；报工仅由 WorkOrderCompletedEvent 驱动 |
+| **M2** Node-RED 流 + 模拟 MES | 可导入 flows.json（带状态的边缘节点，非透传管道）：事件解析/陈旧过滤 → 报警削峰 → 去重 → **缓冲队列状态机**（PENDING→SENDING→SUCCESS/FAILED，单飞行）→ 3次指数退避1s/2s/4s → 死信 → 按类型写回 `LastNgMesOrderNo` / `LastCompletionReceiptNo`，并同步兼容镜像；模拟MES 含故障注入（ok/5xx/timeout）+ 侧防重 | M1 确认后的节点名与事件字段 | 连得通 | **场景①~③自动化验证；④服务端拒绝自动化、流级日志人工验收**：①正常 NG 流（回执写回 `LastNgMesOrderNo`）②MES 超时流（3 次退避后成功）③MES 5xx 流（转 FAILED 死信 + 红灯）④UA Method 拒绝流（原因打印且阻断报工）；报文与 M1 契约 §3.1 字段完全一致，occurredAt 为 ISO8601 UTC；报工仅由 WorkOrderCompletedEvent 驱动 |
 | **M3** 测试验证 + 评审 | 测试用例集 + 抓包要点 + 评审意见 | M2 完整链路 | 查分明 | 连通性/异常状态码/负面用例（RO 写入、错误工单、Idle 完工、**重复开检幂等**）全部有结论；**断网重连拆两子场景验收**：① 短时断网——ActivateSession 原会话恢复、订阅不重建即续推；② 长时断网/Server 重启——检测订阅失效并主动重建、不误处理 overflow 陈旧事件（transferSubscriptions 为进阶项）；**抓包重点：CreateMonitoredItems 与 Publish 请求-响应流（Part 4 §5.12~5.13）** |
 | **M4** 汇编交付包 | 交付包五件套 + FDE 简历话术 | M1~M3 | 主理人 | 文档齐备、链路可复现、简历话术含量化结果与追问预判 |
 | （后置）M5 硬件扩展 | open62541 裁剪配置、移植文档 | 用户明确提出 | 崔裁峰 | 默认不启动 |
@@ -148,5 +152,5 @@
 2. **OPC UA + MQTT 协同模式（M4 后进阶）**："OPC UA for Control, MQTT for Streaming" 是当前工业架构常见实践——OPC UA 负责语义化信息模型、工单控制与事件通知；高频原始检测数据流（如每件产品的全量推理输出）可经 MQTT（Sparkplug B 或自定义 Topic）传输至云侧/数据分析平台。本期原型链路保持纯 OPC UA，不引入 MQTT 组件。
 3. **UA Alarm & Condition 对象（Part 5 §9）**：将 NG 报警从"事件分支"升级为规范告警模型，支持确认（Acknowledge）/退避（Shelving）。
 4. **Historical Access（Part 11）**：为统计变量开启历史存档，支撑 MES 侧历史查询。
-5. **边缘缓冲持久化（M3 可选）**：将 Node-RED 内存队列替换为 SQLite 本地缓冲（`node-red-node-sqlite`），写入即落盘、进程重启不丢，恢复后按 FIFO 补传，并基于 `serialNumber + occurredAt`（NG单）/`workOrderId`（报工）做唯一约束防重；内存队列保留为轻量 fallback。并发控制：**单飞行发送泵**（同一时刻仅一条请求在途）+ 集中写库，规避 `SQLITE_BUSY`。
+5. **边缘缓冲持久化（M3 可选）**：将 Node-RED flow context 队列替换为 SQLite 本地缓冲（`node-red-node-sqlite`），写入即落盘、进程重启不丢，恢复后按 FIFO 补传，并基于 `serialNumber + occurredAt`（NG单）/`workOrderId`（报工）做唯一约束防重；flow context 仅保留为轻量 fallback。并发控制：**单飞行发送泵**（同一时刻仅一条请求在途）+ 集中写库，规避 `SQLITE_BUSY`。
 6. **MCP 语义工具层（M4 后独立 Demo）**：基于 asyncua 生态（OPCUA4MCP 思路：asyncua + FastMCP）封装质检专用语义工具 `start_work_order` / `complete_work_order` / `get_inspection_summary` / `list_recent_ng_events`——不重新发明通用 OPC UA MCP，工具内部复用既有 Method 校验逻辑（AI Agent 调用同样会遇到工单不一致/状态校验拒绝，安全边界不放宽）；配合 Skill 沉淀"质检工单闭环"SOP，构成可演示的质检 Agent 原型，初期只读。

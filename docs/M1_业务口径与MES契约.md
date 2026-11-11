@@ -1,6 +1,8 @@
 # M1 交付：质检业务口径与 MES 消费契约
 
 > 版本：v1.0 ｜ 2026-11-08 ｜ 信息模型基准：[Phase0_需求拆解与信息模型.md](../Phase0_需求拆解与信息模型.md)
+>
+> 文档导航：[README.md](README.md)｜相关：[项目全景](00_项目全景与架构.md)｜[信息模型速查](01_信息模型与业务规则速查.md)
 
 ## 1. 缺陷码枚举集合（M1 强制产出 ①）
 
@@ -42,7 +44,7 @@
 | 3 | 开单回执 | `POST` 回 Node-RED 由模拟MES返回 | 接口1 同步响应 | `{ "mesOrderNo": "MES-<yyyyMMdd>-<seq>", "accepted": true }`；重复 SN 返回原单号 + `duplicated:true`（MES 侧防重第二道防线） |
 | 4 | 报工回执 | 同上 | 接口2 同步响应 | `{ "accepted": true, "receiptNo": "RC-<...>" }`；重复工单号同理防重 |
 
-**回执写回目标（M2 红线 4 修订）**：MES 回执写入 UA 变量 **`LastMesOrderNo`**（新增的独立 ReadWrite 变量）。原设计"写回 CurrentWorkOrderId"会覆盖派工单号、破坏工单状态机——派工单号（我方经 StartInspection 下发）与 MES 回执号（对方受理凭证）语义分离，禁止混写。
+**回执写回目标（M2 红线 4 修订）**：回执按业务语义拆分，NG 开单的 `mesOrderNo` 写入 **`LastNgMesOrderNo`**，完工报工的 `receiptNo` 写入 **`LastCompletionReceiptNo`**；两者同时写 **`LastMesOrderNo`** 作为最近回执的兼容镜像。原设计"写回 CurrentWorkOrderId"会覆盖派工单号、破坏工单状态机——派工单号（我方经 StartInspection 下发）与 MES 回执号（对方受理凭证）语义分离，禁止混写。
 
 ### 3.2 时序约定
 
@@ -52,13 +54,13 @@ UA Server                    Node-RED                     模拟MES
    │──────────────────────────>│ POST /mes/ng-order         │
    │                            │───────────────────────────>│ 生成工单
    │                            │<───────────────────────────│ 回执 mesOrderNo
-   │ 写回回执相关 Variable        │                            │
+   │ 写 LastNgMesOrderNo + 镜像   │                            │
    │<───────────────────────────│                            │
    │ WorkOrderCompletedEvent    │                            │
    │──────────────────────────>│ POST /mes/complete         │
    │                            │───────────────────────────>│ 报工归档
    │                            │<───────────────────────────│ 回执 receiptNo
-   │<───────────────────────────│ 写回 receiptNo              │
+   │<───────────────────────────│ 写 LastCompletionReceiptNo  │
 ```
 
 ### 3.3 错误处理约定
@@ -75,7 +77,7 @@ UA Server                    Node-RED                     模拟MES
 | 告警疲劳 | NG 报警设 10s 抑制窗：窗内合并计数、超窗一次性亮灯并携带合并条数（具备告警抑制机制） |
 | 陈旧事件 | 断网恢复后 age>60s 的事件直接丢弃（防 overflow 洪峰）；心跳每 5s 读 DeviceStatus，连续 3 次异常判定连接假死并告警 |
 | 空窗口 NgRate=-1.0 | 完工报工时按 3.2 传 -1.0，MES 侧显示"样本不足"，不算异常 |
-| **MES 不可达（断网）** | NG 开单/报工请求进入**边缘缓冲队列**（Node-RED 内部 queue，状态机见上），恢复后按 FIFO 补传；缓冲上限 100 条，溢出丢弃最旧并告警（M2 实现，M3 断网重连测试验证；SQLite 持久化见 Phase0 §6-5） |
+| **MES 不可达（断网）** | NG 开单/报工请求进入**边缘缓冲队列**（Node-RED flow context，状态机见上），恢复后按 FIFO 补传；缓冲上限 100 条，溢出丢弃最旧并告警。context 已由 localfilesystem 近实时落盘，可降低重启丢失风险；但它是非事务型存储，不能据此宣称 exactly-once，试点阶段应换 SQLite 事务队列（见 Phase0 §6-5） |
 
 ### 3.4 M2 验收口径
 

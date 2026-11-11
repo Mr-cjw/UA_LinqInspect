@@ -133,16 +133,31 @@ async def main():
 
         # Part Traceability：SN 已写入且事件携带 SN 字段
         part_sn = await (await root.get_child([f"{idx}:CurrentPartSN"])).read_value()
-        check("CurrentPartSN populated", bool(part_sn), f"({part_sn})")
         ev_sn = str(getattr(handler.insp_events[-1], "SerialNumber", "")) if handler.insp_events else ""
+        # 虚拟检测可能恰好在上面的两次读取之间产生新事件；短暂等待变量与事件对齐，避免测试竞态。
+        for _ in range(15):
+            if ev_sn == part_sn:
+                break
+            await asyncio.sleep(0.2)
+            part_sn = await (await root.get_child([f"{idx}:CurrentPartSN"])).read_value()
+            ev_sn = str(getattr(handler.insp_events[-1], "SerialNumber", "")) if handler.insp_events else ""
+        check("CurrentPartSN populated", bool(part_sn), f"({part_sn})")
         check("InspectionFinishedEvent carries SerialNumber", bool(ev_sn), f"({ev_sn})")
         check("event SN matches CurrentPartSN", ev_sn == part_sn, f"({ev_sn} vs {part_sn})")
 
-        # LastMesOrderNo：MES 回执落地变量存在且可写（派工单号与回执号分离）
+        # MES 回执变量：语义拆分后三个变量都存在且可写
         mes_node = await root.get_child([f"{idx}:LastMesOrderNo"])
+        ng_mes_node = await root.get_child([f"{idx}:LastNgMesOrderNo"])
+        completion_rc_node = await root.get_child([f"{idx}:LastCompletionReceiptNo"])
         await mes_node.write_value("MES-20261109-0001")
+        await ng_mes_node.write_value("MES-20261109-0002")
+        await completion_rc_node.write_value("RC-20261109-0003")
         mes_val = await mes_node.read_value()
         check("LastMesOrderNo writable and readable", mes_val == "MES-20261109-0001", f"({mes_val})")
+        check("LastNgMesOrderNo writable and readable",
+              await ng_mes_node.read_value() == "MES-20261109-0002")
+        check("LastCompletionReceiptNo writable and readable",
+              await completion_rc_node.read_value() == "RC-20261109-0003")
         wo_now = await (await root.get_child([f"{idx}:CurrentWorkOrderId"])).read_value()
         check("receipt var does not clobber CurrentWorkOrderId", wo_now == WO, f"(got {wo_now})")
 

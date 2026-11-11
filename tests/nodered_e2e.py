@@ -33,6 +33,8 @@ async def main():
         status = await root.get_child([f"{idx}:DeviceStatus"])
         cur_wo = await root.get_child([f"{idx}:CurrentWorkOrderId"])
         last_mes = await root.get_child([f"{idx}:LastMesOrderNo"])
+        last_ng_mes = await root.get_child([f"{idx}:LastNgMesOrderNo"])
+        last_completion_rc = await root.get_child([f"{idx}:LastCompletionReceiptNo"])
         stats = await root.get_child([f"{idx}:Statistics"])
         stats_ng = await stats.get_child([f"{idx}:NgCount"])
         stats_all = await stats.get_child([f"{idx}:InspectCount"])
@@ -66,6 +68,8 @@ async def main():
         results.append(ok("NG order receipt appears in LastMesOrderNo",
                           mes_no != initial_mes and bool(re.match(r"^MES-\d{8}-\d{4}$", mes_no)),
                           f"(got {mes_no or 'empty'}, initial {initial_mes or 'empty'})"))
+        results.append(ok("NG order receipt also lands in LastNgMesOrderNo",
+                          str(await read_val(last_ng_mes) or "") == mes_no))
         results.append(ok("CurrentWorkOrderId not clobbered", str(await read_val(cur_wo) or "") == WO))
         ng_after = int(await read_val(stats_ng) or 0)
         all_after = int(await read_val(stats_all) or 0)
@@ -86,6 +90,8 @@ async def main():
         results.append(ok("completion receipt appears in LastMesOrderNo",
                           receipt != after_ng and bool(re.match(r"^RC-\d{8}-\d{4}$", receipt)),
                           f"(got {receipt or 'empty'}, after NG {after_ng or 'empty'})"))
+        results.append(ok("completion receipt also lands in LastCompletionReceiptNo",
+                          str(await read_val(last_completion_rc) or "") == receipt))
 
     passed = sum(1 for r in results if r)
     print(f"===== NODERED E2E: {passed}/{len(results)} passed =====")
