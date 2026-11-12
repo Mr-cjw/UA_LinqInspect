@@ -1,0 +1,15 @@
+{
+  "name": "ua-linqinspect-nodered-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "patch-package --patch-dir ../patches"
+  },
+  "dependencies": {
+    "node-red": "^5.0.9",
+    "node-red-contrib-opcua": "^0.2.355"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
+  }
+}

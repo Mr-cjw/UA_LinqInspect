@@ -8,10 +8,19 @@ __pycache__/
 .conda-pkgs/
 
 # Node-RED 本地运行时与缓存
-.node-red/
+.node-red/*
+!.node-red/package.json
+!.node-red/package-lock.json
 .npm-cache/
 .appdata/
 .localappdata/
+
+# Node dependency management
+/node_modules/
+# Patch sources and manifests are tracked
+!/package.json
+!/package-lock.json
+!/patches/
 
 # 构建/下载/临时目录
 .tmp/
@@ -29,3 +38,8 @@ data/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# Local OPC UA certificates and private keys
+certs/
+.node-red/flows_cred.json
+.node-red/flows.json

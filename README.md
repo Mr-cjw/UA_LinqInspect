@@ -71,13 +71,70 @@ python -m pip install -r server/requirements.txt
 python -m pip check
 ```
 
-### 2. 启动 OPC UA Server
+### 2. 生成本地 CA 证书（首次运行或轮换时）
+
+本项目使用本地 Root CA 签发 Server 与 Client 证书，证书目录 `certs/` 已被 Git 忽略。
+首次运行、或需要轮换证书时执行：
+
+```bash
+cd ~/UA_LinqInspect
+.venv/bin/python scripts/setup_pki.py
+```
+
+脚本会生成：
+
+- Root CA：`certs/ca/ca_key.pem`、`certs/ca/ca_cert.pem`（另有 DER 副本）
+- CA 吊销列表：`certs/ca/ca_crl.pem`（另有 DER 副本；Node-RED 的 node-opcua 校验需要）
+- Server：`certs/server/server_cert.der`、`certs/server/server_key.pem`
+- Client：`certs/client/client_cert.der`、`certs/client/client_key.pem`
+- 信任材料：`certs/server/`、`certs/client/`、`certs/trusted_clients/` 下的
+  `ca_cert.*`，以及 `certs/server/`、`certs/client/` 下的 `ca_crl.*`
+
+Server 证书的 SAN 包含 `urn:freeopcua:python:server`、`localhost`、本机 hostname 和
+`127.0.0.1`。已有证书默认不会被覆盖；确认要重新签发整套证书时使用 `--force`：
+
+```bash
+.venv/bin/python scripts/setup_pki.py --force
+```
+
+轮换 CA 会使旧 Server/Client 证书全部失效。执行 `--force` 后必须重启 OPC UA Server
+和 Node-RED，并确认 Node-RED `ep1` 仍指向 `certs/client/client_cert.der` 与
+`certs/client/client_key.pem`。`certs/ca/ca_key.pem` 是 Root CA 私钥，必须保密，
+不要提交或复制到客户端机器。
+
+Node-RED 使用的 `node-opcua` 有独立的 PKI 目录，需要把 CA 证书和 CRL 复制进去，
+否则会报 `BadCertificateChainIncomplete` 或 `BadCertificateRevocationUnknown`。
+Linux 下默认目录为 `${XDG_CONFIG_HOME:-$HOME/.config}/node-red-opcua-nodejs/PKI`：
+
+```bash
+cd ~/UA_LinqInspect
+NR_PKI="${XDG_CONFIG_HOME:-$HOME/.config}/node-red-opcua-nodejs/PKI"
+mkdir -p "$NR_PKI/trusted/certs" "$NR_PKI/trusted/crl" \
+         "$NR_PKI/issuers/certs" "$NR_PKI/issuers/crl"
+cp certs/server/ca_cert.pem "$NR_PKI/trusted/certs/ua-linqinspect-root-ca.pem"
+cp certs/server/ca_cert.pem "$NR_PKI/issuers/certs/ua-linqinspect-root-ca.pem"
+cp certs/server/ca_crl.pem  "$NR_PKI/trusted/crl/ua-linqinspect-root-ca-crl.pem"
+cp certs/server/ca_crl.pem  "$NR_PKI/issuers/crl/ua-linqinspect-root-ca-crl.pem"
+```
+
+如果日志中的 `clientCertificateManager.rootDir` 不是上述路径，以日志打印的实际路径
+为准。`certs/trusted_clients/` 只放 CA 证书，不要放 CRL。
+
+Server 启动时会检查自身证书有效期：剩余 30 天以内或已经过期时输出 `WARNING`，
+应尽快重新运行脚本并重启两端服务。
+
+### 3. 启动 OPC UA Server
 
 另开一个终端：
 
 ```bash
 cd ~/UA_LinqInspect
 UA_ENDPOINT_PORT=4840 \
+UA_SERVER_CERT="$PWD/certs/server/server_cert.der" \
+UA_SERVER_PRIVATE_KEY="$PWD/certs/server/server_key.pem" \
+UA_TRUSTED_CLIENT_CERTS_DIR="$PWD/certs/trusted_clients" \
+UA_ADMIN_USER=admin \
+UA_ADMIN_PASS='replace-with-a-strong-password' \
 QC_AUTO_INSPECT=1 \
 QC_NG_PROBABILITY=0.5 \
 QC_INSPECT_INTERVAL=1.0 \
@@ -85,8 +142,11 @@ QC_INSPECT_INTERVAL=1.0 \
 ```
 
 `QC_AUTO_INSPECT=0` 可关闭内置虚拟质检（后续接真实 YOLOv8 时使用）。
+Server 只启用 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目录缺失/无效时会
+拒绝启动，不会回退到 `NoSecurity`。`UA_ADMIN_USER` / `UA_ADMIN_PASS` 是唯一可写
+身份，匿名客户端即使携带受信任证书也只能只读。
 
-### 3. 启动 Node-RED
+### 4. 启动 Node-RED
 
 本地 Node-RED 运行时位于 `.node-red/`。首次安装或重建时执行：
 
@@ -103,7 +163,7 @@ cd ~/UA_LinqInspect
     --userDir "$PWD/.node-red" --port 1880 --no-telemetry
 ```
 
-### 4. 运行验证
+### 5. 运行验证
 
 Server 与 Node-RED 都在运行时，另开终端执行：
 
@@ -135,13 +195,43 @@ conda create --prefix .conda python=3.11 -y
 & '.conda\python.exe' -m pip check
 ```
 
-### 2. 启动 OPC UA Server
+### 2. 生成本地 CA 证书
+
+```powershell
+cd D:\UA_LinqInspect
+& '.conda\python.exe' 'scripts\setup_pki.py'
+# 轮换整套 CA/Server/Client 证书：
+& '.conda\python.exe' 'scripts\setup_pki.py' --force
+```
+
+证书路径和轮换注意事项与 Linux 章节相同；轮换后重启 Server 与 Node-RED。
+
+Windows 下 Node-RED 的 PKI 目录由 `APPDATA` 决定（本项目启动脚本会把它指向
+`.appdata`），同步 CA 和 CRL：
+
+```powershell
+$nrPki = "$PWD\.appdata\node-red-opcua-nodejs\Config\PKI"
+New-Item -ItemType Directory -Force `
+    "$nrPki\trusted\certs", "$nrPki\trusted\crl", `
+    "$nrPki\issuers\certs", "$nrPki\issuers\crl" | Out-Null
+Copy-Item 'certs\server\ca_cert.pem' "$nrPki\trusted\certs\ua-linqinspect-root-ca.pem" -Force
+Copy-Item 'certs\server\ca_cert.pem' "$nrPki\issuers\certs\ua-linqinspect-root-ca.pem" -Force
+Copy-Item 'certs\server\ca_crl.pem'  "$nrPki\trusted\crl\ua-linqinspect-root-ca-crl.pem" -Force
+Copy-Item 'certs\server\ca_crl.pem'  "$nrPki\issuers\crl\ua-linqinspect-root-ca-crl.pem" -Force
+```
+
+### 3. 启动 OPC UA Server
 
 另开一个 PowerShell 窗口：
 
 ```powershell
 cd D:\UA_LinqInspect
 $env:UA_ENDPOINT_PORT = '4840'
+$env:UA_SERVER_CERT = "$PWD\certs\server\server_cert.der"
+$env:UA_SERVER_PRIVATE_KEY = "$PWD\certs\server\server_key.pem"
+$env:UA_TRUSTED_CLIENT_CERTS_DIR = "$PWD\certs\trusted_clients"
+$env:UA_ADMIN_USER = 'admin'
+$env:UA_ADMIN_PASS = 'replace-with-a-strong-password'
 $env:QC_AUTO_INSPECT = '1'
 $env:QC_NG_PROBABILITY = '0.5'
 $env:QC_INSPECT_INTERVAL = '1.0'
@@ -150,7 +240,7 @@ $env:QC_INSPECT_INTERVAL = '1.0'
 
 `QC_AUTO_INSPECT=0` 可关闭内置虚拟质检（后续接真实 YOLOv8 时使用）。
 
-### 3. 启动 Node-RED
+### 4. 启动 Node-RED
 
 本项目使用工作区内的 Node-RED 运行时（Node-RED 5.0.9 / Node 24.14.0 /
 `node-red-contrib-opcua@0.2.355`）。首次安装或重建时执行：
@@ -174,7 +264,7 @@ $env:LOCALAPPDATA = "$PWD\.localappdata"
 > 覆盖 `APPDATA` / `LOCALAPPDATA` 是必需的，用于避开 `node-opcua` 在用户目录创建
 > PKI 文件时的权限问题。
 
-### 4. 运行验证
+### 5. 运行验证
 
 ```powershell
 cd D:\UA_LinqInspect
@@ -192,7 +282,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_5xx'
 Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 ```
 
-### 5. Node-RED 事件订阅注意点
+### 6. Node-RED 事件订阅注意点
 
 - 必须显式订阅 `ns=2;s=NgDetectedEventType` 与 `ns=2;s=WorkOrderCompletedEventType`；
   只订阅 BaseEventType（`i=2041`）在当前 Server/contrib 组合下可能收不到自定义字段。

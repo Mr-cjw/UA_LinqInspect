@@ -9,39 +9,320 @@
 
 环境变量:
   UA_ENDPOINT_PORT    监听端口（默认 4840）
+  UA_BIND_ADDRESS     监听地址（默认 127.0.0.1；如需对外服务显式设置为受控网卡）
+  UA_ADMIN_USER       可写管理员账号（未配置时仅允许匿名只读）
+  UA_ADMIN_PASS       可写管理员密码（未配置时仅允许匿名只读）
+  UA_SERVER_CERT      服务器证书路径（必填，.pem/.der；启动时检查 30 天到期警告）
+  UA_SERVER_PRIVATE_KEY 服务器私钥路径（必填）
+  UA_SERVER_PRIVATE_KEY_PASSWORD 私钥密码（可选）
+  UA_TRUSTED_CLIENT_CERTS_DIR 受信客户端证书目录（必填，至少包含一个 .pem/.der）
+  UA_AUDIT_LOG        审计日志路径（默认 server_audit.log，自动轮转）
   QC_AUTO_INSPECT     是否启动虚拟质检循环（1=开，默认；0=关，交给真实 YOLOv8/外部写入）
   QC_INSPECT_INTERVAL 检测间隔秒（默认 2.0）
   QC_NG_PROBABILITY   虚拟 NG 概率（默认 0.3）
   QC_NG_WINDOW        NgRate 滑动窗口大小（默认 20）
 """
 import asyncio
+import hmac
+import json
 import logging
 import os
 import random
 from collections import deque
+from contextvars import ContextVar
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from types import MethodType
 
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 from asyncua import Server, ua
+from asyncua.crypto import uacrypto
+from asyncua.crypto.permission_rules import SimpleRoleRuleset, User, UserRole
+from asyncua.crypto.truststore import TrustStore
+from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
+from asyncua.server.internal_session import InternalSession
+from asyncua.server.user_managers import UserManager
 
 NS_URI = "urn:fde:linqinspect:qc"
 DEFECT_CODES = ("SCRATCH", "DENT", "STAIN", "BURR", "MISSING")
 
 # ---- 可配置项（不硬编码端口） ----
 PORT = int(os.getenv("UA_ENDPOINT_PORT", "4840"))
+BIND_ADDRESS = os.getenv("UA_BIND_ADDRESS", "").strip() or "127.0.0.1"
+ADMIN_USER = os.getenv("UA_ADMIN_USER", "")
+ADMIN_PASS = os.getenv("UA_ADMIN_PASS", "")
+SERVER_CERT_PATH = os.getenv("UA_SERVER_CERT", "").strip()
+SERVER_KEY_PATH = os.getenv("UA_SERVER_PRIVATE_KEY", "").strip()
+SERVER_KEY_PASSWORD = os.getenv("UA_SERVER_PRIVATE_KEY_PASSWORD", "")
+CLIENT_TRUST_DIR = os.getenv("UA_TRUSTED_CLIENT_CERTS_DIR", "").strip()
+AUDIT_LOG_PATH = os.getenv("UA_AUDIT_LOG", "server_audit.log").strip() or "server_audit.log"
 AUTO_INSPECT = os.getenv("QC_AUTO_INSPECT", "1") != "0"
 INSPECT_INTERVAL = float(os.getenv("QC_INSPECT_INTERVAL", "2.0"))
 NG_PROBABILITY = float(os.getenv("QC_NG_PROBABILITY", "0.3"))
 WINDOW_SIZE = int(os.getenv("QC_NG_WINDOW", "20"))
+CERT_EXPIRY_WARNING_DAYS = 30
 
 # DeviceStatus 数字枚举含义: 0=Idle, 1=Running, 2=Fault
 ST_IDLE, ST_RUNNING, ST_FAULT = 0, 1, 2
 
 _log = logging.getLogger("qc_server")
+_method_user: ContextVar[User | None] = ContextVar("qc_method_user", default=None)
 
 
 def _val(v):
     """兼容 asyncua 回调入参为 Variant 或裸值两种情况。"""
     return v.Value if isinstance(v, ua.Variant) else v
+
+
+def _audit_user_name(user: User | None) -> str:
+    if user is None or user.role == UserRole.Anonymous:
+        return "Anonymous"
+    return user.name or "Authenticated"
+
+
+def _format_method_result(result) -> str:
+    if isinstance(result, (list, tuple)):
+        if not result:
+            return "accepted"
+        accepted = bool(_val(result[0]))
+        detail = _val(result[1]) if len(result) > 1 else ""
+        verdict = "accepted" if accepted else "rejected"
+        detail_text = str(detail).strip()
+        prefix = f"{verdict}:"
+        if detail_text.lower().startswith(prefix):
+            detail_text = detail_text[len(prefix):].strip()
+        return f"{verdict}: {detail_text}" if detail_text else verdict
+    return str(result)
+
+
+def _audit_method_call(method_name: str, arguments: dict, result) -> None:
+    _log.info(
+        "AUDIT ts=%s method=%s user=%s args=%s result=%s",
+        datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        method_name,
+        _audit_user_name(_method_user.get()),
+        json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str),
+        _format_method_result(result),
+    )
+
+
+class _AuditedInternalSession(InternalSession):
+    """Expose the session user to method callbacks without changing asyncua call signatures."""
+
+    async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
+        token = _method_user.set(self.user)
+        try:
+            return await super().call(params)
+        finally:
+            _method_user.reset(token)
+
+
+def _install_audited_session_factory(server: Server) -> None:
+    """Use the audited session subclass for client connections on this server instance."""
+    iserver = server.iserver
+
+    def _create_session(iserver_self, name, user=User(role=UserRole.Anonymous), external=False):
+        return _AuditedInternalSession(
+            iserver_self,
+            iserver_self.aspace,
+            iserver_self.subscription_service,
+            name,
+            user=user,
+            external=external,
+        )
+
+    iserver.create_session = MethodType(_create_session, iserver)
+
+
+class SecurityConfigError(RuntimeError):
+    """证书、私钥或客户端信任列表缺失/无效，服务必须拒绝启动。"""
+
+
+def _require_config_file(env_name: str, raw_value: str) -> Path:
+    if not raw_value:
+        raise SecurityConfigError(
+            f"{env_name} is required for Basic256Sha256_SignAndEncrypt; "
+            "refusing to start without explicit certificate configuration"
+        )
+    path = Path(raw_value).expanduser()
+    try:
+        if not path.is_file():
+            raise SecurityConfigError(f"{env_name}={raw_value!r} does not point to a readable file")
+        with path.open("rb"):
+            pass
+    except OSError as exc:
+        raise SecurityConfigError(f"{env_name}={raw_value!r} is not readable: {exc}") from exc
+    return path
+
+
+def _require_config_dir(env_name: str, raw_value: str) -> Path:
+    if not raw_value:
+        raise SecurityConfigError(
+            f"{env_name} is required for Basic256Sha256_SignAndEncrypt; "
+            "refusing to start without a trusted client certificate directory"
+        )
+    path = Path(raw_value).expanduser()
+    try:
+        if not path.is_dir():
+            raise SecurityConfigError(f"{env_name}={raw_value!r} does not point to a readable directory")
+    except OSError as exc:
+        raise SecurityConfigError(f"{env_name}={raw_value!r} is not readable: {exc}") from exc
+    return path
+
+
+async def _load_trust_store(raw_dir: str) -> TrustStore:
+    trust_dir = _require_config_dir("UA_TRUSTED_CLIENT_CERTS_DIR", raw_dir)
+    try:
+        cert_files = sorted(
+            path for path in trust_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in (".pem", ".der")
+        )
+    except OSError as exc:
+        raise SecurityConfigError(
+            f"Failed to read UA_TRUSTED_CLIENT_CERTS_DIR={str(trust_dir)!r}: {exc}"
+        ) from exc
+    if not cert_files:
+        raise SecurityConfigError(
+            f"UA_TRUSTED_CLIENT_CERTS_DIR={str(trust_dir)!r} contains no .pem/.der client certificates; "
+            "refusing to start with an empty trust list"
+        )
+
+    for cert_file in cert_files:
+        try:
+            await uacrypto.load_certificate(cert_file)
+        except Exception as exc:
+            raise SecurityConfigError(f"Invalid trusted client certificate {cert_file}: {exc}") from exc
+
+    trust_store = TrustStore([trust_dir], [])
+    try:
+        await trust_store.load()
+    except Exception as exc:
+        raise SecurityConfigError(
+            f"Failed to load trusted client certificates from {trust_dir}: {exc}"
+        ) from exc
+
+    _log.info("Loaded %d trusted client certificate file(s) from %s", len(cert_files), trust_dir)
+    return trust_store
+
+
+def _verify_server_key_pair(certificate, private_key) -> None:
+    def public_key_der(key) -> bytes:
+        return key.public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
+    try:
+        certificate_key = public_key_der(certificate.public_key())
+        private_key_public = public_key_der(private_key.public_key())
+    except Exception as exc:
+        raise SecurityConfigError(f"Failed to inspect server certificate/private key: {exc}") from exc
+    if not hmac.compare_digest(certificate_key, private_key_public):
+        raise SecurityConfigError(
+            "UA_SERVER_CERT and UA_SERVER_PRIVATE_KEY do not form a matching key pair; refusing to start"
+        )
+
+
+def _warn_if_server_cert_expiring(certificate, cert_path: Path) -> None:
+    not_after = getattr(certificate, "not_valid_after_utc", None)
+    if not_after is None:
+        not_after = certificate.not_valid_after.replace(tzinfo=timezone.utc)
+    remaining = not_after - datetime.now(timezone.utc)
+    days = remaining.total_seconds() / 86400
+    if days < 0:
+        _log.warning(
+            "Server certificate %s expired %.1f days ago (notAfter=%s)",
+            cert_path, abs(days), not_after.isoformat(),
+        )
+    elif days <= CERT_EXPIRY_WARNING_DAYS:
+        _log.warning(
+            "Server certificate %s expires in %.1f days (notAfter=%s); renew it before expiry",
+            cert_path, days, not_after.isoformat(),
+        )
+    else:
+        _log.info(
+            "Server certificate %s expires in %.1f days (notAfter=%s)",
+            cert_path, days, not_after.isoformat(),
+        )
+
+
+async def _load_server_identity(server: Server, cert_path: Path, key_path: Path) -> None:
+    try:
+        await server.load_certificate(cert_path)
+    except Exception as exc:
+        raise SecurityConfigError(f"Failed to load UA_SERVER_CERT from {cert_path}: {exc}") from exc
+    try:
+        await server.load_private_key(key_path, SERVER_KEY_PASSWORD or None)
+    except Exception as exc:
+        raise SecurityConfigError(f"Failed to load UA_SERVER_PRIVATE_KEY from {key_path}: {exc}") from exc
+
+    certificate = server.iserver.certificate
+    private_key = server.iserver.private_key
+    if certificate is None or private_key is None:
+        raise SecurityConfigError("Server certificate/private key failed to load; refusing to start")
+    _verify_server_key_pair(certificate, private_key)
+    _warn_if_server_cert_expiring(certificate, cert_path)
+
+
+class QCUserManager(UserManager):
+    """匿名用户只读；仅管理员用户名/密码匹配时授予读写与 Method 调用权限。
+
+    客户端证书只用于 SecureChannel 与证书校验，不参与用户身份授权。
+    """
+
+    def __init__(self, admin_user: str = "", admin_pass: str = "", trust_store: TrustStore | None = None):
+        self._admin_user = admin_user or ""
+        self._admin_pass = admin_pass or ""
+        self._trust_store = trust_store
+
+    def get_user(self, iserver, username=None, password=None, certificate=None):
+        # OPC UA 匿名会话仍会携带 SecureChannel 的对端证书（certificate 参数）；
+        # 该证书只证明通道身份，不能把 Anonymous 身份提升为可写用户。
+        if certificate and not self._is_trusted_client_certificate(certificate):
+            return None
+        if not username:
+            return User(role=UserRole.Anonymous)
+
+        supplied_username = self._as_text(username)
+        supplied_password = self._as_text(password)
+        user_ok = bool(self._admin_user) and hmac.compare_digest(supplied_username, self._admin_user)
+        password_ok = bool(self._admin_pass) and hmac.compare_digest(supplied_password, self._admin_pass)
+        if user_ok and password_ok:
+            return User(role=UserRole.User, name=supplied_username)
+        return None
+
+    def _is_trusted_client_certificate(self, certificate) -> bool:
+        if self._trust_store is None:
+            return False
+        try:
+            cert = certificate if isinstance(certificate, x509.Certificate) else uacrypto.x509_from_der(certificate)
+            return cert is not None and bool(self._trust_store.is_trusted(cert))
+        except Exception:
+            _log.warning("Rejected client certificate because it could not be validated", exc_info=True)
+            return False
+
+    @staticmethod
+    def _as_text(value) -> str:
+        if isinstance(value, (bytes, bytearray)):
+            return value.decode("utf-8", errors="replace")
+        return "" if value is None else str(value)
+
+
+class QCAnonymousReadOnlyRuleset(SimpleRoleRuleset):
+    """匿名角色可读/浏览/订阅，但禁止 Write 与 Call；普通用户保留读写权限。"""
+
+    _PRIVILEGED_SERVICES = {
+        ua.NodeId(ua.ObjectIds.WriteRequest_Encoding_DefaultBinary),
+        ua.NodeId(ua.ObjectIds.CallRequest_Encoding_DefaultBinary),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._permission_dict[UserRole.Anonymous] = (
+            set(self._permission_dict[UserRole.User]) - self._PRIVILEGED_SERVICES
+        )
 
 
 class QCStation:
@@ -149,6 +430,16 @@ class QCStation:
 
     # ---------- Method 实现 ----------
     async def _start_inspection(self, parent, work_order_id, target_count):
+        audit_args = {"workOrderId": _val(work_order_id), "targetCount": _val(target_count)}
+        try:
+            result = await self._start_inspection_impl(work_order_id, target_count)
+        except Exception as exc:
+            _audit_method_call("StartInspection", audit_args, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("StartInspection", audit_args, result)
+        return result
+
+    async def _start_inspection_impl(self, work_order_id, target_count):
         wo, tc = _val(work_order_id), _val(target_count)
         if not wo or not str(wo).strip():
             return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: empty workOrderId", ua.VariantType.String)]
@@ -170,6 +461,16 @@ class QCStation:
         return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(f"started {self.work_order_id}, target={self.target_count}", ua.VariantType.String)]
 
     async def _complete_work_order(self, parent, work_order_id):
+        audit_args = {"workOrderId": _val(work_order_id)}
+        try:
+            result = await self._complete_work_order_impl(work_order_id)
+        except Exception as exc:
+            _audit_method_call("CompleteWorkOrder", audit_args, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("CompleteWorkOrder", audit_args, result)
+        return result
+
+    async def _complete_work_order_impl(self, work_order_id):
         wo = str(_val(work_order_id) or "")
         # 校验链：一致性（Phase0 评审意见 #1）→ 状态前置
         if not self.work_order_id:
@@ -199,6 +500,15 @@ class QCStation:
         return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(summary, ua.VariantType.String)]
 
     async def _reset_counters(self, parent):
+        try:
+            result = await self._reset_counters_impl()
+        except Exception as exc:
+            _audit_method_call("ResetCounters", {}, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("ResetCounters", {}, result)
+        return result
+
+    async def _reset_counters_impl(self):
         self.inspect_count = self.ok_count = self.ng_count = 0
         self.window.clear()
         await self._write_stats()
@@ -277,17 +587,55 @@ class QCStation:
 
 
 async def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    server = Server()
+    audit_log_path = Path(AUDIT_LOG_PATH).expanduser()
+    if not audit_log_path.is_absolute():
+        audit_log_path = Path.cwd() / audit_log_path
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_format = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_format)
+    audit_handler = RotatingFileHandler(
+        audit_log_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    audit_handler.setFormatter(log_format)
+    logging.basicConfig(level=logging.WARNING, handlers=[console_handler, audit_handler], force=True)
+    _log.setLevel(logging.INFO)
+    logging.getLogger("asyncua").setLevel(logging.WARNING)
+    _log.info("Audit log rotating file: %s", audit_log_path)
+
+    cert_path = _require_config_file("UA_SERVER_CERT", SERVER_CERT_PATH)
+    key_path = _require_config_file("UA_SERVER_PRIVATE_KEY", SERVER_KEY_PATH)
+    trust_store = await _load_trust_store(CLIENT_TRUST_DIR)
+
+    server = Server(user_manager=QCUserManager(ADMIN_USER, ADMIN_PASS, trust_store))
     await server.init()
-    server.set_endpoint(f"opc.tcp://0.0.0.0:{PORT}")
-    # 教学环境：放开安全策略，便于 UaExpert 直连（生产必须启用证书，Part 6 §6.4）
-    server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+    _install_audited_session_factory(server)
+    server.set_endpoint(f"opc.tcp://{BIND_ADDRESS}:{PORT}")
+    await _load_server_identity(server, cert_path, key_path)
+    server.set_certificate_validator(
+        CertificateValidator(
+            CertificateValidatorOptions.TRUSTED_VALIDATION | CertificateValidatorOptions.PEER_CLIENT,
+            trust_store=trust_store,
+        )
+    )
+    # 仅暴露签名并加密的端点；证书/私钥/信任列表任一缺失都会在启动前失败，禁止回退 NoSecurity。
+    server.set_security_policy(
+        [ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt],
+        permission_ruleset=QCAnonymousReadOnlyRuleset(),
+    )
+
+    if not ADMIN_USER or not ADMIN_PASS:
+        _log.warning(
+            "UA_ADMIN_USER/UA_ADMIN_PASS not configured; clients are read-only"
+        )
 
     station = QCStation(server)
     await station.build()
 
-    _log.info("OPC UA Server listening at opc.tcp://localhost:%d (ns=%d)", PORT, station.idx)
+    _log.info(
+        "OPC UA Server listening at opc.tcp://%s:%d (ns=%d, policy=Basic256Sha256_SignAndEncrypt)",
+        BIND_ADDRESS, PORT, station.idx,
+    )
     async with server:
         if AUTO_INSPECT:
             task = asyncio.create_task(station.inspection_loop())
@@ -302,5 +650,8 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except SecurityConfigError as exc:
+        _log.critical("Startup aborted: %s", exc)
+        raise SystemExit(1) from None
     except KeyboardInterrupt:
         pass

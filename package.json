@@ -1,0 +1,12 @@
+{
+  "name": "ua-linqinspect",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "patch-package"
+  },
+  "devDependencies": {
+    "node-red-contrib-opcua": "0.2.355",
+    "patch-package": "^8.0.1"
+  }
+}

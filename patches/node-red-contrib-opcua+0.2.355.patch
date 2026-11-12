@@ -1,0 +1,195 @@
+diff --git a/node_modules/node-red-contrib-opcua/opcua/102-opcuaclient.js b/node_modules/node-red-contrib-opcua/opcua/102-opcuaclient.js
+index 509fc1a..d3a7b11 100644
+--- a/node_modules/node-red-contrib-opcua/opcua/102-opcuaclient.js
++++ b/node_modules/node-red-contrib-opcua/opcua/102-opcuaclient.js
+@@ -119,13 +119,11 @@ module.exports = function (RED) {
+     }
+ 
+     connectionOption.connectionStrategy = {
+-      // maxRetry 0: a single connect attempt, fail fast. The previous value
+-      // (10512000 retries, "10 years") made connect() retry silently forever
+-      // against a powered-off PLC - no error, no status change, nothing the
+-      // user could see. With maxRetry 0 the (re)connect fails fast and the
+-      // liveness watchdog below drives the retries, updating the node status
+-      // on every attempt.
+-      maxRetry: 0,
++      // node-opcua has no true Infinity. Use its largest practical retry
++      // count so connection attempts never give up, with exponential backoff
++      // between attempts. The liveness watchdog below still forces a full
++      // session/subscription rebuild if node-opcua's internal repair wedges.
++      maxRetry: 10512000, // ~10 years of retries
+       initialDelay: 5000, // 5s
+       maxDelay: 30 * 1000 // 30s
+     };
+@@ -178,6 +176,7 @@ module.exports = function (RED) {
+     // Original subscribe msgs, kept across (re)connects so subscriptions can
+     // be replayed automatically after a forced reconnection.
+     let autoResubscribe = new Map();
++    let autoResubscribeEvents = new Map();
+ 
+     // Liveness watchdog: node-opcua's internal keepalive/repair can get stuck
+     // (e.g. its state machine wedged in "reconnecting"), in which case a hard
+@@ -398,7 +397,9 @@ module.exports = function (RED) {
+           automaticallyAcceptUnknownCertificate: true,
+           // transportSettings: transportSettings // Some 
+           applicationName: connectionOption.applicationName,
+-          applicationUri: connectionOption.applicationUri
++          applicationUri: connectionOption.applicationUri,
++          certificateFile: connectionOption.certificateFile,
++          privateKeyFile: connectionOption.privateKeyFile
+       };
+       try {
+         // Use empty 0.0.0.0 address as "no client" initial value
+@@ -443,12 +444,78 @@ module.exports = function (RED) {
+       }
+     }
+ 
++    function disconnect_client_with_timeout(client, label, callback) {
++      let settled = false;
++      let timer = null;
++      const finish = function (reason) {
++        if (settled) return;
++        settled = true;
++        if (timer) clearTimeout(timer);
++        if (reason) {
++          verbose_warn(label + " did not complete: " + reason + "; forcing teardown");
++        }
++        if (node.client === client) {
++          node.client = null;
++        }
++        callback();
++      };
++      if (!client) {
++        finish();
++        return;
++      }
++      if (typeof client.removeListener === "function") {
++        client.removeListener("connection_reestablished", reestablish);
++        client.removeListener("backoff", backoff);
++        client.removeListener("start_reconnection", reconnection);
++      }
++      // A dead socket can leave node-opcua's disconnect callback pending
++      // forever. Bound the wait so reconnection can never wedge in teardown.
++      timer = setTimeout(function () { finish("3s timeout"); }, 3000);
++      try {
++        client.disconnect(function () {
++          verbose_log(label + " completed");
++          finish();
++        });
++      } catch (err) {
++        finish("disconnect error: " + stringify(err));
++      }
++    }
++
++    function close_session_with_timeout(session, callback) {
++      let settled = false;
++      let timer = null;
++      const finish = function (err, reason) {
++        if (settled) return;
++        settled = true;
++        if (timer) clearTimeout(timer);
++        if (reason) {
++          verbose_warn("Session close did not complete: " + reason + "; forcing teardown");
++        }
++        if (node.session === session) {
++          node.session = null;
++        }
++        callback(err);
++      };
++      if (!session) {
++        finish(null);
++        return;
++      }
++      timer = setTimeout(function () { finish(new Error("session close timeout")); }, 3000);
++      try {
++        session.close(function (err) { finish(err); });
++      } catch (err) {
++        finish(err, "close error: " + stringify(err));
++      }
++    }
++
+     function reset_opcua_client(callback) {
+       if (node.client) {
+-        node.client.disconnect(function () {
++        disconnect_client_with_timeout(node.client, "Client disconnect", function () {
+           verbose_log("Client disconnected!");
+           create_opcua_client(callback);
+         });
++      } else {
++        create_opcua_client(callback);
+       }
+     }
+ 
+@@ -696,6 +763,16 @@ module.exports = function (RED) {
+             subscribe_action_input(msg);
+           }
+         }
++        if (autoResubscribeEvents.size > 0) {
++          verbose_log("Auto re-subscribing " + autoResubscribeEvents.size + " event subscription(s) after (re)connect");
++          for (const eventMsg of autoResubscribeEvents.values()) {
++            try {
++              await subscribe_events_async(eventMsg);
++            } catch (err) {
++              node_error("Event re-subscription failed after reconnect: " + stringify(err));
++            }
++          }
++        }
+         start_liveness_watchdog();
+         for (let i in cmdQueue) {
+           processInputMsg(cmdQueue[i]);
+@@ -2530,6 +2607,7 @@ module.exports = function (RED) {
+         verbose_warn("Cannot delete, no subscription existing!");
+       } else {
+         autoResubscribe.clear(); // user deleted the subscription: no auto re-subscribe
++        autoResubscribeEvents.clear();
+       }
+       if (subscription && subscription.isActive) {
+         // otherwise check if its terminated start to renew the subscription
+@@ -2682,6 +2760,7 @@ module.exports = function (RED) {
+ 
+     async function subscribe_events_async(msg) {
+       verbose_log("subscribing events for " + msg.eventTypeIds);
++      autoResubscribeEvents.set(msg.topic + "|" + msg.eventTypeIds, msg);
+       let eventTypeId = opcua.resolveNodeId(msg.eventTypeIds);
+       let fields = await opcua.extractConditionFields(node.session, eventTypeId); // works with all eventTypes
+ 
+@@ -2719,7 +2798,12 @@ module.exports = function (RED) {
+     }
+ 
+     function subscribe_events_input(msg) {
+-      subscribe_events_async(msg);
++      subscribe_events_async(msg).catch(function (err) {
++        // A periodic re-arm or reconnect replay can race a dead channel.
++        // Never let that become an unhandled rejection that kills Node-RED.
++        node_error("Event subscription failed: " + stringify(err));
++        set_node_error_status_to("subscription error", String(err && err.message || err));
++      });
+     }
+ 
+     function reconnect(msg) {
+@@ -2766,9 +2850,8 @@ module.exports = function (RED) {
+       const doReconnect = () => {
+         if (node.client) {
+           verbose_log("Disconnecting old client before reconnect...");
+-          node.client.disconnect(function () {
++          disconnect_client_with_timeout(node.client, "Old client disconnect", function () {
+             verbose_log("Old client disconnected, creating new client...");
+-            node.client = null;
+             create_opcua_client(connect_opcua_client);
+           });
+         } else {
+@@ -2777,13 +2860,12 @@ module.exports = function (RED) {
+       };
+ 
+       if (node.session) {
+-        node.session.close(function (err) {
++        close_session_with_timeout(node.session, function (err) {
+           if (err) {
+             node_error("Session close error: " + err);
+           } else {
+             verbose_log("Session closed!");
+           }
+-          node.session = null;
+           doReconnect();
+         });
+       } else {
