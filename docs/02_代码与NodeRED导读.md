@@ -87,7 +87,8 @@
 - 只有 `DeviceStatus=Running` 时才生成样本。
 - 样本 SN 格式为 `SN-<UTC日期>-<六位序号>`。
 - 图像号格式为 `IMG-<UTC日期>-<六位序号>`。
-- `main()` 创建 Server、设置 Endpoint、关闭安全策略、构建模型并运行。
+- `main()` 校验证书/私钥/信任目录，创建 Server，设置
+  `Basic256Sha256_SignAndEncrypt` Endpoint，构建模型并运行。
 
 ## 3. Node-RED 六个功能区
 

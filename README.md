@@ -1,8 +1,68 @@
-# UA_LinqInspect — AI 质检 OPC UA 原型链路
+# UA_LinqInspect — 工业质检 OPC UA OT-IT 闭环原型
 
 零成本软件仿真环境下的工业质检原型：**AI 质检（虚拟） → OPC UA Server → Node-RED → 模拟 MES 工单闭环**。
 
 设计与排期依据：[Phase0_需求拆解与信息模型.md](Phase0_需求拆解与信息模型.md)（已冻结，含信息模型表、编码硬约束、里程碑 M1~M4）。
+
+## 项目简介
+
+UA_LinqInspect 演示的是“质检结果如何安全、可追溯地进入 MES”，不是训练视觉模型本身。
+
+它把产线质检结果表达为标准 OPC UA 对象模型，通过事件通知把 NG/完工信息送到
+Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调用模拟 MES 完成
+开单/报工，再把 MES 回执写回 OPC UA 变量，形成完整闭环。
+
+| 层次 | 当前实现 | 负责什么 |
+|---|---|---|
+| 质检数据源 | 虚拟 AI 质检循环 | 产生 OK/NG、缺陷类型、置信度、SN、图片 ID |
+| OPC UA Server | `server/qc_server.py`（asyncua） | QCStation 信息模型、工单状态机、Method、Event、审计与权限 |
+| 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读，管理员可写可调 Method |
+| 边缘网关 | Node-RED + `node-red-contrib-opcua` | 订阅事件、去重、队列、退避重试、死信、MES 调用与 UA 写回 |
+| 模拟 MES | Node-RED `http in` 节点 | 模拟 NG 开单、完工报工、回执与故障注入 |
+| 硬件扩展 | `hardware/` | 可选的树莓派 5 + open62541 + STM32 现场节点方案 |
+
+一句话理解：**虚拟质检产生数据，OPC UA 定义语义和权限，Node-RED 保证可靠传输，MES 完成工单闭环。**
+
+当前边界：
+
+- 真实实现：OPC UA 信息模型、Method 业务校验、事件订阅、证书与账号权限、Node-RED 队列与重试。
+- 仿真实现：AI 视觉推理和 MES HTTP 服务，二者都是零成本替代品。
+- 未纳入主链路：树莓派/STM32 硬件版本，仅在 `hardware/` 中提供架构和骨架。
+
+## 启动流程总览
+
+启动顺序固定为：**初始化依赖 → 生成/同步证书 → 启动 OPC UA Server → 启动 Node-RED → 运行验证**。
+
+### 首次初始化（每台机器只做一次）
+
+```bash
+cd ~/UA_LinqInspect
+python3 -m venv .venv
+.venv/bin/python -m pip install -r server/requirements.txt
+.venv/bin/python scripts/setup_pki.py
+npm install --prefix .node-red --no-audit --no-fund
+```
+
+然后按 [第 2 节](#2-生成本地-ca-证书首次运行或轮换时) 把 CA 证书和 CRL 同步到
+Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会报
+`BadCertificateChainIncomplete` 或 `BadCertificateRevocationUnknown`。
+
+### 日常启动（建议开 3 个终端）
+
+1. **终端 1 启动 OPC UA Server**：配置证书、私钥、信任目录和管理员账号，看到
+   `OPC UA Server listening` 即成功。
+2. **终端 2 启动 Node-RED**：执行 `.node-red/node_modules/.bin/node-red --userDir "$PWD/.node-red" --port 1880 --no-telemetry`，
+   浏览器打开 `http://127.0.0.1:1880`。
+3. **终端 3 运行验证**：先跑 `tests/smoke_test.py` 验证 UA 模型，再跑
+   `tests/nodered_e2e.py` 验证完整链路，最后跑 `tests/fault_scenarios.py` 验证重试与死信。
+
+Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目录缺失/无效时
+会直接拒绝启动，不会回退到 `NoSecurity`。匿名客户端只能读；只有
+`UA_ADMIN_USER` / `UA_ADMIN_PASS` 对应的会话可以 Write 和调用 Method。若未配置
+管理员账号，Server 仍可启动，但所有客户端都只能只读。
+
+完整的证书生成、Server 启动参数、Node-RED 启动命令和测试步骤见下文
+[快速开始（Ubuntu / Linux）](#快速开始ubuntu--linux)。
 
 ## 文档导航
 
@@ -28,6 +88,9 @@ UA_LinqInspect/
 │   └── requirements.txt
 ├── nodered/
 │   └── flows.json             # M2：带状态的边缘节点流（缓冲队列状态机/去重/退避/削峰/心跳）
+├── scripts/
+│   └── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
+├── hardware/                  # 可选硬件扩展：树莓派 open62541 Server、STM32 客户端方案
 ├── docs/
 │   ├── README.md              # 文档导航与学习路径
 │   ├── 00_项目全景与架构.md
