@@ -144,6 +144,10 @@ async def main():
         check("CurrentPartSN populated", bool(part_sn), f"({part_sn})")
         check("InspectionFinishedEvent carries SerialNumber", bool(ev_sn), f"({ev_sn})")
         check("event SN matches CurrentPartSN", ev_sn == part_sn, f"({ev_sn} vs {part_sn})")
+        insp_corr = str(getattr(handler.insp_events[-1], "CorrelationId", "")) if handler.insp_events else ""
+        ng_corr = str(getattr(handler.ng_events[-1], "CorrelationId", "")) if handler.ng_events else ""
+        check("InspectionFinishedEvent carries CorrelationId", insp_corr.startswith("corr-"), f"({insp_corr})")
+        check("NgDetectedEvent carries CorrelationId", ng_corr.startswith("corr-"), f"({ng_corr})")
 
         # MES 回执变量：语义拆分后三个变量都存在且可写
         mes_node = await root.get_child([f"{idx}:LastMesOrderNo"])
@@ -187,6 +191,8 @@ async def main():
         check("DeviceStatus back to 0 (Idle)", status == 0, f"(got {status})")
         await asyncio.sleep(1)  # 收 WorkOrderCompleted 事件
         check("WorkOrderCompleted event received", len(handler.done_events) > 0, f"(n={len(handler.done_events)})")
+        done_corr = str(getattr(handler.done_events[-1], "CorrelationId", "")) if handler.done_events else ""
+        check("WorkOrderCompletedEvent carries CorrelationId", done_corr.startswith("corr-"), f"({done_corr})")
 
     failed = [r for r in results if not r[1]]
     print(f"\n===== SMOKE TEST: {len(results) - len(failed)}/{len(results)} passed =====")

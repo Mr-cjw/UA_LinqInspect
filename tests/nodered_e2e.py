@@ -19,6 +19,21 @@ def ok(name, cond, detail=""):
     return bool(cond)
 
 
+class EventCollector:
+    def __init__(self, type_ids=None):
+        self.type_ids = type_ids or {}
+        self.ng_events = []
+        self.done_events = []
+
+    def event_notification(self, event):
+        event_type = getattr(event, "EventType", None)
+        kind = self.type_ids.get(event_type, "")
+        if kind == "ng":
+            self.ng_events.append(event)
+        elif kind == "done":
+            self.done_events.append(event)
+
+
 async def read_val(node):
     try:
         return await node.read_value()
@@ -60,6 +75,7 @@ async def main():
         stats = await root.get_child([f"{idx}:Statistics"])
         stats_ng = await stats.get_child([f"{idx}:NgCount"])
         stats_all = await stats.get_child([f"{idx}:InspectCount"])
+        events_node = await root.get_child([f"{idx}:Events"])
 
         st = await read_val(status)
         if st == 1:
@@ -74,6 +90,21 @@ async def main():
         await wait_for_drained_edge()
         initial_mes = str(await read_val(last_mes) or "")
         print("INFO | initial LastMesOrderNo =", initial_mes or "(empty)")
+
+        type_ids = {}
+        for node in await client.nodes.base_event_type.get_children():
+            try:
+                browse_name = await node.read_browse_name()
+            except Exception:
+                continue
+            if browse_name.Name == "NgDetectedEventType":
+                type_ids[node.nodeid] = "ng"
+            elif browse_name.Name == "WorkOrderCompletedEventType":
+                type_ids[node.nodeid] = "done"
+        collector = EventCollector(type_ids)
+        subscription = await client.create_subscription(200, collector)
+        await subscription.subscribe_events(events_node, list(type_ids.keys()))
+        results.append(ok("correlation event filters found", len(type_ids) == 2, f"(found {len(type_ids)})"))
 
         ret = await root.call_method(f"{idx}:StartInspection", WO, 5)
         results.append(ok("StartInspection accepted", ret and ret[0] is True, f"({ret[1] if len(ret) > 1 else ''})"))
@@ -103,6 +134,19 @@ async def main():
         results.append(ok("CurrentWorkOrderId not clobbered", str(await read_val(cur_wo) or "") == WO))
         all_after = int(await read_val(stats_all) or 0)
         results.append(ok("server produced NG samples", ng_after > ng_before, f"(ng={ng_after}, total={all_after})"))
+        edge = edge_status()
+        last_request = edge.get("lastRequest") or {}
+        ng_correlations = {str(getattr(event, "CorrelationId", "")) for event in collector.ng_events}
+        results.append(ok("MES request uses schemaVersion 1.0", last_request.get("schemaVersion") == "1.0",
+                          f"(got {last_request.get('schemaVersion') or 'empty'})"))
+        results.append(ok("UA NG CorrelationId reaches Node-RED MES request",
+                          bool(last_request.get("correlationId")) and last_request.get("correlationId") in ng_correlations,
+                          f"(request={last_request.get('correlationId') or 'empty'}, events={len(ng_correlations)})"))
+        last_response = edge.get("lastResponse") or {}
+        results.append(ok("MES response preserves CorrelationId",
+                          last_response.get("status") == "SUCCESS" and
+                          last_response.get("correlationId") == last_request.get("correlationId"),
+                          f"(response={last_response.get('correlationId') or 'empty'})"))
 
         ret2 = await root.call_method(f"{idx}:CompleteWorkOrder", WO)
         results.append(ok("CompleteWorkOrder accepted", ret2 and ret2[0] is True, f"({ret2[1] if len(ret2) > 1 else ''})"))
@@ -121,6 +165,13 @@ async def main():
                           f"(got {receipt or 'empty'}, after NG {after_ng or 'empty'})"))
         results.append(ok("completion receipt also lands in LastCompletionReceiptNo",
                           str(await read_val(last_completion_rc) or "") == receipt))
+        edge = edge_status()
+        done_correlations = {str(getattr(event, "CorrelationId", "")) for event in collector.done_events}
+        completion_request = (edge.get("lastRequestByType") or {}).get("complete") or {}
+        results.append(ok("UA completion CorrelationId reaches Node-RED MES request",
+                          bool(completion_request.get("correlationId")) and
+                          completion_request.get("correlationId") in done_correlations,
+                          f"(request={completion_request.get('correlationId') or 'empty'}, events={len(done_correlations)})"))
 
     passed = sum(1 for r in results if r)
     print(f"===== NODERED E2E: {passed}/{len(results)} passed =====")

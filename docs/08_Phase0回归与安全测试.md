@@ -14,7 +14,7 @@ cd ~/UA_LinqInspect
 1. `tests/security_test.py`：传输安全、匿名只读、管理员写/Method 权限。
 2. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
 3. `tests/nodered_e2e.py`：UA 事件 → Node-RED 队列 → 模拟 MES → UA 回执。
-4. `tests/fault_scenarios.py`：5xx 死信、timeout 退避恢复、Method 拒绝。
+4. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -48,12 +48,12 @@ cd ~/UA_LinqInspect
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
 | 安全回归 | 6/6 PASS | NoSecurity 拒绝、匿名只读、匿名写/Method 拒绝、管理员写/Method |
-| UA 冒烟 | 33/33 PASS | 信息模型、状态机、事件、NgRate、负面用例 |
-| Node-RED E2E | 10/10 PASS | NG 开单、完工报工、回执写回、兼容镜像 |
-| 故障场景 | 19/19 PASS | 5xx 死信、timeout 恢复、冲突工单拒绝 |
-| **合计** | **68/68 PASS** | 一键隔离回归 |
+| UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
+| Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
+| 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
+| **合计** | **109/109 PASS** | 一键隔离回归 |
 
-实际产物示例：`.tmp/regression-20261120-124338/summary.json`。
+实际产物示例：`.tmp/regression-20261120-130414/summary.json`。
 
 ## 4. 手工执行单个测试
 
@@ -87,8 +87,10 @@ certificate does not contain the hostname in DNSNames ...
 
 Phase 0 完成后进入 Phase 1：
 
-1. `correlationId` 贯穿 UA 事件、Node-RED、MES 请求与回执。
-2. MES `4xx/429/5xx/timeout` 分类和稳定错误码。
-3. 非空队列 Node-RED 重启恢复测试。
-4. 短时断网与会话恢复测试。
-5. 长时断网/Server 重启后的订阅重建与陈旧事件过滤测试。
+1. ✅ `correlationId` 贯穿 UA 事件、Node-RED、MES 请求与回执。
+2. ✅ MES `4xx/429/5xx/timeout` 分类和稳定错误码。
+3. ⬜ 非空队列 Node-RED 重启恢复测试。
+4. ⬜ 短时断网与会话恢复测试。
+5. ⬜ 长时断网/Server 重启后的订阅重建与陈旧事件过滤测试。
+
+第 1、2 项的实测与契约见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)。

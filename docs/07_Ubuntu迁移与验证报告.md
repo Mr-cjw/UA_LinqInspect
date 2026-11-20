@@ -37,9 +37,9 @@ UA_ENDPOINT_PORT=4840 .venv/bin/python tests/fault_scenarios.py
 
 | 测试 | 结果 | 覆盖重点 |
 |---|---|---|
-| M1 冒烟 | **33/33 PASS** | 信息模型、15 变量、3 Method、3 Event、RO/RW 权限、SN 追溯、幂等开检、完工校验 |
-| M2 端到端 | **10/10 PASS** | NG 事件 → MES 开单 → UA 双回执；完工报工 → UA 双回执；工单号不被覆盖 |
-| 故障场景 | **19/19 PASS** | 5xx 死信、timeout 退避恢复、Method 服务端拒绝、状态接口可观察、恢复 MES 后链路可用 |
+| M1 冒烟 | **36/36 PASS** | 信息模型、15 变量、3 Method、3 Event、RO/RW 权限、SN 追溯、关联 ID、幂等开检、完工校验 |
+| M2 端到端 | **15/15 PASS** | NG 事件 → MES 开单 → UA 双回执；完工报工 → UA 双回执；关联 ID 贯通；工单号不被覆盖 |
+| 故障场景 | **52/52 PASS** | 5xx、timeout、4xx、429、非法 2xx、Method 服务端拒绝、状态接口可观察、恢复 MES 后链路可用 |
 
 关键观测：
 
@@ -48,6 +48,8 @@ UA_ENDPOINT_PORT=4840 .venv/bin/python tests/fault_scenarios.py
 - `CurrentWorkOrderId` 在回执写回后保持不变。
 - 5xx 重试耗尽后任务进入死信，且不会误写回执。
 - timeout 模式在退避窗口内恢复，任务最终成功出队。
+- 4xx 立即死信；429 按 Retry-After 退避后死信；非法 2xx 不写回执。
+- UA 事件、MES 请求和 MES 回执使用同一 correlationId。
 - Method 拒绝不会覆盖当前工单，也不会触发后续 MES 动作。
 
 ## 3. 本轮工程修正

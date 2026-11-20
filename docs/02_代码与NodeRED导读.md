@@ -101,7 +101,7 @@
 | ③ 报工分支 | `fn_parse` / `fn_dedup_done` / `fn_enq_done` | 解析、按 workOrderId 去重、入队 |
 | ④ 发送泵 | `in_tick` / `fn_pump` / `http1` / `n_catch_http` / `fn_resp` | 单飞行取任务、调 MES、处理成功/退避/死信 |
 | ⑤ UA 客户端 | `opcua` / `fn_ua_result` / `n_catch_ua` / `fn_ua_err` / `inj_hb` / `fn_hb` | 回执写回、Method 调用、心跳、异常计数 |
-| ⑥ 模拟 MES | `httpin_ng` / `fn_mes_ng` / `httpin_done` / `fn_mes_done` / `inj_ok` / `inj_5xx` / `inj_to` | 接收 HTTP、生成回执、防重、故障注入 |
+| ⑥ 模拟 MES | `httpin_ng` / `fn_mes_ng` / `httpin_done` / `fn_mes_done` / `inj_*` | 接收 HTTP、校验 schema/关联 ID、生成回执、防重、故障注入 |
 
 ## 4. 关键 Function 节点速查
 
@@ -110,17 +110,17 @@
 | `fn_parse` | 事件解析 + 陈旧过滤 | UA Event | 两路输出：NG 消息、完工消息 |
 | `fn_dedup_ng` | NG 指纹去重 | NG 消息 | 首次放行，重复丢弃 |
 | `fn_alarm` | 报警削峰 | NG 消息 | 10 秒窗口内抑制，不阻断入队 |
-| `fn_enq_ng` | NG 开单入队 | NG 消息 | 写 `flow.buf`，生成标准 HTTP body |
+| `fn_enq_ng` | NG 开单入队 | NG 消息 | 写 `flow.buf`，生成带 schemaVersion/correlationId 的 HTTP body |
 | `fn_dedup_done` | 报工去重 | 完工消息 | 按 workOrderId 放行一次 |
 | `fn_enq_done` | 报工入队 | 完工消息 | 写 `flow.buf`，生成汇总 body |
 | `fn_pump` | 发送泵 | 1 秒 tick | 取一条 PENDING，置 SENDING，发 HTTP |
-| `fn_resp` | 响应处理 | HTTP 响应/异常 | 成功出队并触发写回；失败退避；超限死信 |
+| `fn_resp` | 响应处理 | HTTP 响应/异常 | 严格校验关联和响应契约；成功写回；可重试失败退避；终态失败死信 |
 | `fn_ua_result` | UA 结果校验 | UA 响应 | 打印 Method accepted/rejected；成功心跳清零 |
 | `fn_ua_err` | UA 异常计数 | catch 异常 | 连续 3 次告警 |
-| `fn_failmode` | MES 故障模式 | `ok/5xx/timeout` | 写 `flow.mesMode` |
+| `fn_failmode` | MES 故障模式 | `ok/5xx/timeout/4xx/429/invalid2xx` | 写 `flow.mesMode` |
 | `fn_mes_ng` | MES 处理 NG 单 | HTTP body | 生成 `MES-*`，同 SN 防重，故障注入 |
 | `fn_mes_done` | MES 处理报工 | HTTP body | 生成 `RC-*`，同工单防重，故障注入 |
-| `fn_status` | 输出队列/死信/心跳状态 | `GET /qc/status` | 返回 JSON 状态，供运维和测试使用 |
+| `fn_status` | 输出队列/死信/心跳状态 | `GET /qc/status` | 返回队列、死信、最近请求/响应和关联 ID，供运维和测试使用 |
 
 ## 5. 发送泵状态机
 
@@ -128,9 +128,9 @@
 stateDiagram-v2
     [*] --> PENDING: enqueue
     PENDING --> SENDING: fn_pump 取任务
-    SENDING --> SUCCESS: HTTP 2xx + accepted
-    SENDING --> PENDING: HTTP 失败 / 超时，1s/2s/4s 退避
-    SENDING --> FAILED: 第 3 次退避后仍失败
+    SENDING --> SUCCESS: 合法 2xx + 关联匹配 + accepted
+    SENDING --> PENDING: 5xx / 429 / 超时，按策略退避
+    SENDING --> FAILED: 4xx / 非法 2xx / 重试耗尽
     SUCCESS --> [*]: 出队
     FAILED --> [*]: 死信队列，人工处置
 ```
@@ -139,7 +139,8 @@ stateDiagram-v2
 
 - `fn_pump` 发现已有 `SENDING` 时直接返回，保证单飞行。
 - 看门狗在 `sentAt` 超过 15 秒时把任务恢复/转死信，防止 HTTP 节点异常导致永久卡死。
-- `fn_resp` 收到 `accepted=false` 时按业务拒绝处理，不重试。
+- `fn_resp` 收到 4xx 或非法 2xx 时按终态失败处理，不重试；5xx/timeout 最多 4 次尝试后死信。
+- 每个请求同时携带 `body.correlationId` 和 `X-Correlation-Id`，响应必须原样回显；只有匹配成功才允许写回 UA。
 - 成功时根据队列项类型写具体回执变量，并同步写 `LastMesOrderNo` 兼容镜像。
 
 ## 6. 一条 NG 消息的完整字段流转
@@ -147,19 +148,21 @@ stateDiagram-v2
 UA 事件字段：
 
 ```text
-WorkOrderId, SerialNumber, DefectType, Confidence, ImageId
+WorkOrderId, SerialNumber, DefectType, Confidence, ImageId, CorrelationId
 ```
 
 `fn_parse` 统一为驼峰：
 
 ```text
-workOrderId, serialNumber, defectType, confidence, imageId, occurredAt
+workOrderId, serialNumber, defectType, confidence, imageId, occurredAt, correlationId
 ```
 
 `fn_enq_ng` 放入队列的 HTTP body：
 
 ```json
 {
+  "schemaVersion": "1.0",
+  "correlationId": "corr-...",
   "workOrderId": "...",
   "serialNumber": "...",
   "defectType": "...",
@@ -172,7 +175,7 @@ workOrderId, serialNumber, defectType, confidence, imageId, occurredAt
 模拟 MES 返回：
 
 ```json
-{ "accepted": true, "mesOrderNo": "MES-20261111-0001" }
+{ "schemaVersion": "1.0", "correlationId": "corr-...", "accepted": true, "mesOrderNo": "MES-20261111-0001" }
 ```
 
 `fn_resp` 最终写两个层次：
@@ -183,7 +186,7 @@ NG 开单:  ns=2;s=QCStation.LastNgMesOrderNo,          payload = MES-...
 兼容镜像: ns=2;s=QCStation.LastMesOrderNo,            payload = 最近一次回执
 ```
 
-`fn_status` 通过 `GET http://127.0.0.1:1880/qc/status` 返回 `mesMode`、`queue`、`deadLetters`、`heartbeatFailures` 和去重计数。
+`fn_status` 通过 `GET http://127.0.0.1:1880/qc/status` 返回 `mesMode`、`queue`、`deadLetters`、`lastRequest`、`lastRequestByType`、`lastResponse`、`heartbeatFailures` 和去重计数。
 
 ## 7. 事件订阅的两个坑
 

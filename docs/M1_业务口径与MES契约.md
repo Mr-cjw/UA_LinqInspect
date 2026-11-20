@@ -1,8 +1,8 @@
 # M1 交付：质检业务口径与 MES 消费契约
 
-> 版本：v1.0 ｜ 2026-11-08 ｜ 信息模型基准：[Phase0_需求拆解与信息模型.md](../Phase0_需求拆解与信息模型.md)
+> 版本：v1.1 ｜ 2026-11-20 ｜ 信息模型基准：[Phase0_需求拆解与信息模型.md](../Phase0_需求拆解与信息模型.md)
 >
-> 文档导航：[README.md](README.md)｜相关：[项目全景](00_项目全景与架构.md)｜[信息模型速查](01_信息模型与业务规则速查.md)
+> 文档导航：[README.md](README.md)｜相关：[项目全景](00_项目全景与架构.md)｜[信息模型速查](01_信息模型与业务规则速查.md)｜[Phase 1 实测报告](09_Phase1关联追踪与MES错误分类.md)
 
 ## 1. 缺陷码枚举集合（M1 强制产出 ①）
 
@@ -39,10 +39,14 @@
 
 | # | 接口 | 方法与路径 | 触发时机 | 请求体字段 |
 |---|---|---|---|---|
-| 1 | NG 开单 | `POST /mes/ng-order` | Node-RED 订阅到 `NgDetectedEvent` | workOrderId, **serialNumber**, defectType, confidence, imageId, occurredAt(ISO8601) |
-| 2 | 完工报工 | `POST /mes/complete` | Node-RED 订阅到 `WorkOrderCompletedEvent` | workOrderId, inspectCount, okCount, ngCount, ngRate |
-| 3 | 开单回执 | `POST` 回 Node-RED 由模拟MES返回 | 接口1 同步响应 | `{ "mesOrderNo": "MES-<yyyyMMdd>-<seq>", "accepted": true }`；重复 SN 返回原单号 + `duplicated:true`（MES 侧防重第二道防线） |
-| 4 | 报工回执 | 同上 | 接口2 同步响应 | `{ "accepted": true, "receiptNo": "RC-<...>" }`；重复工单号同理防重 |
+| 1 | NG 开单 | `POST /mes/ng-order` | Node-RED 订阅到 `NgDetectedEvent` | schemaVersion=`1.0`, **correlationId**, workOrderId, **serialNumber**, defectType, confidence, imageId, occurredAt(ISO8601) |
+| 2 | 完工报工 | `POST /mes/complete` | Node-RED 订阅到 `WorkOrderCompletedEvent` | schemaVersion=`1.0`, **correlationId**, workOrderId, inspectCount, okCount, ngCount, ngRate |
+| 3 | 开单回执 | 由模拟 MES 同步返回 | 接口1 同步响应 | `{ "schemaVersion": "1.0", "correlationId": "...", "mesOrderNo": "MES-<yyyyMMdd>-<seq>", "accepted": true }`；重复 SN 返回原单号 + `duplicated:true`（MES 侧防重第二道防线） |
+| 4 | 报工回执 | 同上 | 接口2 同步响应 | `{ "schemaVersion": "1.0", "correlationId": "...", "accepted": true, "receiptNo": "RC-<...>" }`；重复工单号同理防重 |
+
+所有请求必须同时携带 HTTP 头 `X-Correlation-Id`，且其值必须与请求体 `correlationId` 完全一致；模拟 MES 不一致时返回 `400 CORRELATION_MISMATCH`。
+
+`correlationId` 由 UA Server 在每次检测/完工时生成（`corr-<uuid4>`）。一次 NG 检测的 `InspectionFinishedEvent` 与 `NgDetectedEvent` 共用同一个 ID；`WorkOrderCompletedEvent` 使用独立 ID。Node-RED 原样透传到 MES，并在 `/qc/status` 的 `lastRequest`、`lastRequestByType`、`lastResponse` 中暴露，用于把 UA 事件、HTTP 请求、MES 回执和死信串成一条可追溯链。
 
 **回执写回目标（M2 红线 4 修订）**：回执按业务语义拆分，NG 开单的 `mesOrderNo` 写入 **`LastNgMesOrderNo`**，完工报工的 `receiptNo` 写入 **`LastCompletionReceiptNo`**；两者同时写 **`LastMesOrderNo`** 作为最近回执的兼容镜像。原设计"写回 CurrentWorkOrderId"会覆盖派工单号、破坏工单状态机——派工单号（我方经 StartInspection 下发）与 MES 回执号（对方受理凭证）语义分离，禁止混写。
 
@@ -50,16 +54,18 @@
 
 ```
 UA Server                    Node-RED                     模拟MES
-   │ NgDetectedEvent            │                            │
+   │ NgDetectedEvent(corr-X)    │                            │
    │──────────────────────────>│ POST /mes/ng-order         │
-   │                            │───────────────────────────>│ 生成工单
-   │                            │<───────────────────────────│ 回执 mesOrderNo
+   │                            │ body/header: corr-X        │
+   │                            │───────────────────────────>│ 校验 schema + corr-X
+   │                            │<───────────────────────────│ 回执 mesOrderNo + corr-X
    │ 写 LastNgMesOrderNo + 镜像   │                            │
    │<───────────────────────────│                            │
-   │ WorkOrderCompletedEvent    │                            │
+   │ WorkOrderCompleted(corr-Y) │                            │
    │──────────────────────────>│ POST /mes/complete         │
-   │                            │───────────────────────────>│ 报工归档
-   │                            │<───────────────────────────│ 回执 receiptNo
+   │                            │ body/header: corr-Y        │
+   │                            │───────────────────────────>│ 校验 schema + corr-Y
+   │                            │<───────────────────────────│ 回执 receiptNo + corr-Y
    │<───────────────────────────│ 写 LastCompletionReceiptNo  │
 ```
 
@@ -67,10 +73,15 @@ UA Server                    Node-RED                     模拟MES
 
 | 场景 | 约定 |
 |---|---|
-| 模拟MES 5xx / 超时(>3s) | Node-RED 重试 3 次，间隔 1s/2s/4s（指数退避）；仍失败则流转 **FAILED（死信）** 并在 debug 亮红灯，不无限重试阻塞队列 |
+| 合法 2xx | 必须同时满足：`schemaVersion="1.0"`、`correlationId` 与请求一致、`accepted=true`、NG 带 `mesOrderNo`、报工带 `receiptNo`；否则按非法响应进入死信 |
+| 非法 2xx | 直接死信，不重试；稳定错误码：`INVALID_RESPONSE_SCHEMA`、`CORRELATION_MISMATCH`、`MES_REJECTED`、`MISSING_MES_ORDER_NO`、`MISSING_RECEIPT_NO` |
+| 模拟MES 4xx（429 除外） | 业务终态失败，立即死信、不重试；优先使用响应体 `errorCode`，缺省为 `MES_HTTP_4XX`，示例 `MES_REJECTED` |
+| 模拟MES 429 | 优先读取 `Retry-After`（秒数或 HTTP 日期，夹紧到 0.1~30s）；未提供时按 1s/2s/4s；总共 4 次尝试后进入死信，错误码 `MES_BUSY` |
+| 模拟MES 5xx / 超时(>3s) / 传输异常 | Node-RED 共 4 次尝试，间隔 1s/2s/4s（指数退避）；仍失败则流转 **FAILED（死信）** 并在 debug 亮红灯，不无限重试阻塞队列；错误码 `MES_UNAVAILABLE` / `TRANSPORT_ERROR` 等 |
+| 响应关联校验 | MES 回执的 `correlationId` 必须回显请求值；Node-RED 只在匹配成功后写回 UA，避免把迟到响应写到错误任务上 |
 | 缓冲状态机 | 单向闭环 `PENDING → SENDING → SUCCESS(出队) / PENDING(退避等待) / FAILED(死信)`；**单飞行发送**（同一时刻仅一条在途），规避并发写回与未来 SQLite 的 `SQLITE_BUSY` |
+| 发送看门狗 | 单条请求在 `SENDING` 超过 15s 未收到响应，由 1s 泵判定超时并回到退避；超过重试上限进入死信，防止永久卡死 |
 | 防重 | 双侧防线：Node-RED 按 `serialNumber`（NG单）/`workOrderId`（报工）指纹去重；MES 侧同指纹重复请求返回原单号+`duplicated:true`——**绝不重复生成两张 NG 工单** |
-| 回执 accepted=false | Node-RED 打 warning 日志并亮 debug 节点，不重试 |
 | UA Method 拒绝（accepted=False） | summary 中原因必须打印（debug error 级），**阻断后续 MES 报工动作**，绝不带病继续 |
 | 完工报工触发源 | **唯一发令枪是 UA Server 的 WorkOrderCompletedEvent**，Node-RED 禁止自行推断"数量够了就报工" |
 | 时间戳 | 报文 occurredAt 一律 ISO8601 UTC（`new Date().toISOString()`，带 Z 后缀），规避时区偏移 |

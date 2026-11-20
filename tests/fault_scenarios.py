@@ -77,10 +77,46 @@ async def read(node):
     return await node.read_value()
 
 
+async def wait_dead_letter_after(previous_total, timeout=35):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        status = edge_status()
+        dead = status.get("deadLetters", {})
+        if int(dead.get("total") or 0) > previous_total:
+            return dead.get("last") or {}
+        await asyncio.sleep(0.25)
+    return None
+
+
+async def wait_queue_empty(timeout=25):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        queue = edge_status().get("queue", {})
+        if int(queue.get("total") or 0) == 0:
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+async def wait_for_new_ng_request(previous, timeout=15):
+    previous = previous or {}
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        current = (edge_status().get("lastRequestByType") or {}).get("ng") or {}
+        if current and (current.get("id") != previous.get("id") or
+                        current.get("at") != previous.get("at")):
+            return current
+        await asyncio.sleep(0.1)
+    return None
+
+
 async def main():
     suffix = datetime.now().strftime("%Y%m%d%H%M%S")
     wo_5xx = f"WO-FAULT-5XX-{suffix}"
     wo_timeout = f"WO-FAULT-TO-{suffix}"
+    wo_4xx = f"WO-FAULT-4XX-{suffix}"
+    wo_429 = f"WO-FAULT-429-{suffix}"
+    wo_invalid = f"WO-FAULT-INVALID-{suffix}"
 
     client = await create_secure_client()
     async with client:
@@ -179,6 +215,87 @@ async def main():
         check("completion receipt written after timeout scenario",
               bool(receipt_after_timeout) and receipt_after_timeout != before_timeout_rc,
               f"(receipt={receipt_after_timeout or 'empty'})")
+
+        # ---- 场景 D：MES 4xx -> 业务拒绝，立即死信不重试 ----
+        check("drain queue before 4xx scenario", await wait_queue_empty())
+        dead_before_4xx = int(edge_status()["deadLetters"]["total"])
+        ng_mes_before_4xx = str(await read(last_ng_mes) or "")
+        check("inject 4xx mode", inject("inj_4xx"))
+        check("edge reports 4xx mode", edge_status()["mesMode"] == "4xx")
+        ret4 = await root.call_method(f"{idx}:StartInspection", wo_4xx, 5)
+        check("4xx scenario StartInspection accepted", ret4 and ret4[0] is True,
+              f"({ret4[1] if len(ret4) > 1 else ''})")
+        dead_4xx = await wait_dead_letter_after(dead_before_4xx)
+        check("4xx enters dead letter", dead_4xx is not None)
+        check("4xx classified as MES_REJECTED",
+              bool(dead_4xx) and dead_4xx.get("errorCode") == "MES_REJECTED",
+              f"(errorCode={(dead_4xx or {}).get('errorCode') or 'empty'})")
+        check("4xx is terminal without retry",
+              bool(dead_4xx) and int(dead_4xx.get("attempts") or 0) == 0,
+              f"(attempts={(dead_4xx or {}).get('attempts')})")
+        check("4xx NG receipt not written", str(await read(last_ng_mes) or "") == ng_mes_before_4xx)
+        check("restore MES after 4xx", inject("inj_ok"))
+        ret4_done = await root.call_method(f"{idx}:CompleteWorkOrder", wo_4xx)
+        check("4xx scenario CompleteWorkOrder accepted", ret4_done and ret4_done[0] is True,
+              f"({ret4_done[1] if len(ret4_done) > 1 else ''})")
+        check("4xx queue drained after recovery", await wait_queue_empty())
+
+        # ---- 场景 E：MES 429 + Retry-After -> 限速退避后死信 ----
+        status_before_429 = edge_status()
+        dead_before_429 = int(status_before_429["deadLetters"]["total"])
+        request_before_429 = (status_before_429.get("lastRequestByType") or {}).get("ng") or {}
+        ng_mes_before_429 = str(await read(last_ng_mes) or "")
+        check("inject 429 mode", inject("inj_429"))
+        check("edge reports 429 mode", edge_status()["mesMode"] == "429")
+        ret429 = await root.call_method(f"{idx}:StartInspection", wo_429, 5)
+        check("429 scenario StartInspection accepted", ret429 and ret429[0] is True,
+              f"({ret429[1] if len(ret429) > 1 else ''})")
+        first_429_request = await wait_for_new_ng_request(request_before_429)
+        check("429 first NG request observed", first_429_request is not None)
+        started_429 = asyncio.get_running_loop().time()
+        dead_429 = await wait_dead_letter_after(dead_before_429)
+        elapsed_429 = asyncio.get_running_loop().time() - started_429
+        check("429 enters dead letter", dead_429 is not None)
+        check("429 classified as MES_BUSY",
+              bool(dead_429) and dead_429.get("errorCode") == "MES_BUSY",
+              f"(errorCode={(dead_429 or {}).get('errorCode') or 'empty'})")
+        check("429 exhausts four attempts",
+              bool(dead_429) and int(dead_429.get("attempts") or 0) >= 4,
+              f"(attempts={(dead_429 or {}).get('attempts')})")
+        check("429 honors Retry-After: 1s backoff window",
+              dead_429 is not None and 2.0 <= elapsed_429 <= 9.0,
+              f"(elapsed={elapsed_429:.2f}s)")
+        check("429 NG receipt not written", str(await read(last_ng_mes) or "") == ng_mes_before_429)
+        check("restore MES after 429", inject("inj_ok"))
+        ret429_done = await root.call_method(f"{idx}:CompleteWorkOrder", wo_429)
+        check("429 scenario CompleteWorkOrder accepted", ret429_done and ret429_done[0] is True,
+              f"({ret429_done[1] if len(ret429_done) > 1 else ''})")
+        check("429 queue drained after recovery", await wait_queue_empty())
+
+        # ---- 场景 F：非法 2xx -> 契约校验失败，直接死信 ----
+        dead_before_invalid = int(edge_status()["deadLetters"]["total"])
+        ng_mes_before_invalid = str(await read(last_ng_mes) or "")
+        check("inject invalid2xx mode", inject("inj_invalid2xx"))
+        check("edge reports invalid2xx mode", edge_status()["mesMode"] == "invalid2xx")
+        ret_invalid = await root.call_method(f"{idx}:StartInspection", wo_invalid, 5)
+        check("invalid2xx scenario StartInspection accepted", ret_invalid and ret_invalid[0] is True,
+              f"({ret_invalid[1] if len(ret_invalid) > 1 else ''})")
+        dead_invalid = await wait_dead_letter_after(dead_before_invalid)
+        check("invalid2xx enters dead letter", dead_invalid is not None)
+        check("invalid2xx classified as INVALID_RESPONSE_SCHEMA",
+              bool(dead_invalid) and dead_invalid.get("errorCode") == "INVALID_RESPONSE_SCHEMA",
+              f"(errorCode={(dead_invalid or {}).get('errorCode') or 'empty'})")
+        check("invalid2xx is terminal without retry",
+              bool(dead_invalid) and int(dead_invalid.get("attempts") or 0) == 0,
+              f"(attempts={(dead_invalid or {}).get('attempts')})")
+        check("invalid2xx NG receipt not written",
+              str(await read(last_ng_mes) or "") == ng_mes_before_invalid)
+        check("restore MES after invalid2xx", inject("inj_ok"))
+        ret_invalid_done = await root.call_method(f"{idx}:CompleteWorkOrder", wo_invalid)
+        check("invalid2xx scenario CompleteWorkOrder accepted",
+              ret_invalid_done and ret_invalid_done[0] is True,
+              f"({ret_invalid_done[1] if len(ret_invalid_done) > 1 else ''})")
+        check("invalid2xx queue drained after recovery", await wait_queue_empty())
 
         check("restore ok mode at end", inject("inj_ok"))
         final_status = edge_status()

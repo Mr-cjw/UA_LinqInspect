@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import random
+import uuid
 from collections import deque
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -393,17 +394,17 @@ class QCStation:
         base = sv.nodes.base_event_type
         et_insp = await base.add_object_type(nid("InspectionFinishedEventType"), "2:InspectionFinishedEventType")
         for name, v in (("WorkOrderId", ""), ("SerialNumber", ""), ("Result", ""), ("DefectType", ""),
-                        ("Confidence", 0.0), ("ImageId", "")):
+                        ("Confidence", 0.0), ("ImageId", ""), ("CorrelationId", "")):
             await et_insp.add_property(nid(f"InspectionFinishedEventType.{name}"), f"2:{name}", v)
 
         et_ng = await base.add_object_type(nid("NgDetectedEventType"), "2:NgDetectedEventType")
         for name, v in (("WorkOrderId", ""), ("SerialNumber", ""), ("DefectType", ""),
-                        ("Confidence", 0.0), ("ImageId", "")):
+                        ("Confidence", 0.0), ("ImageId", ""), ("CorrelationId", "")):
             await et_ng.add_property(nid(f"NgDetectedEventType.{name}"), f"2:{name}", v)
 
         et_done = await base.add_object_type(nid("WorkOrderCompletedEventType"), "2:WorkOrderCompletedEventType")
         for name, v in (("WorkOrderId", ""), ("InspectCount", 0), ("OkCount", 0),
-                        ("NgCount", 0), ("NgRate", 0.0)):
+                        ("NgCount", 0), ("NgRate", 0.0), ("CorrelationId", "")):
             await et_done.add_property(nid(f"WorkOrderCompletedEventType.{name}"), f"2:{name}", v)
 
         self.et = {"insp": et_insp, "ng": et_ng, "done": et_done}
@@ -483,6 +484,7 @@ class QCStation:
         ng_rate = self._ng_rate()
         summary = (f"workOrder={self.work_order_id} inspect={self.inspect_count} "
                    f"ok={self.ok_count} ng={self.ng_count} ngRate={ng_rate:.3f}")
+        correlation_id = f"corr-{uuid.uuid4()}"
         await self._fire("done", {
             "WorkOrderId": self.work_order_id,
             "InspectCount": self.inspect_count,
@@ -490,13 +492,14 @@ class QCStation:
             "NgCount": self.ng_count,
             # 空窗口保持 -1.0 哨兵语义，MES 侧据此显示“样本不足”，不得误报为 0 不良率
             "NgRate": ng_rate,
+            "CorrelationId": correlation_id,
         }, severity=2, message=f"WorkOrder {self.work_order_id} completed")
         self.status = ST_IDLE
         self.work_order_id = ""
         self.target_count = 0
         await self.nd["status"].write_value(ua.Variant(ST_IDLE, ua.VariantType.Int32))
         await self.nd["work_order"].write_value("")
-        _log.info("CompleteWorkOrder: %s", summary)
+        _log.info("CompleteWorkOrder: %s corr=%s", summary, correlation_id)
         return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(summary, ua.VariantType.String)]
 
     async def _reset_counters(self, parent):
@@ -537,6 +540,7 @@ class QCStation:
             self.ng_count += 1
 
         now = datetime.now(timezone.utc)
+        correlation_id = f"corr-{uuid.uuid4()}"
         await self.nd["last_result"].write_value(is_ok)
         await self.nd["last_defect"].write_value(defect_type)
         await self.nd["last_conf"].write_value(confidence)
@@ -554,6 +558,7 @@ class QCStation:
             "DefectType": defect_type,
             "Confidence": confidence,
             "ImageId": image_id,
+            "CorrelationId": correlation_id,
         }, severity=1, message=f"Inspection {image_id} SN={serial_number}: {'OK' if is_ok else 'NG ' + defect_type}")
 
         if not is_ok:
@@ -563,8 +568,9 @@ class QCStation:
                 "DefectType": defect_type,
                 "Confidence": confidence,
                 "ImageId": image_id,
+                "CorrelationId": correlation_id,
             }, severity=3, message=f"NG detected on {image_id} SN={serial_number}: {defect_type}")
-            _log.warning("NG: %s SN=%s %s conf=%.3f", image_id, serial_number, defect_type, confidence)
+            _log.warning("NG: %s SN=%s %s conf=%.3f corr=%s", image_id, serial_number, defect_type, confidence, correlation_id)
 
     # ---------- 虚拟 AI 质检循环（阶段一数据源，预留 YOLOv8 切换点） ----------
     async def inspection_loop(self):

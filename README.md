@@ -103,14 +103,15 @@ UA_LinqInspect/
 │   ├── 06_作品集答辩与工厂试点落地.md
 │   ├── 07_Ubuntu迁移与验证报告.md
 │   ├── 08_Phase0回归与安全测试.md
+│   ├── 09_Phase1关联追踪与MES错误分类.md
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
     ├── ua_test_client.py      # 安全 OPC UA 客户端测试夹具
     ├── security_test.py       # 传输安全与读写/Method 权限回归（6 项断言）
-    ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，33 项断言）
-    ├── nodered_e2e.py         # M2 正常链路端到端测试（10 项断言）
-    └── fault_scenarios.py     # M2/M3 故障场景（5xx、timeout、Method 拒绝）
+    ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
+    ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
+    └── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
 ```
 
 ## 关键设计速览
@@ -125,6 +126,8 @@ UA_LinqInspect/
   - Method 先校验前置条件（工单一致性、设备状态），拒绝时返回原因
   - 只读变量（`LastResult`/`LastDefectType`/`LastConfidence`/`LastImageId`/`LastTimestamp`、`NgRate`、统计项）不提供 Write 能力；三个 MES 回执变量为 ReadWrite
 - **交互范式**：只用 OPC UA 的 Variable 读写 / Method 调用 / Event 订阅；模拟 MES 用 Node-RED `http in` 假扮，仅是仿真道具
+- **关联追踪**：每次检测/完工生成 `corr-<uuid4>`，经 UA 事件、Node-RED 队列、MES 请求与回执全链路透传
+- **失败分类**：4xx 立即死信、429 按 `Retry-After` 退避、5xx/timeout 指数退避、非法 2xx 拒绝写回
 
 ## 快速开始（Ubuntu / Linux）
 
@@ -240,7 +243,8 @@ cd ~/UA_LinqInspect
 ```
 
 结果与日志位于 `.tmp/regression-<时间>/`，详细说明见
-[docs/08_Phase0回归与安全测试.md](docs/08_Phase0回归与安全测试.md)。
+[docs/08_Phase0回归与安全测试.md](docs/08_Phase0回归与安全测试.md) 和
+[docs/09_Phase1关联追踪与MES错误分类.md](docs/09_Phase1关联追踪与MES错误分类.md)。
 
 如果 Server 与 Node-RED 已手工启动，也可以逐个执行；此时必须提供 Server 对应的管理员账号：
 
@@ -348,9 +352,9 @@ $env:LOCALAPPDATA = "$PWD\.localappdata"
 ```powershell
 cd D:\UA_LinqInspect
 $env:UA_ENDPOINT_PORT = '4840'
-& '.conda\python.exe' 'tests\smoke_test.py'       # M1：当前 33/33 PASS
-& '.conda\python.exe' 'tests\nodered_e2e.py'      # M2：当前 10/10 PASS
-& '.conda\python.exe' 'tests\fault_scenarios.py'  # M2/M3：当前 19/19 PASS
+& '.conda\python.exe' 'tests\smoke_test.py'       # M1：当前 36/36 PASS
+& '.conda\python.exe' 'tests\nodered_e2e.py'      # M2：当前 15/15 PASS
+& '.conda\python.exe' 'tests\fault_scenarios.py'  # 可靠性：当前 52/52 PASS
 ```
 
 MES 故障注入入口：
@@ -374,9 +378,10 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
-| M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 33/33 PASS） |
-| M2 | Node-RED 订阅/报警流 + 模拟 MES + 持久化 context + 状态接口 | ✅ 完成（正常链路 10/10、故障场景 19/19 PASS） |
-| M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 订阅/心跳/陈旧过滤已实现；断网重连与抓包证据待验收 |
+| M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
+| M2 | Node-RED 订阅/报警流 + 模拟 MES + 持久化 context + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
+| Phase 1 | correlationId 贯通 + MES 4xx/429/非法 2xx 分类 | ✅ 完成（一键回归 109/109 PASS） |
+| M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 订阅/心跳/陈旧过滤已实现；重启恢复、断网重连与抓包证据待验收 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 
 > 硬件扩展（open62541 / 树莓派 / STM32）为后置可选项，默认不启动。
