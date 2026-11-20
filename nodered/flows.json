@@ -1260,5 +1260,53 @@
     "x": 640,
     "y": 1840,
     "wires": []
+  },
+  {
+    "id": "httpin_dead_replay",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "死信重放(受HTTP认证保护)",
+    "url": "/qc/dead-letters/replay",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 190,
+    "y": 1900,
+    "wires": [
+      [
+        "fn_dead_replay"
+      ]
+    ]
+  },
+  {
+    "id": "fn_dead_replay",
+    "type": "function",
+    "z": "qcflow",
+    "name": "重放死信",
+    "func": "const store = global.get('qstore').bootstrap(flow);\nreturn global.get('qlogic').replayDeadLetters(msg, flow, store);",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 450,
+    "y": 1900,
+    "wires": [
+      [
+        "httpres_dead_replay"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_dead_replay",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 700,
+    "y": 1900,
+    "wires": []
   }
 ]

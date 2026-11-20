@@ -40,6 +40,8 @@ TESTS = (
     ("restore_queue", "tests/restore_queue_test.py", 90),
     ("deploy_templates", "tests/deploy_templates_test.py", 60),
     ("fault_scenarios", "tests/fault_scenarios.py", 180),
+    ("long_outage", "tests/long_outage_recovery.py", 120),
+    ("soak", "tests/soak_test.py", 120),
 )
 
 RECOVERY_TESTS = (

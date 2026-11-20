@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-161215/summary.json` ｜ 当前结果：313/313 PASS
+> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-163640/summary.json` ｜ 当前结果：360/360 PASS
 
 ## 1. 阶段目标
 
@@ -281,6 +281,8 @@ Phase 2C 新增专项：
 | `tests/deploy_templates_test.py` | 16/16 PASS | 渲染、模板残留、systemd verify、unit 入口、告警、环境变量、Node-RED 认证配置 |
 | `tests/restore_queue_test.py` | 20/20 PASS | dry-run、--force、安全快照、WAL/SHM 清理、业务继续消费 |
 | `tests/backup_queue_test.py` | 20/20 PASS | 在线备份、指标 textfile、完整性、保留策略、活跃库备份 |
+| `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
+| `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
 
 一键回归命令：
 
@@ -288,9 +290,20 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 完整回归共 19 个测试脚本、**313/313 PASS**，摘要为
-`.tmp/regression-20261120-161215/summary.json`。单独运行备份测试且没有活跃
+2026-11-20 完整回归共 21 个测试脚本、**360/360 PASS**，摘要为
+`.tmp/regression-20261120-163640/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
+
+死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
+
+```bash
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"ng|SN-...|2026-11-20T..."}' \
+  http://127.0.0.1:1880/qc/dead-letters/replay
+```
+
+传 `{"all":true}` 可批量重放；接口复用原队列 ID 和去重键，重复调用不会生成重复任务。
 
 ## 9. 当前边界与后续规划
 
@@ -299,13 +312,14 @@ Phase 2C 新增专项：
 - systemd 部署模板、健康探针、Prometheus 告警规则和备份 timer。
 - SQLite 在线备份、离线恢复、恢复前安全快照和完整性校验。
 - 进程重启、SIGKILL、短断网和 UA Server 重启后的队列恢复。
+- MES 长断网后的积压排空、死信保留与受鉴权重放；6 工单 soak 无漂移。
 
 ### 9.2 尚不具备
 
 - 高可用、双机热备、自动故障切换和跨主机共享存储。
 - 异地/加密/不可变备份，以及备份恢复的定期自动化演练。
 - MES 真实鉴权、TLS、限流和接收端幂等契约的现场验证。
-- 真实交换机断链、防火墙切换、长时断网、断电和磁盘满场景证据。
+- 真实交换机断链、防火墙切换、跨小时长时断网、断电和磁盘满场景证据。
 - MES 请求延迟直方图、日志轮转、结构化日志集中采集和完整的 Alertmanager 值班流程。
 
 ### 9.3 推荐下一步

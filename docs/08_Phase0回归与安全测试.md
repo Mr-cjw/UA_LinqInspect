@@ -63,10 +63,10 @@ cd ~/UA_LinqInspect
 
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
-| SQLite 队列单测 | 14/14 PASS | 唯一约束、事务回滚、指标持久化、单飞行、退避、看门狗、迁移、上限 |
+| SQLite 队列单测 | 15/15 PASS | 唯一约束、事务回滚、指标持久化、单飞行、退避、看门狗、迁移、上限、死信重放 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
-| 安全回归 | 8/8 PASS | UA NoSecurity/匿名权限 + Node-RED 未认证 401/认证 200 |
+| 安全回归 | 10/10 PASS | UA NoSecurity/匿名权限 + Node-RED 未认证 401/认证 200 + 死信重放鉴权 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
 | Prometheus 指标 | 43/43 PASS | 文本格式、HELP/TYPE、gauge 一致性、计数增量、响应契约 |
@@ -74,14 +74,16 @@ cd ~/UA_LinqInspect
 | 离线恢复 | 20/20 PASS | dry-run、`--force`、安全快照、WAL/SHM 清理、恢复后继续消费 |
 | 部署模板 | 16/16 PASS | 模板渲染、systemd verify、unit 入口、Prometheus 告警、环境变量、Node-RED 认证配置 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
+| MES 长断网 | 24/24 PASS | 重试耗尽死信、积压保留、恢复排空、实测 RTO、受鉴权重放 |
+| 周期 soak | 20/20 PASS | 6 个工单循环、回执唯一、无新增死信、无队列漂移 |
 | 重启恢复 | 18/18 PASS | 非空 SQLite 队列恢复、队列排空、NG/完工回执续写、无新增死信 |
 | SIGKILL 崩溃恢复 | 23/23 PASS | 在途状态持久化、看门狗续传、无重复队列行、回执续写 |
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **313/313 PASS** | 一键隔离回归 |
+| **合计** | **360/360 PASS** | 一键隔离回归 |
 
-实际产物：`.tmp/regression-20261120-161215/summary.json`。
+实际产物：`.tmp/regression-20261120-163640/summary.json`。
 
 ## 4. 手工执行单个测试
 

@@ -495,6 +495,48 @@ try {
       store.close();
     }
   });
+
+  check('dead-letter replay requeues once and preserves dedup', () => {
+    const store = createStore({ dbPath: freshDbPath('dead-replay') });
+    try {
+      enqueueNg(store, 'SN-REPLAY', '2026-11-20T12:00:00.000Z');
+      const sent = store.claimNext(2000);
+      const dead = store.deadLetter({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        errorCode: 'MES_UNAVAILABLE',
+        reason: 'HTTP 500',
+        now: 3000,
+      });
+      assert.equal(dead.id, sent.item.id);
+      assert.equal(store.status().deadLetters.total, 1);
+
+      const replayed = store.replayDeadLetters({ id: sent.item.id, now: 4000 });
+      assert.equal(replayed.replayed, 1);
+      assert.equal(replayed.remainingDeadLetters, 0);
+      assert.equal(replayed.queueLength, 1);
+      const status = store.status();
+      assert.equal(status.queue.pending, 1);
+      assert.equal(status.dedup.ngFingerprints, 1);
+      assert.equal(status.dedup.ngSerialNumbers, 1);
+
+      const duplicateReplay = store.replayDeadLetters({ id: sent.item.id, now: 4001 });
+      assert.equal(duplicateReplay.replayed, 0);
+
+      const resent = store.claimNext(4002);
+      assert.equal(resent.state, 'send');
+      assert.equal(resent.item.attempts, 0);
+      assert.equal(resent.item.lastStatus, 'replayed');
+      assert.equal(store.complete({
+        id: resent.item.id,
+        correlationId: resent.item.correlationId,
+      }).id, resent.item.id);
+      assert.equal(store.status().queue.total, 0);
+      assert.equal(store.status().deadLetters.total, 0);
+    } finally {
+      store.close();
+    }
+  });
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

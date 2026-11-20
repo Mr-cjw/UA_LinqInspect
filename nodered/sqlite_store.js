@@ -634,6 +634,60 @@ class SqliteQueueStore {
     });
   }
 
+  replayDeadLetters({ id = '', limit = MAX_DEAD_LETTERS, now = Date.now() } = {}) {
+    const queueId = String(id || '').trim();
+    const replayLimit = Math.min(
+      Math.max(1, asInteger(limit, MAX_DEAD_LETTERS)),
+      MAX_DEAD_LETTERS
+    );
+    return this._transaction(() => {
+      const rows = queueId
+        ? this.db.prepare(
+          'SELECT * FROM dead_letters WHERE queue_id = ? ORDER BY seq LIMIT ?'
+        ).all(queueId, replayLimit)
+        : this.db.prepare(
+          'SELECT * FROM dead_letters ORDER BY seq LIMIT ?'
+        ).all(replayLimit);
+      let replayed = 0;
+      let skipped = 0;
+      let capacitySkipped = 0;
+      for (const row of rows) {
+        if (this._queueRow(row.queue_id)) {
+          skipped += 1;
+          continue;
+        }
+        if (this._queueCount() >= MAX_QUEUE) {
+          capacitySkipped += 1;
+          continue;
+        }
+        this.db.prepare(`
+          INSERT INTO queue(
+            id, type, correlation_id, url, body_json, created_at, attempts,
+            next_at, status, sent_at, last_status, last_error_code, enqueued_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'PENDING', NULL, 'replayed', '', ?)
+        `).run(
+          row.queue_id,
+          row.type,
+          row.correlation_id || '',
+          row.url,
+          row.body_json,
+          row.created_at || '',
+          now,
+          now
+        );
+        this.db.prepare('DELETE FROM dead_letters WHERE seq = ?').run(row.seq);
+        replayed += 1;
+      }
+      return {
+        replayed,
+        skipped,
+        capacitySkipped,
+        remainingDeadLetters: this._deadCount(),
+        queueLength: this._queueCount(),
+      };
+    });
+  }
+
   status() {
     const counts = { PENDING: 0, SENDING: 0, FAILED: 0 };
     const grouped = this.db.prepare(
