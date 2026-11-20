@@ -11,18 +11,20 @@ cd ~/UA_LinqInspect
 
 脚本会依次执行：
 
-1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、单飞行、退避/看门狗和旧 context 导入。
+1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、指标持久化、单飞行、退避/看门狗和旧 context 导入。
 2. `tests/security_test.py`：传输安全、匿名只读、管理员写/Method 权限。
 3. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
 4. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
-5. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
-6. `tests/restart_recovery.py seed`：制造非空 SQLite 队列后退出。
-7. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
-8. `tests/crash_recovery.py prepare`：让一条请求处于 `SENDING` 并制造待恢复任务。
-9. `tests/crash_recovery.py verify`：`SIGKILL` 重启后验证看门狗续传、唯一性和回执续写。
-10. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
-11. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
-12. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
+5. `tests/metrics_test.py`：验证 Prometheus Content-Type、HELP/TYPE、gauge 一致性、计数增量和 correlationId 契约。
+6. `tests/backup_queue_test.py`：验证 WAL 在线备份、完整性检查、行数一致和保留策略。
+7. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
+8. `tests/restart_recovery.py seed`：制造非空 SQLite 队列后退出。
+9. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
+10. `tests/crash_recovery.py prepare`：让一条请求处于 `SENDING` 并制造待恢复任务。
+11. `tests/crash_recovery.py verify`：`SIGKILL` 重启后验证看门狗续传、唯一性和回执续写。
+12. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
+13. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
+14. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -55,19 +57,21 @@ cd ~/UA_LinqInspect
 
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
-| SQLite 队列单测 | 13/13 PASS | 唯一约束、事务回滚、单飞行、退避、看门狗、迁移、上限 |
+| SQLite 队列单测 | 14/14 PASS | 唯一约束、事务回滚、指标持久化、单飞行、退避、看门狗、迁移、上限 |
 | 安全回归 | 6/6 PASS | NoSecurity 拒绝、匿名只读、匿名写/Method 拒绝、管理员写/Method |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
+| Prometheus 指标 | 43/43 PASS | 文本格式、HELP/TYPE、gauge 一致性、计数增量、响应契约 |
+| SQLite 备份 | 17/17 PASS | WAL 热备、完整性校验、行数一致、保留策略、运行中数据库 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
 | 重启恢复 | 18/18 PASS | 非空 SQLite 队列恢复、队列排空、NG/完工回执续写、无新增死信 |
 | SIGKILL 崩溃恢复 | 23/23 PASS | 在途状态持久化、看门狗续传、无重复队列行、回执续写 |
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **194/194 PASS** | 一键隔离回归 |
+| **合计** | **255/255 PASS** | 一键隔离回归 |
 
-实际产物示例：`.tmp/regression-20261120-142021/summary.json`。
+实际产物示例：`.tmp/regression-20261120-145650/summary.json`。
 
 ## 4. 手工执行单个测试
 

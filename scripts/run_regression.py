@@ -32,6 +32,8 @@ TESTS = (
     ("security", "tests/security_test.py", 60),
     ("smoke", "tests/smoke_test.py", 90),
     ("nodered_e2e", "tests/nodered_e2e.py", 120),
+    ("metrics", "tests/metrics_test.py", 120),
+    ("backup_queue", "tests/backup_queue_test.py", 60),
     ("fault_scenarios", "tests/fault_scenarios.py", 180),
 )
 

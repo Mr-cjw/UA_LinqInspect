@@ -2,8 +2,8 @@
 
 > 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
-> 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A SQLite 事务队列完成后，
-> 当前一键回归为 194/194，见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)。
+> 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A/2B 完成后，
+> 当前一键回归为 255/255，见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -102,6 +102,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 又完成了 SQLite 事务队列与 `SIGKILL` 恢复，当前 194 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并完善指标、备份和 MES 接收端幂等契约。
+> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列与 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，当前 255 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并完善告警、恢复演练和 MES 接收端幂等契约。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

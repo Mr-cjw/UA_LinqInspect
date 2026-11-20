@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "AI质检-MES闭环(基础骨架)",
     "disabled": false,
-    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信存于 flow context，由 localfilesystem 近实时落盘；事务型 SQLite 队列见 Phase0 §6-5。",
+    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信和运行指标存于 SQLite（WAL），可经 GET /qc/status 与 GET /metrics 查询。",
     "env": []
   },
   {
@@ -1064,6 +1064,54 @@
     "headers": {},
     "x": 640,
     "y": 1540,
+    "wires": []
+  },
+  {
+    "id": "httpin_metrics",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "Prometheus指标",
+    "url": "/metrics",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 160,
+    "y": 1620,
+    "wires": [
+      [
+        "fn_metrics"
+      ]
+    ]
+  },
+  {
+    "id": "fn_metrics",
+    "type": "function",
+    "z": "qcflow",
+    "name": "输出Prometheus指标",
+    "func": "const store = global.get('qstore').bootstrap(flow);\nreturn global.get('qlogic').metrics(msg, flow, store);",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 410,
+    "y": 1620,
+    "wires": [
+      [
+        "httpres_metrics"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_metrics",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 640,
+    "y": 1620,
     "wires": []
   }
 ]

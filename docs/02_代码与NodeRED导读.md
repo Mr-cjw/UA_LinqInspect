@@ -121,12 +121,15 @@
 | `fn_mes_ng` | MES 处理 NG 单 | HTTP body | 生成 `MES-*`，同 SN 防重，故障注入 |
 | `fn_mes_done` | MES 处理报工 | HTTP body | 生成 `RC-*`，同工单防重，故障注入 |
 | `fn_status` | 输出队列/死信/心跳状态 | `GET /qc/status` | 从 SQLite 返回队列、死信、去重计数，并附带最近请求/响应和关联 ID |
+| `fn_metrics` | 输出 Prometheus 指标 | `GET /metrics` | 从 SQLite 计数和当前队列生成 Prometheus 文本 |
 
 Function 节点现在只做薄适配；核心实现位于：
 
-- `nodered/sqlite_store.js`：表结构、事务、原子领取、退避/死信、旧 context 迁移。
-- `nodered/queue_logic.js`：消息校验、入队、发送、响应契约处理和状态接口。
+- `nodered/sqlite_store.js`：表结构、事务、原子领取、退避/死信、持久化指标和旧 context 迁移。
+- `nodered/queue_logic.js`：消息校验、入队、发送、响应契约处理、状态接口和指标渲染。
 - `nodered/settings.js`：通过 `functionGlobalContext` 注入 `qstore` 和 `qlogic`。
+
+SQLite 在线备份脚本位于 `scripts/backup_queue.py`，不在 Node-RED 请求链路内运行。
 
 ## 5. 发送泵状态机
 

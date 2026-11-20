@@ -376,6 +376,111 @@ function response(msg, flow, node, store) {
   return null;
 }
 
+function prometheusValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : '0';
+}
+
+function prometheusLabel(value) {
+  return String(value == null ? '' : value)
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/"/g, '\\"');
+}
+
+function metricKey(name, type = '', outcome = '', errorCode = '') {
+  return [name, type, outcome, errorCode].join('\u0000');
+}
+
+function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec) {
+  const values = new Map();
+  for (const item of snapshot) {
+    values.set(metricKey(item.name, item.type, item.outcome, item.errorCode), item.value);
+  }
+  const value = (name, type = '', outcome = '', errorCode = '') =>
+    values.get(metricKey(name, type, outcome, errorCode)) || 0;
+  const lines = [];
+  const family = (name, help, type) => {
+    lines.push(`# HELP ${name} ${help}`);
+    lines.push(`# TYPE ${name} ${type}`);
+  };
+
+  family('qc_queue_depth', 'Current queue depth by status.', 'gauge');
+  lines.push(`qc_queue_depth{status="pending"} ${prometheusValue(state.queue.pending)}`);
+  lines.push(`qc_queue_depth{status="sending"} ${prometheusValue(state.queue.sending)}`);
+  family('qc_queue_oldest_age_seconds', 'Age in seconds of the oldest queued item.', 'gauge');
+  lines.push(`qc_queue_oldest_age_seconds ${prometheusValue(state.queue.oldestAgeSec)}`);
+  family('qc_dead_letters', 'Current dead-letter records retained in SQLite.', 'gauge');
+  lines.push(`qc_dead_letters ${prometheusValue(state.deadLetters.total)}`);
+  family('qc_dedup_keys', 'Retained deduplication keys by business key kind.', 'gauge');
+  lines.push(`qc_dedup_keys{kind="ng_fingerprint"} ${prometheusValue(state.dedup.ngFingerprints)}`);
+  lines.push(`qc_dedup_keys{kind="ng_serial"} ${prometheusValue(state.dedup.ngSerialNumbers)}`);
+  lines.push(`qc_dedup_keys{kind="work_order"} ${prometheusValue(state.dedup.completedWorkOrders)}`);
+  family('qc_heartbeat_failures', 'Consecutive OPC UA heartbeat failures (0-3).', 'gauge');
+  lines.push(`qc_heartbeat_failures ${prometheusValue(heartbeatFailures)}`);
+  family('qc_uptime_seconds', 'Seconds since this Node-RED flow was first observed.', 'gauge');
+  lines.push(`qc_uptime_seconds ${prometheusValue(uptimeSec)}`);
+
+  family('qc_enqueue_total', 'Enqueue attempts by event type and outcome.', 'counter');
+  for (const type of ['ng', 'complete']) {
+    for (const outcome of ['accepted', 'duplicate']) {
+      lines.push(
+        `qc_enqueue_total{type="${type}",outcome="${outcome}"} ` +
+        prometheusValue(value('enqueue_total', type, outcome))
+      );
+    }
+  }
+
+  family('qc_delivery_total', 'Delivery outcomes by event type.', 'counter');
+  for (const type of ['ng', 'complete']) {
+    for (const outcome of ['success', 'retry', 'dead']) {
+      lines.push(
+        `qc_delivery_total{type="${type}",outcome="${outcome}"} ` +
+        prometheusValue(value('delivery_total', type, outcome))
+      );
+    }
+  }
+
+  family('qc_delivery_errors_total', 'Delivery failures by event type and stable error code.', 'counter');
+  const errorRows = snapshot.filter(item => item.name === 'delivery_errors_total');
+  for (const item of errorRows) {
+    lines.push(
+      `qc_delivery_errors_total{type="${prometheusLabel(item.type)}",` +
+      `error_code="${prometheusLabel(item.errorCode)}"} ` +
+      prometheusValue(item.value)
+    );
+  }
+
+  family('qc_watchdog_total', 'Watchdog outcomes for stale in-flight requests.', 'counter');
+  for (const outcome of ['recovered', 'dead']) {
+    lines.push(
+      `qc_watchdog_total{outcome="${outcome}"} ` +
+      prometheusValue(value('watchdog_total', '', outcome))
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
+function metrics(msg, flow, store) {
+  const snapshot = store.metricSnapshot();
+  const state = store.status();
+  const startedAt = flow.get('edgeStartedAt') || Date.now();
+  if (!flow.get('edgeStartedAt')) flow.set('edgeStartedAt', startedAt);
+  const uptimeSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  msg.payload = renderMetrics(
+    snapshot,
+    state,
+    flow.get('hbFails') || 0,
+    uptimeSec
+  );
+  msg.headers = {
+    'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  };
+  return msg;
+}
+
 function status(msg, flow, store) {
   const snapshot = store.status();
   const startedAt = flow.get('edgeStartedAt') || Date.now();
@@ -418,4 +523,5 @@ module.exports = {
   pump,
   response,
   status,
+  metrics,
 };

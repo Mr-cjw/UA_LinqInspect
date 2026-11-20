@@ -10,6 +10,20 @@ const MAX_DEDUP_KEYS = 500;
 const RETRY_DELAYS = [1000, 2000, 4000];
 const WATCHDOG_MS = 15000;
 const LEGACY_MIGRATION_KEY = 'legacy_context_imported_v1';
+const METRIC_TYPES = new Set(['ng', 'complete']);
+const METRIC_ERROR_CODES = new Set([
+  'MES_UNAVAILABLE',
+  'MES_BUSY',
+  'MES_REJECTED',
+  'MES_HTTP_4XX',
+  'TRANSPORT_ERROR',
+  'UNKNOWN_ERROR',
+  'WATCHDOG_TIMEOUT',
+  'INVALID_RESPONSE_SCHEMA',
+  'CORRELATION_MISMATCH',
+  'MISSING_MES_ORDER_NO',
+  'MISSING_RECEIPT_NO',
+]);
 
 function resolveDbPath() {
   if (process.env.QC_DB_PATH) return path.resolve(process.env.QC_DB_PATH);
@@ -30,6 +44,18 @@ function asString(value) {
 function asInteger(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.trunc(number) : fallback;
+}
+
+function metricType(value) {
+  const text = asString(value);
+  if (!text) return '';
+  return METRIC_TYPES.has(text) ? text : 'other';
+}
+
+function metricErrorCode(value) {
+  const text = asString(value);
+  if (!text) return '';
+  return METRIC_ERROR_CODES.has(text) ? text : 'OTHER_ERROR';
 }
 
 function rowToQueueItem(row) {
@@ -133,6 +159,16 @@ class SqliteQueueStore {
         meta_key TEXT PRIMARY KEY,
         meta_value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS metrics (
+        name TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        error_code TEXT NOT NULL DEFAULT '',
+        value INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (name, type, outcome, error_code)
+      );
     `);
     try {
       fs.chmodSync(this.dbPath, 0o600);
@@ -147,6 +183,13 @@ class SqliteQueueStore {
       'INSERT INTO meta(meta_key, meta_value) VALUES (?, ?) ' +
       'ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value'
     );
+    this._metricIncrementStatement = this.db.prepare(`
+      INSERT INTO metrics(name, type, outcome, error_code, value, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(name, type, outcome, error_code) DO UPDATE SET
+        value = metrics.value + excluded.value,
+        updated_at = excluded.updated_at
+    `);
   }
 
   close() {
@@ -209,6 +252,17 @@ class SqliteQueueStore {
     ).run(MAX_DEAD_LETTERS);
   }
 
+  _metricIncrement(name, type, outcome, errorCode, now, amount = 1) {
+    this._metricIncrementStatement.run(
+      name,
+      metricType(type),
+      outcome || '',
+      metricErrorCode(errorCode),
+      asInteger(amount, 1),
+      asInteger(now, Date.now())
+    );
+  }
+
   _moveToDead(row, errorCode, reason, attempts, now) {
     const failedAt = nowIso(now);
     this.db.prepare(`
@@ -234,6 +288,10 @@ class SqliteQueueStore {
     );
     this.db.prepare('DELETE FROM queue WHERE id = ?').run(row.id);
     this._pruneDeadLetters();
+    this._metricIncrement('delivery_total', row.type, 'dead', '', now);
+    this._metricIncrement(
+      'delivery_errors_total', row.type, '', errorCode || 'UNKNOWN_ERROR', now
+    );
     return {
       id: row.id,
       type: row.type,
@@ -429,10 +487,12 @@ class SqliteQueueStore {
     if (!bodyJson) throw new Error('cannot serialize queue body');
     return this._transaction(() => {
       if (this._queueRow(id)) {
+        this._metricIncrement('enqueue_total', type, 'duplicate', '', now);
         return { enqueued: false, duplicate: true, reason: 'queue-id', dropped: [], queueLength: this._queueCount() };
       }
       for (const entry of dedupKeys) {
         if (this.hasDedup(entry.kind, entry.key)) {
+          this._metricIncrement('enqueue_total', type, 'duplicate', '', now);
           return { enqueued: false, duplicate: true, reason: 'dedup', dropped: [], queueLength: this._queueCount() };
         }
       }
@@ -460,6 +520,7 @@ class SqliteQueueStore {
         ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'PENDING', ?)
       `).run(id, type, correlationId || '', url, bodyJson, createdAt || '', now);
       for (const entry of dedupKeys) this._pruneDedup(entry.kind);
+      this._metricIncrement('enqueue_total', type, 'accepted', '', now);
       return { enqueued: true, duplicate: false, reason: '', dropped, queueLength: this._queueCount() };
     });
   }
@@ -482,6 +543,7 @@ class SqliteQueueStore {
             const dead = this._moveToDead(
               inflight, 'WATCHDOG_TIMEOUT', 'watchdog-timeout', attempts, now
             );
+            this._metricIncrement('watchdog_total', '', 'dead', '', now);
             return { state: 'dead', item: dead, queueLength: this._queueCount(), queueTotal: this._queueCount() };
           }
           const delay = RETRY_DELAYS[attempts - 1];
@@ -491,6 +553,9 @@ class SqliteQueueStore {
                 last_status = 'watchdog-timeout', last_error_code = 'WATCHDOG_TIMEOUT'
             WHERE id = ? AND status = 'SENDING'
           `).run(attempts, now + delay, inflight.id);
+          this._metricIncrement('watchdog_total', '', 'recovered', '', now);
+          this._metricIncrement('delivery_total', inflight.type, 'retry', '', now);
+          this._metricIncrement('delivery_errors_total', inflight.type, '', 'WATCHDOG_TIMEOUT', now);
           const updated = this._queueRow(inflight.id);
           return {
             state: 'watchdog-retry',
@@ -529,6 +594,7 @@ class SqliteQueueStore {
         "DELETE FROM queue WHERE id = ? AND status = 'SENDING' AND correlation_id = ?"
       ).run(id, correlationId || row.correlation_id || '');
       if (!result.changes) return null;
+      this._metricIncrement('delivery_total', row.type, 'success', '', Date.now());
       return rowToQueueItem(row);
     });
   }
@@ -549,6 +615,8 @@ class SqliteQueueStore {
             last_status = ?, last_error_code = ?
         WHERE id = ? AND status = 'SENDING' AND correlation_id = ?
       `).run(attempts, now + delay, reason || '', errorCode || '', id, row.correlation_id || '');
+      this._metricIncrement('delivery_total', row.type, 'retry', '', now);
+      this._metricIncrement('delivery_errors_total', row.type, '', errorCode || 'UNKNOWN_ERROR', now);
       return {
         outcome: 'retry',
         item: rowToQueueItem(this._queueRow(id)),
@@ -607,6 +675,21 @@ class SqliteQueueStore {
       },
       dedup: dedupCounts,
     };
+  }
+
+  metricSnapshot() {
+    return this.db.prepare(`
+      SELECT name, type, outcome, error_code, value, updated_at
+      FROM metrics
+      ORDER BY name, type, outcome, error_code
+    `).all().map(row => ({
+      name: row.name,
+      type: row.type || '',
+      outcome: row.outcome || '',
+      errorCode: row.error_code || '',
+      value: asInteger(row.value),
+      updatedAt: asInteger(row.updated_at),
+    }));
   }
 }
 

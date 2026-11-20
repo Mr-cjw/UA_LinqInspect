@@ -1,6 +1,8 @@
 # Phase 2A：SQLite 事务队列与崩溃恢复
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当前结果：194/194 PASS
+> 日期：2026-11-20 ｜ Phase 2A 证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当时结果：194/194 PASS
+>
+> Phase 2B 完成后当前一键回归为 255/255，见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -183,18 +185,10 @@ print('dedup', db.execute('select kind, count(*) from dedup group by kind').fetc
 PY
 ```
 
-在线备份应使用 SQLite backup API，而不是只复制主 `.sqlite` 文件；WAL 模式下还需同时考虑
-`-wal`/`-shm` 文件：
+在线备份应使用 SQLite backup API，而不是只复制主 `.sqlite` 文件。Phase 2B 已把下面的思路封装为可执行脚本：
 
 ```bash
-python3 - <<'PY'
-import sqlite3
-src = sqlite3.connect('data/qc-queue.sqlite')
-dst = sqlite3.connect('data/qc-queue.backup.sqlite')
-src.backup(dst)
-dst.close()
-src.close()
-PY
+.venv/bin/python scripts/backup_queue.py --keep 7
 ```
 
 ## 9. 仍然不能宣称的能力
@@ -204,17 +198,18 @@ Phase 2A 提升了进程崩溃后的一致性，但仍不是 exactly-once：
 - MES 已受理、Node-RED 尚未提交成功状态时崩溃，重启后仍可能重发；必须依赖 MES 幂等键。
 - 当前默认单 Node-RED 实例写一个 SQLite 文件，尚未实现多实例选主或分布式锁。
 - SQLite 文件未做静态加密，备份、权限和保留周期仍需纳入现场安全方案。
-- 尚未增加完整状态迁移审计表、Prometheus 指标和结构化日志。
+- 尚未增加完整状态迁移审计表、告警规则和结构化日志；Prometheus 指标与在线备份已在 Phase 2B 补齐。
 
 准确表述应为：**至少一次投递 + 去重 + MES 接收端幂等，具备进程崩溃恢复能力。**
 
 ## 10. 下一阶段路线
 
-### Phase 2B：可观测性
+### Phase 2B：可观测性与 SQLite 备份，已完成
 
-- `/qc/status` 增加成功率、重试分布、最老任务年龄、最近错误聚合。
-- 增加 Prometheus `/metrics`，覆盖入队、成功、重试、死信和 MES 延迟。
-- 结构化 JSON 日志并统一 `correlationId`。
+- ✅ 增加 Prometheus `/metrics`，覆盖队列、死信、去重、入队、投递和看门狗。
+- ✅ 运行计数写入 SQLite，并与队列状态迁移共用事务。
+- ✅ 增加在线备份脚本、完整性校验和保留策略。
+- 结构化 JSON 日志与告警规则留到下一阶段。
 
 ### Phase 2C：部署与运维基线
 

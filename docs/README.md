@@ -29,6 +29,7 @@
 | [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md) | 一键隔离回归、安全用例、测试产物和实测结果 | 每次改动后复验 |
 | [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md) | correlationId 贯通、MES 错误码矩阵、重启/断网订阅恢复、158 项回归证据与后续规划 | 做可靠性增强或答辩前 |
 | [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md) | SQLite 表结构、事务边界、旧 context 迁移、SIGKILL 恢复与 194 项回归证据 | 做生产化增强或评审可靠性时 |
+| [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md) | Prometheus 指标、事务计数、在线备份、完整性校验、255 项回归证据与下一步 | 做运维化、监控或备份评审时 |
 
 ## 3. 原始依据文档
 
@@ -83,16 +84,18 @@
 - 安全回归：6/6 PASS
 - M1 冒烟测试：36/36 PASS
 - M2 正常链路端到端测试：15/15 PASS
+- Prometheus 指标：43/43 PASS
+- SQLite 在线备份：17/17 PASS
 - M2 故障场景测试：52/52 PASS（5xx、timeout、4xx、429、非法 2xx、Method 拒绝）
 - Node-RED 非空队列重启恢复：18/18 PASS
-- SQLite 队列单测：13/13 PASS
+- SQLite 队列单测：14/14 PASS
 - Node-RED SIGKILL 崩溃恢复：23/23 PASS
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：194/194 PASS
+- 一键隔离回归合计：255/255 PASS
 
-一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
+一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 
 ## 6. 项目一句话与三句话
 

@@ -65,6 +65,16 @@ function enqueueNg(store, serialNumber, occurredAt, now = 1000) {
   });
 }
 
+function metricValue(store, name, type = '', outcome = '', errorCode = '') {
+  const row = store.metricSnapshot().find(item =>
+    item.name === name &&
+    item.type === type &&
+    item.outcome === outcome &&
+    item.errorCode === errorCode
+  );
+  return row ? row.value : 0;
+}
+
 try {
   check('SQLite schema opens in WAL mode', () => {
     const dbPath = freshDbPath('wal');
@@ -141,6 +151,7 @@ try {
       );
       assert.equal(Number(db.prepare('SELECT COUNT(*) AS count FROM dedup').get().count), 0);
       assert.equal(Number(db.prepare('SELECT COUNT(*) AS count FROM queue').get().count), 0);
+      assert.equal(Number(db.prepare('SELECT COUNT(*) AS count FROM metrics').get().count), 0);
     } finally {
       db.close();
       store.close();
@@ -257,6 +268,76 @@ try {
     }
   });
 
+  check('metrics commit with queue transitions and survive restart', () => {
+    const dbPath = freshDbPath('metrics');
+    const first = createStore({ dbPath });
+    try {
+      enqueueNg(first, 'SN-METRIC', '2026-11-20T12:00:00.000Z');
+      enqueueNg(first, 'SN-METRIC', '2026-11-20T12:00:00.000Z', 1001);
+      enqueueNg(first, 'SN-METRIC', '2026-11-20T12:00:01.000Z', 1002);
+      const sent = first.claimNext(2000);
+      first.complete({ id: sent.item.id, correlationId: sent.item.correlationId });
+
+      first.enqueue({
+        id: 'done|WO-METRIC',
+        type: 'complete',
+        correlationId: 'corr-done-metric',
+        url: 'http://127.0.0.1/mes/complete',
+        body: { schemaVersion: '1.0', workOrderId: 'WO-METRIC' },
+        createdAt: '2026-11-20T12:00:02.000Z',
+        dedupKeys: [{ kind: 'done', key: 'WO-METRIC' }],
+        now: 3000,
+      });
+      const done = first.claimNext(4000);
+      const retried = first.retry({
+        id: done.item.id,
+        correlationId: done.item.correlationId,
+        delayMs: 1000,
+        errorCode: 'MES_UNAVAILABLE',
+        reason: 'HTTP 500',
+        now: 4000,
+      });
+      const retriedDone = first.claimNext(retried.item.nextAt);
+      first.deadLetter({
+        id: retriedDone.item.id,
+        correlationId: retriedDone.item.correlationId,
+        errorCode: 'CUSTOM_MES_CODE',
+        reason: 'HTTP 400 custom',
+        now: retried.item.nextAt + 1,
+      });
+
+      assert.equal(metricValue(first, 'enqueue_total', 'ng', 'accepted'), 1);
+      assert.equal(metricValue(first, 'enqueue_total', 'ng', 'duplicate'), 2);
+      assert.equal(metricValue(first, 'enqueue_total', 'complete', 'accepted'), 1);
+      assert.equal(metricValue(first, 'delivery_total', 'ng', 'success'), 1);
+      assert.equal(metricValue(first, 'delivery_total', 'complete', 'retry'), 1);
+      assert.equal(
+        metricValue(first, 'delivery_errors_total', 'complete', '', 'MES_UNAVAILABLE'), 1
+      );
+      assert.equal(
+        metricValue(first, 'delivery_errors_total', 'complete', '', 'OTHER_ERROR'), 1
+      );
+      assert.equal(
+        metricValue(first, 'delivery_errors_total', 'complete', '', 'CUSTOM_MES_CODE'), 0
+      );
+    } finally {
+      first.close();
+    }
+
+    const second = createStore({ dbPath });
+    try {
+      assert.equal(metricValue(second, 'enqueue_total', 'ng', 'accepted'), 1);
+      assert.equal(metricValue(second, 'enqueue_total', 'ng', 'duplicate'), 2);
+      assert.equal(metricValue(second, 'delivery_total', 'ng', 'success'), 1);
+      assert.equal(metricValue(second, 'delivery_total', 'complete', 'retry'), 1);
+      assert.equal(
+        metricValue(second, 'delivery_errors_total', 'complete', '', 'OTHER_ERROR'), 1
+      );
+    } finally {
+      second.close();
+    }
+  });
+
   check('watchdog recovers SENDING items and eventually dead-letters them', () => {
     const store = createStore({ dbPath: freshDbPath('watchdog') });
     try {
@@ -276,6 +357,13 @@ try {
       assert.equal(dead.item.attempts, 4);
       assert.equal(dead.item.errorCode, 'WATCHDOG_TIMEOUT');
       assert.equal(store.status().queue.total, 0);
+      assert.equal(metricValue(store, 'watchdog_total', '', 'recovered'), 3);
+      assert.equal(metricValue(store, 'watchdog_total', '', 'dead'), 1);
+      assert.equal(metricValue(store, 'delivery_total', 'ng', 'retry'), 3);
+      assert.equal(metricValue(store, 'delivery_total', 'ng', 'dead'), 1);
+      assert.equal(
+        metricValue(store, 'delivery_errors_total', 'ng', '', 'WATCHDOG_TIMEOUT'), 4
+      );
       void now;
     } finally {
       store.close();
