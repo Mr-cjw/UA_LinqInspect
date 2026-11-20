@@ -153,6 +153,9 @@ async def main() -> int:
         "qc_delivery_errors_total",
         "qc_watchdog_total",
         "qc_database_bytes",
+        "qc_ua_write_pending",
+        "qc_ua_write_total",
+        "qc_ua_write_errors_total",
     ):
         check(f"{family} has HELP", family in helps)
         check(f"{family} has TYPE", family in metric_types)
@@ -160,6 +163,8 @@ async def main() -> int:
     check("enqueue total is a counter", metric_types.get("qc_enqueue_total") == "counter")
     check("delivery total is a counter", metric_types.get("qc_delivery_total") == "counter")
     check("database bytes is a gauge", metric_types.get("qc_database_bytes") == "gauge")
+    check("UA write-back pending is a gauge", metric_types.get("qc_ua_write_pending") == "gauge")
+    check("UA write-back total is a counter", metric_types.get("qc_ua_write_total") == "counter")
 
     initial_state = edge_status()
     check("queue pending gauge matches /qc/status",
@@ -183,6 +188,9 @@ async def main() -> int:
     check("WAL and SHM sizes are exposed",
           metric_value(samples, "qc_database_bytes", kind="wal") >= 0 and
           metric_value(samples, "qc_database_bytes", kind="shm") >= 0)
+    check("UA write-back pending gauge matches /qc/status",
+          metric_value(samples, "qc_ua_write_pending") ==
+          float(initial_state["uaWriteback"]["pending"] + initial_state["uaWriteback"]["sending"]))
 
     check("restore MES ok mode", inject("inj_ok") and edge_status()["mesMode"] == "ok")
     client = await create_secure_client()
@@ -201,11 +209,17 @@ async def main() -> int:
         baseline, _, _, _, _ = fetch_metrics()
         baseline_ng_enqueued = metric_value(baseline, "qc_enqueue_total", type="ng", outcome="accepted")
         baseline_ng_success = metric_value(baseline, "qc_delivery_total", type="ng", outcome="success")
+        baseline_ng_ua_write = metric_value(
+            baseline, "qc_ua_write_total", type="ng", outcome="success"
+        )
         baseline_done_enqueued = metric_value(
             baseline, "qc_enqueue_total", type="complete", outcome="accepted"
         )
         baseline_done_success = metric_value(
             baseline, "qc_delivery_total", type="complete", outcome="success"
+        )
+        baseline_done_ua_write = metric_value(
+            baseline, "qc_ua_write_total", type="complete", outcome="success"
         )
 
         work_order = "WO-METRICS-" + datetime.now().strftime("%Y%m%d%H%M%S")
@@ -224,6 +238,12 @@ async def main() -> int:
             timeout=35,
             description="NG success metric",
         ))
+        check("NG UA write-back success counter advances", await wait_until(
+            lambda: metric_value(fetch_metrics()[0], "qc_ua_write_total", type="ng", outcome="success")
+            > baseline_ng_ua_write,
+            timeout=35,
+            description="NG UA write-back success metric",
+        ))
 
         completed = await root.call_method(f"{idx}:CompleteWorkOrder", work_order)
         check("CompleteWorkOrder accepted", bool(completed and completed[0] is True),
@@ -239,6 +259,12 @@ async def main() -> int:
             > baseline_done_success,
             timeout=35,
             description="completion success metric",
+        ))
+        check("completion UA write-back success counter advances", await wait_until(
+            lambda: metric_value(fetch_metrics()[0], "qc_ua_write_total", type="complete", outcome="success")
+            > baseline_done_ua_write,
+            timeout=35,
+            description="completion UA write-back success metric",
         ))
         check("closed-loop queue drains", await wait_until(
             lambda: edge_status()["queue"]["total"] == 0,

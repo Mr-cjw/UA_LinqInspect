@@ -3,7 +3,7 @@
 > 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
 > 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A/2B/2C 完成后，
-> 当前一键回归为 370/370，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
+> 当前一键回归为 385/385，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -103,6 +103,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列与 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，M3 自动化补上 MES 长断网、死信重放和周期 soak，并进一步补齐 WAL/磁盘告警与告警路由，当前 370 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在试点主机验证 MES 接收端幂等契约和端到端 RTO。
+> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列、UA 写回确认与 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，M3 自动化补上 MES 长断网、死信重放和周期 soak，并进一步补齐 WAL/磁盘告警与告警路由，当前 385 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在试点主机验证 MES 接收端幂等契约和端到端 RTO。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

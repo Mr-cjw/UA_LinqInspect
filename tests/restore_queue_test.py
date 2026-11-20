@@ -167,7 +167,24 @@ const metrics = store.metricSnapshot();
 const claimed = store.claimNext(Date.now());
 let completed = null;
 if (claimed.state === 'send') {
-  completed = store.complete({ id: claimed.item.id, correlationId: claimed.item.correlationId });
+  const targets = [
+    { topic: 'ns=2;s=QCStation.LastNgMesOrderNo', value: 'MES-RESTORE-0001' },
+    { topic: 'ns=2;s=QCStation.LastMesOrderNo', value: 'MES-RESTORE-0001' },
+  ];
+  completed = store.complete({
+    id: claimed.item.id,
+    correlationId: claimed.item.correlationId,
+    receipt: 'MES-RESTORE-0001',
+    targets,
+  });
+  for (const target of targets) {
+    store.confirmUaWriteTarget({
+      id: claimed.item.id,
+      correlationId: claimed.item.correlationId,
+      target: target.topic,
+      value: target.value,
+    });
+  }
 }
 const after = store.status();
 console.log(JSON.stringify({ before, after, metrics, claimed: claimed.state, completed: !!completed }));

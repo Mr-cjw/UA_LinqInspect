@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：370/370，证据：`.tmp/regression-20261120-164716/summary.json`
+> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：385/385，证据：`.tmp/regression-20261120-171641/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -49,6 +49,9 @@ name, type, outcome, error_code, value, updated_at
 | `qc_delivery_total{type,outcome}` | counter | 成功、退避、死信次数 |
 | `qc_delivery_errors_total{type,error_code}` | counter | 按稳定错误码聚合的投递失败 |
 | `qc_watchdog_total{outcome}` | counter | 看门狗恢复/最终死信次数 |
+| `qc_ua_write_pending` | gauge | 等待 UA 写回全部目标确认的任务数 |
+| `qc_ua_write_total{type,outcome}` | counter | UA 写回成功、重试、死信次数 |
+| `qc_ua_write_errors_total{type,error_code}` | counter | 按稳定错误码聚合的 UA 写回失败 |
 
 注意：`qc_delivery_errors_total` 统计的是失败尝试，不是失败任务数。一个任务经历 3 次退避后进入死信，会贡献 4 次 `WATCHDOG_TIMEOUT` 失败尝试。错误码采用白名单，非白名单值记为 `OTHER_ERROR`，避免 MES 返回任意字符串导致指标基数膨胀。
 
@@ -58,7 +61,7 @@ name, type, outcome, error_code, value, updated_at
 curl -s http://127.0.0.1:1880/metrics | head -40
 ```
 
-`/qc/status` 的 `queue`、`deadLetters.last`、`dedup`、`lastRequest*` 等结构保持不变。
+`/qc/status` 的 `queue`、`deadLetters.last`、`dedup`、`lastRequest*` 等结构保持不变；新增 `uaWriteback.pending/sending` 反映 UA 写回阶段。MES 成功回执只把任务推进到写回阶段，两个目标变量都确认后才删除队列项。
 
 ### 2.3 安全边界
 
@@ -110,12 +113,12 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 
 新增：
 
-- `tests/metrics_test.py`：49 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、SQLite/WAL/SHM 体积、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
+- `tests/metrics_test.py`：60 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、UA 写回计数、SQLite/WAL/SHM 体积、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
 - `tests/backup_queue_test.py`：17 项断言，验证活跃 WAL 库在线备份、完整性检查、关键行数一致、保留策略、缺失源文件错误，以及运行中的 Node-RED 数据库备份。
 
 扩展：
 
-- `tests/sqlite_queue_test.js`：新增指标事务提交、回滚、重启持久化和死信重放断言，现为 15/15。
+- `tests/sqlite_queue_test.js`：新增 UA 写回目标确认、重启续写、失败重试和值冲突断言，现为 19/19。
 
 一键回归：
 
@@ -123,17 +126,17 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3 与存储告警测试后当前合并回归为 **370/370 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警与 UA 写回确认测试后当前合并回归为 **385/385 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
-| SQLite 队列单测 | 15/15 |
+| SQLite 队列单测 | 19/19 |
 | 健康探针 | 10/10 |
 | Edge Core | 7/7 |
 | 安全 | 10/10 |
 | UA 冒烟 | 36/36 |
 | Node-RED E2E | 15/15 |
-| Prometheus 指标 | 49/49 |
+| Prometheus 指标 | 60/60 |
 | SQLite 备份 | 20/20 |
 | 离线恢复 | 20/20 |
 | 部署模板 | 20/20 |
@@ -145,7 +148,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **370/370** |
+| **合计** | **385/385** |
 
 ## 5. 下一阶段
 

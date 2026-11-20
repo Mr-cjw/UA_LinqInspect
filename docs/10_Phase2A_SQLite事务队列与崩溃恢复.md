@@ -2,7 +2,7 @@
 
 > 日期：2026-11-20 ｜ Phase 2A 证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当时结果：194/194 PASS
 >
-> Phase 2B/2C、M3 与运维加固完成后当前合并回归为 370/370（含 Node-RED 认证、Edge Core、部署、长断网、死信重放与恢复测试），见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
+> Phase 2B/2C、M3、运维加固与 UA 写回确认完成后当前合并回归为 385/385（含 Node-RED 认证、Edge Core、部署、长断网、死信重放与恢复测试），见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -24,7 +24,7 @@ Node-RED flow context 只保留 `mesMode`、最近请求/响应等运行态信�
 | 文件 | 职责 |
 |---|---|
 | `nodered/sqlite_store.js` | 建表、事务、唯一约束、原子领取、退避/死信状态迁移、旧 context 导入 |
-| `nodered/queue_logic.js` | 入队、发送泵、响应契约校验、回执写回消息构造、`/qc/status` 输出 |
+| `nodered/queue_logic.js` | 入队、发送泵、响应契约校验、UA 写回编排与确认、`/qc/status` 输出 |
 | `nodered/settings.js` | 通过 `functionGlobalContext` 注入 `qstore` 和 `qlogic` |
 | `nodered/flows.json` | Function 节点只保留薄适配代码，不再内联队列实现 |
 | `tests/sqlite_queue_test.js` | 存储层事务、唯一约束、单飞行、看门狗和迁移单测 |
@@ -55,6 +55,9 @@ Node-RED flow context 只保留 `mesMode`、最近请求/响应等运行态信�
 
 `id` 为唯一约束，队列上限 100；溢出时优先丢弃最旧的 `PENDING` 项，与旧行为一致。
 
+MES 成功回执不会立即删除 `queue` 行。任务保持 `SENDING`，并在独立的 UA 写回表中推进；
+这样可以避免“MES 已受理，但回执变量尚未写成功时进程崩溃”造成业务状态丢失。
+
 ### 3.2 `dead_letters`
 
 保存终态失败任务及 `error_code`、`last_status`、`failed_at`。最多保留最近 100 条，
@@ -69,6 +72,21 @@ Node-RED flow context 只保留 `mesMode`、最近请求/响应等运行态信�
 - `done`：`workOrderId`
 
 每类最多保留最近约 500 个键。
+
+### 3.5 `ua_writebacks` 与 `ua_write_targets`
+
+`ua_writebacks` 按 `queue_id` 保存 MES 回执值、写回尝试次数和下次重试时间；
+`ua_write_targets` 保存本次需要写入的每个 OPC UA 目标和预期值。NG 需要确认
+`LastNgMesOrderNo` 与兼容镜像 `LastMesOrderNo`，完工需要确认
+`LastCompletionReceiptNo` 与 `LastMesOrderNo`。
+
+写回策略：
+
+- `PENDING`：等待发送泵处理；
+- `SENDING`：已发出写操作，等待目标确认；
+- 15 秒未收齐确认按退避重试，最多 3 次后进入死信；
+- 全部目标确认后才删除队列行和相关写回记录；
+- 确认值与预期值不一致时记录 `UA_WRITE_VALUE_MISMATCH` 并进入失败路径。
 
 ### 3.4 运行参数
 
@@ -101,14 +119,17 @@ WAL 提升读写并发；`synchronous=FULL` 优先保证提交落盘；`busy_tim
 `claimNext` 在一个事务内检查 `SENDING`，超过 15 秒则执行看门狗恢复；否则只领取一条到期
 `PENDING` 并原子更新为 `SENDING`。因此即使多个定时器触发，也不会出现两条在途任务。
 
-### 4.3 响应终结
+### 4.3 响应终结与 UA 写回确认
 
-`complete`、`retry`、`deadLetter` 都要求：
+`retry`、`deadLetter` 以及 `complete` 的第一阶段都要求：
 
 - 队列项仍为 `SENDING`；
 - `id` 和 `correlationId` 匹配当前在途任务。
 
-重复回执或陈旧回执无法二次完成、二次退避或重复写死信。
+重复回执或陈旧回执无法二次完成、二次退避或重复写死信。MES 响应契约通过后，
+`complete` 在同一个事务内创建 `ua_writebacks` 和 `ua_write_targets`，并保留队列行；
+只有 UA 写回回调逐个确认目标，且剩余目标数为 0 时，才在同一事务内删除任务并记录成功。
+写回失败沿用单飞行语义，不会把下一条 MES 业务提前发送。
 
 ## 5. 旧 context 迁移
 

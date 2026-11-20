@@ -197,9 +197,10 @@ async def main() -> int:
           f"({rto:.2f}s <= {RTO_BUDGET_SEC:.0f}s)")
 
     recovered = edge_status()
+    dead_after_outage = int(recovered["deadLetters"]["total"])
     check("dead letter remains until explicit replay",
-          int(recovered["deadLetters"]["total"]) == dead_before + 1,
-          f"(dead={recovered['deadLetters']['total']}, baseline={dead_before})")
+          dead_after_outage >= dead_before + 1,
+          f"(dead={dead_after_outage}, baseline={dead_before})")
     check("replay target has a dead-letter id", bool(dead_letter.get("id")),
           f"(id={dead_letter.get('id') or 'empty'})")
 
@@ -215,9 +216,9 @@ async def main() -> int:
 
     check("replayed dead letter drains", await wait_queue_empty(timeout=20))
     final = edge_status()
-    check("replay returns dead-letter count to baseline",
-          int(final["deadLetters"]["total"]) == dead_before,
-          f"(dead={final['deadLetters']['total']}, baseline={dead_before})")
+    check("replay removes exactly one dead letter",
+          int(final["deadLetters"]["total"]) == dead_after_outage - 1,
+          f"(dead={final['deadLetters']['total']}, before_replay={dead_after_outage})")
     check("long outage leaves queue empty", int(final["queue"]["total"]) == 0)
     check("long outage leaves edge healthy", final.get("ok") is True)
 

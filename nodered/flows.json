@@ -340,8 +340,8 @@
     "type": "function",
     "z": "qcflow",
     "name": "发送泵(单飞行)",
-    "func": "const store = global.get('qstore').bootstrap(flow);\nreturn global.get('qlogic').pump(msg, flow, node, store);",
-    "outputs": 1,
+    "func": "const store = global.get('qstore').bootstrap(flow);\nconst result = global.get('qlogic').pump(msg, flow, node, store);\nreturn global.get('qlogic').pumpOutputs(result);",
+    "outputs": 2,
     "timeout": "",
     "noerr": 0,
     "initialize": "",
@@ -352,6 +352,9 @@
     "wires": [
       [
         "http1"
+      ],
+      [
+        "opcua"
       ]
     ]
   },
@@ -457,7 +460,7 @@
     "type": "function",
     "z": "qcflow",
     "name": "UA结果校验",
-    "func": "// UA 读写/Method 结果校验；Method accepted=false 必须打印原因并阻断后续动作\nconst kind = msg._uaKind || '';\nif (kind === 'write' || /LastMesOrderNo$/.test(String(msg.topic || ''))) {\n    node.warn('[UA写回成功] ' + (msg.topic || ''));\n    return null;\n}\nif (kind === 'health' || /i=2257$/.test(String(msg.topic || ''))) {\n    let raw = msg.payload;\n    while (raw && typeof raw === 'object' && raw.value !== undefined) raw = raw.value;\n    let current = null;\n    if (raw instanceof Date) current = raw.getTime();\n    else if (typeof raw === 'number' && isFinite(raw)) current = raw;\n    else if (typeof raw === 'string') {\n        const parsed = Date.parse(raw);\n        if (isFinite(parsed)) current = parsed;\n    } else if (raw && typeof raw.getTime === 'function') {\n        const parsed = raw.getTime();\n        if (isFinite(parsed)) current = parsed;\n    }\n    if (current === null) {\n        node.warn('[UA健康] ServerStatus.StartTime 无法解析: ' + JSON.stringify(raw));\n        return null;\n    }\n    const previous = Number(flow.get('uaServerStartTime'));\n    flow.set('uaServerStartTime', current);\n    if (isFinite(previous) && previous > 0 && previous !== current) {\n        node.warn('[UA重连] Server StartTime 变化：' + new Date(previous).toISOString() + ' -> ' + new Date(current).toISOString() + '，重建事件订阅与读写会话');\n        return { action: 'reconnect', payload: {}, _uaKind: 'reconnect' };\n    }\n    return null;\n}\nif (kind === 'read' || /DeviceStatus$/.test(String(msg.topic || ''))) {\n    flow.set('hbFails', 0);\n    return null;\n}\nif (kind === 'reconnect') return null;\nconst p = msg.payload;\nlet outs = null;\nif (Array.isArray(p)) outs = p;\nelse if (p && Array.isArray(p.OutputArguments)) outs = p.OutputArguments;\nelse if (p && Array.isArray(p.outputArguments)) outs = p.outputArguments;\nelse if (p && Array.isArray(p.value)) outs = p.value;\nconst unwrap = v => (v && typeof v === 'object' && !Array.isArray(v) && v.value !== undefined) ? v.value : v;\nconst asText = v => {\n    v = unwrap(v);\n    if (v === undefined || v === null) return '';\n    if (typeof v === 'object') return String(v.text || v.Text || JSON.stringify(v));\n    return String(v);\n};\nif (outs && outs.length) {\n    const accepted = unwrap(outs[0]);\n    const summary = outs.length > 1 ? asText(outs[1]) : '';\n    if (accepted === false) node.error('[UA拒绝] ' + summary + ' —— 已阻断后续动作', msg);\n    else if (accepted === true) node.warn('[UA成功] ' + summary);\n    else node.warn('[UA返回] ' + JSON.stringify(outs));\n} else {\n    node.warn('[UA返回] ' + JSON.stringify(p));\n}\nreturn null;",
+    "func": "// UA 读写/Method 结果校验；Method accepted=false 必须打印原因并阻断后续动作\nconst kind = msg._uaKind || '';\nif (kind === 'write') {\n    const store = global.get('qstore').bootstrap(flow);\n    return global.get('qlogic').uaWriteSuccess(msg, flow, node, store);\n}\nif (kind === 'health' || /i=2257$/.test(String(msg.topic || ''))) {\n    let raw = msg.payload;\n    while (raw && typeof raw === 'object' && raw.value !== undefined) raw = raw.value;\n    let current = null;\n    if (raw instanceof Date) current = raw.getTime();\n    else if (typeof raw === 'number' && isFinite(raw)) current = raw;\n    else if (typeof raw === 'string') {\n        const parsed = Date.parse(raw);\n        if (isFinite(parsed)) current = parsed;\n    } else if (raw && typeof raw.getTime === 'function') {\n        const parsed = raw.getTime();\n        if (isFinite(parsed)) current = parsed;\n    }\n    if (current === null) {\n        node.warn('[UA健康] ServerStatus.StartTime 无法解析: ' + JSON.stringify(raw));\n        return null;\n    }\n    const previous = Number(flow.get('uaServerStartTime'));\n    flow.set('uaServerStartTime', current);\n    if (isFinite(previous) && previous > 0 && previous !== current) {\n        node.warn('[UA重连] Server StartTime 变化：' + new Date(previous).toISOString() + ' -> ' + new Date(current).toISOString() + '，重建事件订阅与读写会话');\n        return { action: 'reconnect', payload: {}, _uaKind: 'reconnect' };\n    }\n    return null;\n}\nif (kind === 'read' || /DeviceStatus$/.test(String(msg.topic || ''))) {\n    flow.set('hbFails', 0);\n    return null;\n}\nif (kind === 'reconnect') return null;\nconst p = msg.payload;\nlet outs = null;\nif (Array.isArray(p)) outs = p;\nelse if (p && Array.isArray(p.OutputArguments)) outs = p.OutputArguments;\nelse if (p && Array.isArray(p.outputArguments)) outs = p.outputArguments;\nelse if (p && Array.isArray(p.value)) outs = p.value;\nconst unwrap = v => (v && typeof v === 'object' && !Array.isArray(v) && v.value !== undefined) ? v.value : v;\nconst asText = v => {\n    v = unwrap(v);\n    if (v === undefined || v === null) return '';\n    if (typeof v === 'object') return String(v.text || v.Text || JSON.stringify(v));\n    return String(v);\n};\nif (outs && outs.length) {\n    const accepted = unwrap(outs[0]);\n    const summary = outs.length > 1 ? asText(outs[1]) : '';\n    if (accepted === false) node.error('[UA拒绝] ' + summary + ' —— 已阻断后续动作', msg);\n    else if (accepted === true) node.warn('[UA成功] ' + summary);\n    else node.warn('[UA返回] ' + JSON.stringify(outs));\n} else {\n    node.warn('[UA返回] ' + JSON.stringify(p));\n}\nreturn null;",
     "outputs": 1,
     "timeout": "",
     "noerr": 0,
@@ -496,7 +499,7 @@
     "type": "function",
     "z": "qcflow",
     "name": "UA假死/断网检测",
-    "func": "// UA 异常计数：心跳成功会由 fn_ua_result 清零；连续 3 次异常判定假死/断网\nconst n = Math.min((flow.get('hbFails') || 0) + 1, 3);\nflow.set('hbFails', n);\nconst detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';\nnode.error('[UA异常 ' + n + '/3] ' + detail, msg);\nif (n >= 3) node.error('[连接告警] 连续3次UA异常，疑似断网/假死；检查 SecureChannel 与订阅状态');\nreturn null;",
+    "func": "// UA 异常计数：心跳成功会由 fn_ua_result 清零；写回异常走单独重试/死信路径。\nconst kind = msg._uaKind || '';\nif (kind === 'write' || (msg._qc && msg._qc.uaTarget)) {\n    const store = global.get('qstore').bootstrap(flow);\n    return global.get('qlogic').uaWriteFailure(msg, flow, node, store);\n}\nconst n = Math.min((flow.get('hbFails') || 0) + 1, 3);\nflow.set('hbFails', n);\nconst detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';\nnode.error('[UA异常 ' + n + '/3] ' + detail, msg);\nif (n >= 3) node.error('[连接告警] 连续3次UA异常，疑似断网/假死；检查 SecureChannel 与订阅状态');\nreturn null;",
     "outputs": 1,
     "timeout": "",
     "noerr": 0,
