@@ -32,7 +32,9 @@ NODE_TESTS = (
 
 TESTS = (
     ("state_persistence", "tests/state_persistence_test.py", 30),
+    ("event_outbox", "tests/outbox_test.py", 30),
     ("qc_state_restart", "tests/qc_state_restart_test.py", 60),
+    ("outbox_recovery", "tests/outbox_recovery.py", 90),
     ("edge_core", "tests/edge_core_test.py", 60),
     ("security", "tests/security_test.py", 60),
     ("smoke", "tests/smoke_test.py", 90),

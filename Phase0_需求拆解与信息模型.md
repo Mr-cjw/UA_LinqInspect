@@ -86,6 +86,8 @@
 | `...s=QCStation.CompleteWorkOrder` | CompleteWorkOrder | Method | workOrderId:String | accepted:Boolean, summary:String | 完工报工：**内部校验入参 workOrderId 与 CurrentWorkOrderId 一致性**，不一致返回 accepted=False；无活动工单（CurrentWorkOrderId 为空）或 DeviceStatus≠Running 时同样拒绝，summary 返回拒绝原因；成功时触发 WorkOrderCompleted 事件 |
 | `...s=QCStation.ResetCounters` | ResetCounters | Method | （无） | （无） | 班次清零 |
 
+> 2026-11-21 实现扩展：新增 `QCStation.AcknowledgeEvent(eventId:String)`，用于 Node-RED 在事件成功写入 SQLite 队列后确认服务端 outbox。它不改变原三个工单控制 Method 的契约。
+
 ### 2.4 Event 清单（IEC 62541 Part 5 §6.4，事件字段继承 BaseEventType 的 Message/Timestamp/SourceNode/SourceName/Severity）
 
 | Event NodeId | BrowseName | 触发条件 | 自定义字段（Property） | 消费方 |

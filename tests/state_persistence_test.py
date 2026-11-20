@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from server.qc_state import QCStateStore, QCStationSnapshot
+from server.qc_state import QCOutboxEvent, QCStateStore, QCStationSnapshot
 
 
 class StatePersistenceTests(unittest.TestCase):
@@ -43,6 +43,50 @@ class StatePersistenceTests(unittest.TestCase):
             self.assertEqual(restored.window, [True, False, True])
             self.assertEqual(restored.sn_seq, 4)
             self.assertEqual(restored.current_part_sn, "SN-004")
+
+    def test_round_trip_preserves_pending_outbox(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            store = QCStateStore(path)
+            event = QCOutboxEvent(
+                event_id="evt-001",
+                event_type="ng",
+                fields={
+                    "WorkOrderId": "WO-001",
+                    "SerialNumber": "SN-001",
+                    "CorrelationId": "corr-001",
+                    "SourceEventId": "evt-001",
+                    "EventVersion": 1,
+                },
+                severity=3,
+                message="NG detected",
+                created_at="2026-11-21T00:00:00+00:00",
+            )
+            store.save(QCStationSnapshot(status=1, work_order_id="WO-001", outbox=[event]))
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(raw["outbox"][0]["eventVersion"], 1)
+            self.assertEqual(raw["outbox"][0]["eventId"], "evt-001")
+            restored = store.load()
+            self.assertEqual(len(restored.outbox), 1)
+            self.assertEqual(restored.outbox[0].event_type, "ng")
+            self.assertEqual(restored.outbox[0].fields["CorrelationId"], "corr-001")
+
+    def test_corrupt_outbox_entry_is_isolated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            path.write_text(json.dumps({
+                "schemaVersion": 1,
+                "status": 1,
+                "workOrderId": "WO-001",
+                "outbox": [
+                    {"eventVersion": 1, "eventId": "evt-good", "eventType": "done", "fields": {}},
+                    {"eventVersion": 99, "eventId": "evt-bad-version", "eventType": "ng", "fields": {}},
+                    {"eventVersion": 1, "eventId": "", "eventType": "ng", "fields": {}},
+                    "not-an-object",
+                ],
+            }), encoding="utf-8")
+            restored = QCStateStore(path).load()
+            self.assertEqual([event.event_id for event in restored.outbox], ["evt-good"])
 
     def test_invalid_running_snapshot_falls_back_to_idle(self):
         with tempfile.TemporaryDirectory() as temp:

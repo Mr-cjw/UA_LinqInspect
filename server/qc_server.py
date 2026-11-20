@@ -22,6 +22,7 @@
   QC_INSPECT_INTERVAL 检测间隔秒（默认 2.0）
   QC_NG_PROBABILITY   虚拟 NG 概率（默认 0.3）
   QC_NG_WINDOW        NgRate 滑动窗口大小（默认 20）
+  QC_OUTBOX_REPLAY_INTERVAL 未确认事件重发间隔秒（默认 2.0）
 """
 import asyncio
 import hmac
@@ -48,9 +49,21 @@ from asyncua.server.internal_session import InternalSession
 from asyncua.server.user_managers import UserManager
 
 try:
-    from .qc_state import QCStateStore, QCStationSnapshot, last_timestamp_or_default
+    from .qc_state import (
+        OUTBOX_EVENT_VERSION,
+        QCOutboxEvent,
+        QCStateStore,
+        QCStationSnapshot,
+        last_timestamp_or_default,
+    )
 except ImportError:  # direct execution: python server/qc_server.py
-    from qc_state import QCStateStore, QCStationSnapshot, last_timestamp_or_default
+    from qc_state import (
+        OUTBOX_EVENT_VERSION,
+        QCOutboxEvent,
+        QCStateStore,
+        QCStationSnapshot,
+        last_timestamp_or_default,
+    )
 
 NS_URI = "urn:fde:linqinspect:qc"
 DEFECT_CODES = ("SCRATCH", "DENT", "STAIN", "BURR", "MISSING")
@@ -70,6 +83,7 @@ AUTO_INSPECT = os.getenv("QC_AUTO_INSPECT", "1") != "0"
 INSPECT_INTERVAL = float(os.getenv("QC_INSPECT_INTERVAL", "2.0"))
 NG_PROBABILITY = float(os.getenv("QC_NG_PROBABILITY", "0.3"))
 WINDOW_SIZE = int(os.getenv("QC_NG_WINDOW", "20"))
+OUTBOX_REPLAY_INTERVAL = max(0.1, float(os.getenv("QC_OUTBOX_REPLAY_INTERVAL", "2.0")))
 CERT_EXPIRY_WARNING_DAYS = 30
 
 # DeviceStatus 数字枚举含义: 0=Idle, 1=Running, 2=Fault
@@ -336,11 +350,11 @@ class QCAnonymousReadOnlyRuleset(SimpleRoleRuleset):
 class QCStation:
     """QCStation 对象树的状态与行为承载（对应信息模型 §2.1~§2.4）。"""
 
-    def __init__(self, server: Server):
+    def __init__(self, server: Server, *, state_store: QCStateStore | None = None):
         self.server = server
         self.idx = None
         self._lock = asyncio.Lock()
-        self.state_store = QCStateStore(STATE_PATH, window_size=WINDOW_SIZE)
+        self.state_store = state_store or QCStateStore(STATE_PATH, window_size=WINDOW_SIZE)
         snapshot = self.state_store.load()
         self.status = snapshot.status
         self.work_order_id = snapshot.work_order_id
@@ -357,12 +371,16 @@ class QCStation:
         self.last_confidence = snapshot.last_confidence
         self.last_image_id = snapshot.last_image_id
         self.last_timestamp = last_timestamp_or_default(snapshot.last_timestamp)
+        self.outbox: list[QCOutboxEvent] = list(snapshot.outbox)
+        self._outbox_wakeup = asyncio.Event()
+        if self.outbox:
+            self._outbox_wakeup.set()
         self.nd = {}
         if self.state_store.path.exists():
             _log.info(
-                "Restored QC state from %s: status=%d workOrder=%s inspect=%d ok=%d ng=%d",
+                "Restored QC state from %s: status=%d workOrder=%s inspect=%d ok=%d ng=%d outbox=%d",
                 self.state_store.path, self.status, self.work_order_id,
-                self.inspect_count, self.ok_count, self.ng_count,
+                self.inspect_count, self.ok_count, self.ng_count, len(self.outbox),
             )
 
     # ---------- 地址空间构建 ----------
@@ -418,17 +436,20 @@ class QCStation:
         base = sv.nodes.base_event_type
         et_insp = await base.add_object_type(nid("InspectionFinishedEventType"), "2:InspectionFinishedEventType")
         for name, v in (("WorkOrderId", ""), ("SerialNumber", ""), ("Result", ""), ("DefectType", ""),
-                        ("Confidence", 0.0), ("ImageId", ""), ("CorrelationId", "")):
+                        ("Confidence", 0.0), ("ImageId", ""), ("CorrelationId", ""),
+                        ("SourceEventId", ""), ("EventVersion", 0)):
             await et_insp.add_property(nid(f"InspectionFinishedEventType.{name}"), f"2:{name}", v)
 
         et_ng = await base.add_object_type(nid("NgDetectedEventType"), "2:NgDetectedEventType")
         for name, v in (("WorkOrderId", ""), ("SerialNumber", ""), ("DefectType", ""),
-                        ("Confidence", 0.0), ("ImageId", ""), ("CorrelationId", "")):
+                        ("Confidence", 0.0), ("ImageId", ""), ("CorrelationId", ""),
+                        ("SourceEventId", ""), ("EventVersion", 0)):
             await et_ng.add_property(nid(f"NgDetectedEventType.{name}"), f"2:{name}", v)
 
         et_done = await base.add_object_type(nid("WorkOrderCompletedEventType"), "2:WorkOrderCompletedEventType")
         for name, v in (("WorkOrderId", ""), ("InspectCount", 0), ("OkCount", 0),
-                        ("NgCount", 0), ("NgRate", 0.0), ("CorrelationId", "")):
+                        ("NgCount", 0), ("NgRate", 0.0), ("CorrelationId", ""),
+                        ("SourceEventId", ""), ("EventVersion", 0)):
             await et_done.add_property(nid(f"WorkOrderCompletedEventType.{name}"), f"2:{name}", v)
 
         self.et = {"insp": et_insp, "ng": et_ng, "done": et_done}
@@ -438,6 +459,9 @@ class QCStation:
                               [ua.VariantType.String, ua.VariantType.UInt32],
                               [ua.VariantType.Boolean, ua.VariantType.String])
         await root.add_method(nid("QCStation.CompleteWorkOrder"), "2:CompleteWorkOrder", self._complete_work_order,
+                              [ua.VariantType.String],
+                              [ua.VariantType.Boolean, ua.VariantType.String])
+        await root.add_method(nid("QCStation.AcknowledgeEvent"), "2:AcknowledgeEvent", self._acknowledge_event,
                               [ua.VariantType.String],
                               [ua.VariantType.Boolean, ua.VariantType.String])
         await root.add_method(nid("QCStation.ResetCounters"), "2:ResetCounters", self._reset_counters, [], [])
@@ -462,6 +486,7 @@ class QCStation:
             last_confidence=self.last_confidence,
             last_image_id=self.last_image_id,
             last_timestamp=self.last_timestamp.isoformat(timespec="milliseconds"),
+            outbox=list(self.outbox),
         )
 
     async def _persist(self) -> None:
@@ -469,14 +494,81 @@ class QCStation:
         # Keep it off the OPC UA event loop so subscriptions do not starve.
         await asyncio.to_thread(self.state_store.save, self._snapshot())
 
-    # ---------- 事件触发 ----------
-    async def _fire(self, etype_key: str, fields: dict, severity: int, message: str):
+    # ---------- 事件触发与 outbox ----------
+    def _make_event(
+        self,
+        etype_key: str,
+        fields: dict,
+        severity: int,
+        message: str,
+        *,
+        correlation_id: str,
+        created_at: datetime | None = None,
+    ) -> QCOutboxEvent:
+        event_id = f"evt-{uuid.uuid4()}"
+        payload = dict(fields)
+        payload["CorrelationId"] = correlation_id
+        payload["SourceEventId"] = event_id
+        payload["EventVersion"] = OUTBOX_EVENT_VERSION
+        return QCOutboxEvent(
+            event_version=OUTBOX_EVENT_VERSION,
+            event_id=event_id,
+            event_type=etype_key,
+            fields=payload,
+            severity=severity,
+            message=message,
+            created_at=(created_at or datetime.now(timezone.utc)).isoformat(timespec="milliseconds"),
+        )
+
+    def _append_outbox(self, event: QCOutboxEvent) -> None:
+        self.outbox.append(event)
+
+    def _wake_outbox(self) -> None:
+        self._outbox_wakeup.set()
+
+    async def _publish_event(self, event: QCOutboxEvent) -> None:
+        etype_key = event.event_type
         gen = await self.server.get_event_generator(self.et[etype_key], self.nd["events_source"])
-        for k, v in fields.items():
+        for k, v in event.fields.items():
             setattr(gen.event, k, v)
-        gen.event.Severity = severity
-        gen.event.Message = ua.LocalizedText(message)
+        gen.event.Severity = event.severity
+        gen.event.Message = ua.LocalizedText(event.message)
         await gen.trigger()
+
+    async def publish_pending_outbox(self) -> int:
+        async with self._lock:
+            pending = list(self.outbox)
+        if not pending:
+            return 0
+        published = 0
+        for event in pending:
+            try:
+                await self._publish_event(event)
+                published += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _log.warning(
+                    "Outbox publish failed for %s/%s: %s: %s; will retry",
+                    event.event_type, event.event_id, type(exc).__name__, exc,
+                )
+        if published:
+            _log.info("Outbox replay published %d/%d pending event(s); awaiting ACK", published, len(pending))
+        return published
+
+    async def outbox_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(self._outbox_wakeup.wait(), timeout=OUTBOX_REPLAY_INTERVAL)
+            except asyncio.TimeoutError:
+                pass
+            self._outbox_wakeup.clear()
+            try:
+                await self.publish_pending_outbox()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("Unexpected outbox dispatcher error; pending events retained")
 
     # ---------- Method 实现 ----------
     async def _start_inspection(self, parent, work_order_id, target_count):
@@ -521,6 +613,12 @@ class QCStation:
                 result = await self._complete_work_order_impl(work_order_id)
                 if result and bool(_val(result[0])):
                     await self._persist()
+                    self._wake_outbox()
+                    try:
+                        await self.nd["status"].write_value(ua.Variant(ST_IDLE, ua.VariantType.Int32))
+                        await self.nd["work_order"].write_value("")
+                    except Exception:
+                        _log.exception("CompleteWorkOrder persisted but UA variable sync failed")
         except Exception as exc:
             _audit_method_call("CompleteWorkOrder", audit_args, f"error: {type(exc).__name__}: {exc}")
             raise
@@ -541,22 +639,48 @@ class QCStation:
         summary = (f"workOrder={self.work_order_id} inspect={self.inspect_count} "
                    f"ok={self.ok_count} ng={self.ng_count} ngRate={ng_rate:.3f}")
         correlation_id = f"corr-{uuid.uuid4()}"
-        await self._fire("done", {
+        done_event = self._make_event("done", {
             "WorkOrderId": self.work_order_id,
             "InspectCount": self.inspect_count,
             "OkCount": self.ok_count,
             "NgCount": self.ng_count,
             # 空窗口保持 -1.0 哨兵语义，MES 侧据此显示“样本不足”，不得误报为 0 不良率
             "NgRate": ng_rate,
-            "CorrelationId": correlation_id,
-        }, severity=2, message=f"WorkOrder {self.work_order_id} completed")
+        }, severity=2, message=f"WorkOrder {self.work_order_id} completed", correlation_id=correlation_id)
+        self._append_outbox(done_event)
         self.status = ST_IDLE
         self.work_order_id = ""
         self.target_count = 0
-        await self.nd["status"].write_value(ua.Variant(ST_IDLE, ua.VariantType.Int32))
-        await self.nd["work_order"].write_value("")
         _log.info("CompleteWorkOrder: %s corr=%s", summary, correlation_id)
         return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(summary, ua.VariantType.String)]
+
+    async def _acknowledge_event(self, parent, event_id):
+        audit_args = {"eventId": _val(event_id)}
+        try:
+            async with self._lock:
+                result, changed = self._acknowledge_event_impl(event_id)
+                if changed:
+                    await self._persist()
+                    self._wake_outbox()
+        except Exception as exc:
+            _audit_method_call("AcknowledgeEvent", audit_args, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("AcknowledgeEvent", audit_args, result)
+        return result
+
+    def _acknowledge_event_impl(self, event_id):
+        eid = str(_val(event_id) or "").strip()
+        if not eid:
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: empty eventId", ua.VariantType.String)], False
+        remaining = [
+            event for event in self.outbox
+            if event.event_id != eid and str(event.fields.get("CorrelationId", "")) != eid
+        ]
+        if len(remaining) == len(self.outbox):
+            return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(f"already acknowledged {eid}", ua.VariantType.String)], False
+        self.outbox = remaining
+        _log.info("AcknowledgeEvent: %s pending=%d", eid, len(self.outbox))
+        return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(f"acknowledged {eid}", ua.VariantType.String)], True
 
     async def _reset_counters(self, parent):
         try:
@@ -610,6 +734,26 @@ class QCStation:
 
             now = datetime.now(timezone.utc)
             correlation_id = f"corr-{uuid.uuid4()}"
+            insp_event = self._make_event("insp", {
+                "WorkOrderId": self.work_order_id,
+                "SerialNumber": serial_number,
+                "Result": "OK" if is_ok else "NG",
+                "DefectType": defect_type,
+                "Confidence": confidence,
+                "ImageId": image_id,
+            }, severity=1, message=f"Inspection {image_id} SN={serial_number}: {'OK' if is_ok else 'NG ' + defect_type}",
+                correlation_id=correlation_id)
+            ng_event = None
+            if not is_ok:
+                ng_event = self._make_event("ng", {
+                    "WorkOrderId": self.work_order_id,
+                    "SerialNumber": serial_number,
+                    "DefectType": defect_type,
+                    "Confidence": confidence,
+                    "ImageId": image_id,
+                }, severity=3, message=f"NG detected on {image_id} SN={serial_number}: {defect_type}",
+                    correlation_id=correlation_id)
+                self._append_outbox(ng_event)
             self.last_result = is_ok
             self.last_defect = defect_type
             self.last_confidence = confidence
@@ -617,6 +761,11 @@ class QCStation:
             self.last_timestamp = now
             if serial_number:
                 self.current_part_sn = serial_number
+            if self.target_count and self.inspect_count >= self.target_count:
+                _log.info("Target count reached (%d); wait for CompleteWorkOrder call", self.target_count)
+                self.target_count = 0  # advisory marker: only log once
+            await self._persist()
+            self._wake_outbox()
             await self.nd["last_result"].write_value(is_ok)
             await self.nd["last_defect"].write_value(defect_type)
             await self.nd["last_conf"].write_value(confidence)
@@ -626,32 +775,16 @@ class QCStation:
                 await self.nd["part_sn"].write_value(serial_number)
             await self._write_stats()
             await self.nd["ng_rate"].write_value(self._ng_rate())
-
-            await self._fire("insp", {
-                "WorkOrderId": self.work_order_id,
-                "SerialNumber": serial_number,
-                "Result": "OK" if is_ok else "NG",
-                "DefectType": defect_type,
-                "Confidence": confidence,
-                "ImageId": image_id,
-                "CorrelationId": correlation_id,
-            }, severity=1, message=f"Inspection {image_id} SN={serial_number}: {'OK' if is_ok else 'NG ' + defect_type}")
-
-            if not is_ok:
-                await self._fire("ng", {
-                    "WorkOrderId": self.work_order_id,
-                    "SerialNumber": serial_number,
-                    "DefectType": defect_type,
-                    "Confidence": confidence,
-                    "ImageId": image_id,
-                    "CorrelationId": correlation_id,
-                }, severity=3, message=f"NG detected on {image_id} SN={serial_number}: {defect_type}")
+            if ng_event is not None:
                 _log.warning("NG: %s SN=%s %s conf=%.3f corr=%s", image_id, serial_number, defect_type, confidence, correlation_id)
-
-            if self.target_count and self.inspect_count >= self.target_count:
-                _log.info("Target count reached (%d); wait for CompleteWorkOrder call", self.target_count)
-                self.target_count = 0  # advisory marker: only log once
-            await self._persist()
+            try:
+                # InspectionFinished is observability-only; NG has a durable outbox entry above.
+                await self._publish_event(insp_event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _log.warning("Best-effort InspectionFinished publish failed for %s: %s: %s",
+                             image_id, type(exc).__name__, exc)
             return True
 
     # ---------- 虚拟 AI 质检循环（阶段一数据源，预留 YOLOv8 切换点） ----------
@@ -679,7 +812,12 @@ class QCStation:
             image_id = f"IMG-{day}-{seq:06d}"
             serial_number = f"SN-{day}-{seq:06d}"
             # TODO(YOLOv8 切换点): 用真实推理结果+产线 SN 替换上面的 random 分支后调用 record_inspection
-            await self.record_inspection(is_ok, defect, confidence, image_id, serial_number)
+            try:
+                await self.record_inspection(is_ok, defect, confidence, image_id, serial_number)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("Inspection cycle failed; virtual loop will continue")
 
 
 async def main():
@@ -733,14 +871,15 @@ async def main():
         BIND_ADDRESS, PORT, station.idx,
     )
     async with server:
+        tasks = [asyncio.create_task(station.outbox_loop())]
         if AUTO_INSPECT:
-            task = asyncio.create_task(station.inspection_loop())
-            try:
-                await asyncio.Future()  # 运行至被取消
-            finally:
-                task.cancel()
-        else:
+            tasks.append(asyncio.create_task(station.inspection_loop()))
+        try:
             await asyncio.Future()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

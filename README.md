@@ -480,11 +480,12 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 430/430 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 430/430 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 430/430 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 430/430 PASS） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 430/430 PASS；与投递队列尚未同事务） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 448/448 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 448/448 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 448/448 PASS） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 448/448 PASS） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 448/448 PASS；与投递队列尚未同事务） |
+| 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 13/13；仍为 at-least-once） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 长断网、死信重放、soak、短断网和 Server 重启已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |

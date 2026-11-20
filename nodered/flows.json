@@ -229,7 +229,7 @@
     "type": "function",
     "z": "qcflow",
     "name": "报警削峰(10s抑制窗)",
-    "func": "// 只做告警削峰，不阻断 NG 开单：10s 窗内合并计数，超窗亮一次灯\nconst last = flow.get('lastAlarmAt') || 0;\nconst now = Date.now();\nif (now - last < 10000) {\n    flow.set('alarmSuppressed', (flow.get('alarmSuppressed') || 0) + 1);\n    node.status({ fill: 'yellow', shape: 'ring', text: 'NG告警抑制中' });\n    return null;\n}\nconst merged = flow.get('alarmSuppressed') || 0;\nflow.set('lastAlarmAt', now);\nflow.set('alarmSuppressed', 0);\nnode.warn('[NG报警] serialNumber=' + msg.serialNumber + ' defect=' + msg.defectType +\n          (merged ? '（已合并抑制 ' + merged + ' 条）' : ''));\nnode.status({ fill: 'red', shape: 'dot', text: 'NG' });\nreturn null;",
+    "func": "// 只做告警削峰，不阻断 NG 开单：10s 窗内合并计数，超窗亮一次灯\nif (msg._duplicateEvent) return null;\nconst last = flow.get('lastAlarmAt') || 0;\nconst now = Date.now();\nif (now - last < 10000) {\n    flow.set('alarmSuppressed', (flow.get('alarmSuppressed') || 0) + 1);\n    node.status({ fill: 'yellow', shape: 'ring', text: 'NG告警抑制中' });\n    return null;\n}\nconst merged = flow.get('alarmSuppressed') || 0;\nflow.set('lastAlarmAt', now);\nflow.set('alarmSuppressed', 0);\nnode.warn('[NG报警] serialNumber=' + msg.serialNumber + ' defect=' + msg.defectType +\n          (merged ? '（已合并抑制 ' + merged + ' 条）' : ''));\nnode.status({ fill: 'red', shape: 'dot', text: 'NG' });\nreturn null;",
     "outputs": 1,
     "timeout": "",
     "noerr": 0,
@@ -254,7 +254,11 @@
     "libs": [],
     "x": 980,
     "y": 280,
-    "wires": []
+    "wires": [
+      [
+        "opcua"
+      ]
+    ]
   },
   {
     "id": "c_done",
@@ -299,7 +303,11 @@
     "libs": [],
     "x": 980,
     "y": 500,
-    "wires": []
+    "wires": [
+      [
+        "opcua"
+      ]
+    ]
   },
   {
     "id": "c_queue",
@@ -499,7 +507,7 @@
     "type": "function",
     "z": "qcflow",
     "name": "UA假死/断网检测",
-    "func": "// UA 异常计数：心跳成功会由 fn_ua_result 清零；写回异常走单独重试/死信路径。\nconst kind = msg._uaKind || '';\nif (kind === 'write' || (msg._qc && msg._qc.uaTarget)) {\n    const store = global.get('qstore').bootstrap(flow);\n    return global.get('qlogic').uaWriteFailure(msg, flow, node, store);\n}\nconst n = Math.min((flow.get('hbFails') || 0) + 1, 3);\nflow.set('hbFails', n);\nconst detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';\nnode.error('[UA异常 ' + n + '/3] ' + detail, msg);\nif (n >= 3) node.error('[连接告警] 连续3次UA异常，疑似断网/假死；检查 SecureChannel 与订阅状态');\nreturn null;",
+    "func": "// UA 异常计数：心跳成功会由 fn_ua_result 清零；写回异常走单独重试/死信路径。\nconst kind = msg._uaKind || '';\nif (kind === 'write' || (msg._qc && msg._qc.uaTarget)) {\n    const store = global.get('qstore').bootstrap(flow);\n    return global.get('qlogic').uaWriteFailure(msg, flow, node, store);\n}\nif (kind === 'ack') {\n    const detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';\n    node.error('[事件ACK失败] ' + detail + '；服务端将保留 outbox 并重发', msg);\n    return null;\n}\nconst n = Math.min((flow.get('hbFails') || 0) + 1, 3);\nflow.set('hbFails', n);\nconst detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';\nnode.error('[UA异常 ' + n + '/3] ' + detail, msg);\nif (n >= 3) node.error('[连接告警] 连续3次UA异常，疑似断网/假死；检查 SecureChannel 与订阅状态');\nreturn null;",
     "outputs": 1,
     "timeout": "",
     "noerr": 0,

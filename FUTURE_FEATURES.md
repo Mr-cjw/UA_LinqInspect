@@ -8,7 +8,7 @@
 
 UA_LinqInspect is already more than a dashboard demo. Its strongest assets are:
 
-- A standards-based OPC UA information model with 15 variables, 3 Methods, and 3 custom events.
+- A standards-based OPC UA information model with 15 variables, 4 Methods, and 3 custom events.
 - A stateful edge flow that subscribes to quality events, deduplicates, buffers, retries, and dead-letters MES deliveries.
 - A clear separation between work-order ID, NG-order receipt, and completion receipt.
 - A simulated AI source and a simulated MES, which make risky scenarios cheap to test.

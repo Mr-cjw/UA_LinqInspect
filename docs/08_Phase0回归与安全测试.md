@@ -67,8 +67,10 @@ cd ~/UA_LinqInspect
 |---|---:|---|
 | SQLite 队列单测 | 19/19 PASS | 唯一约束、事务回滚、UA 写回确认、单飞行、退避、看门狗、迁移、上限、死信重放 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
-| 状态工具单测 | 3/3 PASS | 快照往返、非法 Running 回退、损坏 JSON 回退 |
+| 状态工具单测 | 5/5 PASS | 快照往返、非法 Running 回退、损坏 JSON 回退、outbox 往返与坏事件隔离 |
+| 事件 outbox 单测 | 3/3 PASS | 发布异常不丢状态、稳定 ID 重发、ACK 幂等 |
 | 工位状态重启 | 11/11 PASS | `SIGKILL` 后工单、计数、SN 续增、恢复后完工 |
+| 事件 outbox 崩溃恢复 | 13/13 PASS | 未 ACK 事件跨 `SIGKILL` 保留、稳定 ID 重发、ACK 后停止 |
 | Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
 | 安全回归 | 14/14 PASS | UA NoSecurity/匿名权限、控制变量直接写拒绝、Node-RED 401/认证和死信重放鉴权 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
@@ -86,9 +88,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **430/430 PASS** | 25 个测试模块 |
+| **合计** | **448/448 PASS** | 27 个测试模块 |
 
-实际产物：`.tmp/regression-20261120-174140/summary.json`。
+实际产物：`.tmp/regression-20261120-180813/summary.json`。
 
 ## 4. 手工执行单个测试
 

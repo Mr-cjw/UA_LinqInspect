@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
+OUTBOX_EVENT_VERSION = 1
+OUTBOX_EVENT_TYPES = frozenset({"ng", "done"})
 VALID_STATUS = (0, 1, 2)
 _SNAPSHOT_KEYS = {
     "schema_version": "schemaVersion",
@@ -34,6 +36,7 @@ _SNAPSHOT_KEYS = {
     "last_confidence": "lastConfidence",
     "last_image_id": "lastImageId",
     "last_timestamp": "lastTimestamp",
+    "outbox": "outbox",
 }
 _log = logging.getLogger("qc_state")
 
@@ -56,6 +59,27 @@ class QCStationSnapshot:
     last_confidence: float = 0.0
     last_image_id: str = ""
     last_timestamp: str = ""
+    outbox: list[QCOutboxEvent] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Keep snapshots constructed with raw dictionaries usable by callers.
+        self.outbox = [
+            item if isinstance(item, QCOutboxEvent) else QCOutboxEvent(**item)
+            for item in (self.outbox or [])
+        ]
+
+
+@dataclass
+class QCOutboxEvent:
+    """A durable OPC UA event that requires consumer acknowledgement."""
+
+    event_version: int = OUTBOX_EVENT_VERSION
+    event_id: str = ""
+    event_type: str = ""
+    fields: dict[str, Any] = field(default_factory=dict)
+    severity: int = 0
+    message: str = ""
+    created_at: str = ""
 
 
 class QCStateStore:
@@ -79,6 +103,7 @@ class QCStateStore:
             _SNAPSHOT_KEYS[key]: item
             for key, item in asdict(snapshot).items()
         }
+        value["outbox"] = [self._serialize_outbox_event(event) for event in snapshot.outbox]
         payload = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         temp = self.path.with_name(f".{self.path.name}.tmp-{os.getpid()}")
         with temp.open("w", encoding="utf-8") as handle:
@@ -94,6 +119,18 @@ class QCStateStore:
                 os.close(directory_fd)
         except OSError:
             pass
+
+    @staticmethod
+    def _serialize_outbox_event(event: QCOutboxEvent) -> dict[str, Any]:
+        return {
+            "eventVersion": event.event_version,
+            "eventId": event.event_id,
+            "eventType": event.event_type,
+            "fields": event.fields,
+            "severity": event.severity,
+            "message": event.message,
+            "createdAt": event.created_at,
+        }
 
     def _validate(self, value: Any) -> QCStationSnapshot:
         if not isinstance(value, dict):
@@ -138,7 +175,53 @@ class QCStateStore:
             last_confidence=confidence,
             last_image_id=_as_text(value.get("lastImageId", value.get("last_image_id", ""))),
             last_timestamp=_as_text(value.get("lastTimestamp", value.get("last_timestamp", ""))),
+            outbox=self._validate_outbox(value.get("outbox", [])),
         )
+
+    def _validate_outbox(self, raw: Any) -> list[QCOutboxEvent]:
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            _log.warning("Ignoring unreadable QC outbox: expected a list")
+            return []
+
+        events: list[QCOutboxEvent] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                _log.warning("Ignoring malformed QC outbox item #%d", index)
+                continue
+            version = _as_int(item.get("eventVersion", item.get("event_version", 0)), 0)
+            event_id = _as_text(item.get("eventId", item.get("event_id", ""))).strip()
+            event_type = _as_text(item.get("eventType", item.get("event_type", ""))).strip()
+            fields = item.get("fields", {})
+            if (
+                version != OUTBOX_EVENT_VERSION
+                or not event_id
+                or event_id in seen_ids
+                or event_type not in OUTBOX_EVENT_TYPES
+                or not isinstance(fields, dict)
+            ):
+                _log.warning("Ignoring invalid QC outbox item #%d", index)
+                continue
+            try:
+                normalized_fields = json.loads(json.dumps(fields, ensure_ascii=False))
+            except (TypeError, ValueError):
+                _log.warning("Ignoring non-serializable QC outbox item #%d", index)
+                continue
+            seen_ids.add(event_id)
+            events.append(
+                QCOutboxEvent(
+                    event_version=version,
+                    event_id=event_id,
+                    event_type=event_type,
+                    fields=normalized_fields,
+                    severity=min(1000, max(0, _as_int(item.get("severity"), 1))),
+                    message=_as_text(item.get("message", "")),
+                    created_at=_as_text(item.get("createdAt", item.get("created_at", ""))),
+                )
+            )
+        return events
 
 
 def _as_int(value: Any, default: int) -> int:

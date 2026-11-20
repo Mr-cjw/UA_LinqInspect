@@ -70,7 +70,7 @@ function validateNg(msg, node, store) {
   const occurredAt = String(msg.occurredAt || '');
   if (store.hasDedup('ng_fp', `${serialNumber}|${occurredAt}`) || store.hasDedup('ng_sn', serialNumber)) {
     node.warn('[重复NG丢弃] serialNumber=' + serialNumber + ' occurredAt=' + occurredAt);
-    return null;
+    msg._duplicateEvent = true;
   }
   return msg;
 }
@@ -83,9 +83,28 @@ function validateDone(msg, node, store) {
   }
   if (store.hasDedup('done', workOrderId)) {
     node.warn('[重复报工丢弃] ' + workOrderId);
-    return null;
+    msg._duplicateEvent = true;
   }
   return msg;
+}
+
+function eventAckMessage(msg, node) {
+  // New servers send SourceEventId. CorrelationId is a stable per-business-event
+  // fallback for older subscriptions whose event filter does not expose it.
+  const sourceEventId = String(msg.sourceEventId || msg.correlationId || '').trim();
+  if (!sourceEventId) {
+    node.warn('[事件ACK] 事件缺少 sourceEventId，等待服务端后续重发');
+    return null;
+  }
+  return {
+    action: 'method',
+    _uaKind: 'ack',
+    _qcEventId: sourceEventId,
+    objectId: 'ns=2;s=QCStation',
+    methodId: 'ns=2;s=QCStation.AcknowledgeEvent',
+    topic: 'ns=2;s=QCStation.AcknowledgeEvent',
+    inputArguments: [{ dataType: 'String', value: sourceEventId }],
+  };
 }
 
 function enqueueNg(msg, flow, node, store) {
@@ -119,13 +138,14 @@ function enqueueNg(msg, flow, node, store) {
     });
     if (!result.enqueued) {
       node.warn('[重复入队丢弃][' + correlationId + '] ' + id);
-      return null;
+      return eventAckMessage(msg, node);
     }
     for (const dropped of result.dropped) {
       node.warn('[缓冲溢出] 上限 100，丢弃最旧 ' + dropped);
     }
     node.status({ fill: 'yellow', shape: 'dot', text: '队列=' + result.queueLength });
     node.warn('[入队][' + correlationId + '] NG ' + serialNumber + ' 队列=' + result.queueLength);
+    return eventAckMessage(msg, node);
   } catch (error) {
     node.error('[SQLite入队失败][' + correlationId + '] ' + error.message, msg);
   }
@@ -161,13 +181,14 @@ function enqueueDone(msg, flow, node, store) {
     });
     if (!result.enqueued) {
       node.warn('[重复入队丢弃][' + correlationId + '] ' + id);
-      return null;
+      return eventAckMessage(msg, node);
     }
     for (const dropped of result.dropped) {
       node.warn('[缓冲溢出] 上限 100，丢弃最旧 ' + dropped);
     }
     node.status({ fill: 'yellow', shape: 'dot', text: '队列=' + result.queueLength });
     node.warn('[入队][' + correlationId + '] 报工 ' + workOrderId + ' 队列=' + result.queueLength);
+    return eventAckMessage(msg, node);
   } catch (error) {
     node.error('[SQLite入队失败][' + correlationId + '] ' + error.message, msg);
   }

@@ -42,7 +42,7 @@
 5. 创建 6 个 Inspection 只读变量。
 6. 创建 3 个 Statistics 只读变量。
 7. 创建 3 个继承 `BaseEventType` 的 EventType。
-8. 创建 3 个 Method。
+8. 创建 4 个 Method（含事件 ACK）。
 
 理解点：`_ro(node)` 和 `_rw(node)` 不是装饰，它们直接影响客户端能否写入。Node-RED 写三个 MES 回执变量失败时，应先检查 AccessLevel。
 
@@ -58,11 +58,11 @@
 
 ### 2.4 Method 校验
 
-阅读：`server/qc_server.py` 的三个 Method 包装与实现。
+阅读：`server/qc_server.py` 的四个 Method 包装与实现。
 
 必须记住：
 
-- 三个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工与迟到检测交错。
+- 四个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工、ACK 与迟到检测交错。
 - `StartInspection` 先判断空工单、Running、Fault、目标数，最后才改状态。
 - `CompleteWorkOrder` 先判断无活动工单、工单不一致、状态不对，最后才发事件并回 Idle。
 - `ResetCounters` 清累计统计和窗口，`NgRate` 回到 `-1.0`。
