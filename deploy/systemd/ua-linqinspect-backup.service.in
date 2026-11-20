@@ -1,0 +1,32 @@
+[Unit]
+Description=UA LinqInspect SQLite Online Backup
+Documentation=file://@REPO_ROOT@/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory=@REPO_ROOT@
+EnvironmentFile=-@ENV_FILE@
+Environment=QC_DB_PATH=@REPO_ROOT@/data/qc-queue.sqlite
+Environment=QC_BACKUP_DIR=@REPO_ROOT@/data/backups
+Environment=QC_BACKUP_KEEP=7
+Environment=QC_BACKUP_METRICS_FILE=/var/lib/ua-linqinspect/qc-backup.prom
+ExecStart=@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/scripts/backup_queue.py --source ${QC_DB_PATH} --output-dir ${QC_BACKUP_DIR} --keep ${QC_BACKUP_KEEP} --metrics-file ${QC_BACKUP_METRICS_FILE}
+StateDirectory=ua-linqinspect
+StateDirectoryMode=0755
+ReadWritePaths=@REPO_ROOT@/data /var/lib/ua-linqinspect
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=

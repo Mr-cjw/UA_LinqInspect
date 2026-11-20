@@ -30,6 +30,7 @@
 | [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md) | correlationId 贯通、MES 错误码矩阵、重启/断网订阅恢复、158 项回归证据与后续规划 | 做可靠性增强或答辩前 |
 | [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md) | SQLite 表结构、事务边界、旧 context 迁移、SIGKILL 恢复与 194 项回归证据 | 做生产化增强或评审可靠性时 |
 | [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md) | Prometheus 指标、事务计数、在线备份、完整性校验、255 项回归证据与下一步 | 做运维化、监控或备份评审时 |
+| [12_Phase2C部署运维与恢复演练.md](12_Phase2C部署运维与恢复演练.md) | systemd 部署、健康探针、Prometheus 告警、备份 timer、离线恢复、RPO/RTO 口径与 303 项回归证据 | 部署试点、排障或做灾备演练时 |
 
 ## 3. 原始依据文档
 
@@ -77,7 +78,7 @@
 
 ## 5. 当前验证状态
 
-2026-11-20 完成安全环境、Phase 1 关联追踪、Phase 2A SQLite 事务队列和断网/重启/崩溃恢复，并通过一键隔离回归：
+2026-11-20 完成安全环境、Phase 1 关联追踪、Phase 2A SQLite 事务队列、Phase 2B 可观测性/在线备份和 Phase 2C 部署/告警/恢复演练，并通过一键隔离回归：
 
 - Python：`.venv`，Python 3.12.3，`asyncua 2.1.0`
 - Node.js：26.13.1；Node-RED：5.0.9；`node-red-contrib-opcua`：0.2.355
@@ -85,7 +86,10 @@
 - M1 冒烟测试：36/36 PASS
 - M2 正常链路端到端测试：15/15 PASS
 - Prometheus 指标：43/43 PASS
-- SQLite 在线备份：17/17 PASS
+- 健康探针：10/10 PASS
+- SQLite 在线备份：20/20 PASS
+- 离线恢复：20/20 PASS
+- 部署模板与 systemd：15/15 PASS
 - M2 故障场景测试：52/52 PASS（5xx、timeout、4xx、429、非法 2xx、Method 拒绝）
 - Node-RED 非空队列重启恢复：18/18 PASS
 - SQLite 队列单测：14/14 PASS
@@ -93,9 +97,9 @@
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：255/255 PASS
+- 一键隔离回归合计：303/303 PASS
 
-一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
+一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [12_Phase2C部署运维与恢复演练.md](12_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 
 ## 6. 项目一句话与三句话
 

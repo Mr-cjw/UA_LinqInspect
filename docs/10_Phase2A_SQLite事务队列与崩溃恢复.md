@@ -2,7 +2,7 @@
 
 > 日期：2026-11-20 ｜ Phase 2A 证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当时结果：194/194 PASS
 >
-> Phase 2B 完成后当前一键回归为 255/255，见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。
+> Phase 2B/2C 完成后当前一键回归为 303/303，见 [12_Phase2C部署运维与恢复演练.md](12_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 

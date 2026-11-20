@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "AI质检-MES闭环(基础骨架)",
     "disabled": false,
-    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信和运行指标存于 SQLite（WAL），可经 GET /qc/status 与 GET /metrics 查询。",
+    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信和运行指标存于 SQLite（WAL），可经 GET /qc/status、GET /metrics 与 GET /healthz 查询。",
     "env": []
   },
   {
@@ -1112,6 +1112,54 @@
     "headers": {},
     "x": 640,
     "y": 1620,
+    "wires": []
+  },
+  {
+    "id": "httpin_health",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "就绪探针",
+    "url": "/healthz",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 160,
+    "y": 1700,
+    "wires": [
+      [
+        "fn_health"
+      ]
+    ]
+  },
+  {
+    "id": "fn_health",
+    "type": "function",
+    "z": "qcflow",
+    "name": "输出健康状态",
+    "func": "const store = global.get('qstore').bootstrap(flow);\nreturn global.get('qlogic').health(msg, flow, store);",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 1700,
+    "wires": [
+      [
+        "httpres_health"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_health",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 640,
+    "y": 1700,
     "wires": []
   }
 ]

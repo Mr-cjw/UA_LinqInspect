@@ -1,0 +1,264 @@
+"""Validate the offline SQLite restore workflow and application compatibility."""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKUP_SCRIPT = REPO_ROOT / "scripts" / "backup_queue.py"
+RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore_queue.py"
+NODE_BIN = os.environ.get("NODE_BIN", "node")
+
+results: list[tuple[str, bool]] = []
+
+
+def check(name: str, condition: bool, detail: str = "") -> None:
+    results.append((name, bool(condition)))
+    print(f"{'PASS' if condition else 'FAIL'} | {name} {detail}")
+
+
+def run_json(command: list[str]) -> tuple[subprocess.CompletedProcess, dict]:
+    completed = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+        check=False,
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        payload = {"parseError": completed.stdout, "stderr": completed.stderr}
+    return completed, payload
+
+
+def run_backup(source: Path, output_dir: Path) -> tuple[subprocess.CompletedProcess, dict]:
+    return run_json(
+        [
+            sys.executable,
+            str(BACKUP_SCRIPT),
+            "--source",
+            str(source),
+            "--output-dir",
+            str(output_dir),
+            "--keep",
+            "3",
+        ]
+    )
+
+
+def run_restore(
+    backup: Path, target: Path, force: bool = False, dry_run: bool = False
+) -> tuple[subprocess.CompletedProcess, dict]:
+    command = [
+        sys.executable,
+        str(RESTORE_SCRIPT),
+        "--backup",
+        str(backup),
+        "--target",
+        str(target),
+    ]
+    if force:
+        command.append("--force")
+    if dry_run:
+        command.append("--dry-run")
+    return run_json(command)
+
+
+def node_eval(script: str, db_path: Path) -> dict:
+    completed = subprocess.run(
+        [NODE_BIN, "-e", script],
+        cwd=REPO_ROOT,
+        env=os.environ | {"DB_PATH": str(db_path)},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr or completed.stdout)
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+SEED_SOURCE = r"""
+const { createStore } = require('./nodered/sqlite_store.js');
+const store = createStore({ dbPath: process.env.DB_PATH });
+store.enqueue({
+  id: 'ng|SN-RESTORE-1|2026-11-20T12:00:00.000Z',
+  type: 'ng',
+  correlationId: 'corr-restore-1',
+  url: 'http://127.0.0.1/mes/ng-order',
+  body: { schemaVersion: '1.0', serialNumber: 'SN-RESTORE-1' },
+  createdAt: '2026-11-20T12:00:00.000Z',
+  dedupKeys: [
+    { kind: 'ng_fp', key: 'SN-RESTORE-1|2026-11-20T12:00:00.000Z' },
+    { kind: 'ng_sn', key: 'SN-RESTORE-1' },
+  ],
+  now: 1000,
+});
+const sent = store.claimNext(2000);
+store.deadLetter({
+  id: sent.item.id,
+  correlationId: sent.item.correlationId,
+  errorCode: 'MES_REJECTED',
+  reason: 'HTTP 400',
+  now: 3000,
+});
+store.enqueue({
+  id: 'ng|SN-RESTORE-2|2026-11-20T12:00:01.000Z',
+  type: 'ng',
+  correlationId: 'corr-restore-2',
+  url: 'http://127.0.0.1/mes/ng-order',
+  body: { schemaVersion: '1.0', serialNumber: 'SN-RESTORE-2' },
+  createdAt: '2026-11-20T12:00:01.000Z',
+  dedupKeys: [
+    { kind: 'ng_fp', key: 'SN-RESTORE-2|2026-11-20T12:00:01.000Z' },
+    { kind: 'ng_sn', key: 'SN-RESTORE-2' },
+  ],
+  now: 4000,
+});
+store.enqueue({
+  id: 'done|WO-RESTORE-1',
+  type: 'complete',
+  correlationId: 'corr-restore-3',
+  url: 'http://127.0.0.1/mes/complete',
+  body: { schemaVersion: '1.0', workOrderId: 'WO-RESTORE-1' },
+  createdAt: '2026-11-20T12:00:02.000Z',
+  dedupKeys: [{ kind: 'done', key: 'WO-RESTORE-1' }],
+  now: 5000,
+});
+console.log(JSON.stringify({ status: store.status(), metrics: store.metricSnapshot() }));
+store.close();
+"""
+
+SEED_TARGET = r"""
+const { createStore } = require('./nodered/sqlite_store.js');
+const store = createStore({ dbPath: process.env.DB_PATH });
+store.enqueue({
+  id: 'ng|SN-OLD|2026-11-19T12:00:00.000Z',
+  type: 'ng',
+  correlationId: 'corr-old',
+  url: 'http://127.0.0.1/mes/ng-order',
+  body: { schemaVersion: '1.0', serialNumber: 'SN-OLD' },
+  createdAt: '2026-11-19T12:00:00.000Z',
+  dedupKeys: [
+    { kind: 'ng_fp', key: 'SN-OLD|2026-11-19T12:00:00.000Z' },
+    { kind: 'ng_sn', key: 'SN-OLD' },
+  ],
+  now: 1000,
+});
+console.log(JSON.stringify(store.status()));
+store.close();
+"""
+
+VERIFY_RESTORED = r"""
+const { createStore } = require('./nodered/sqlite_store.js');
+const store = createStore({ dbPath: process.env.DB_PATH });
+const before = store.status();
+const metrics = store.metricSnapshot();
+const claimed = store.claimNext(Date.now());
+let completed = null;
+if (claimed.state === 'send') {
+  completed = store.complete({ id: claimed.item.id, correlationId: claimed.item.correlationId });
+}
+const after = store.status();
+console.log(JSON.stringify({ before, after, metrics, claimed: claimed.state, completed: !!completed }));
+store.close();
+"""
+
+
+def queue_rows(path: Path) -> int:
+    connection = sqlite3.connect(path)
+    try:
+        return int(connection.execute("SELECT COUNT(*) FROM queue").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="qc-restore-test-") as temporary:
+        root = Path(temporary)
+        source = root / "source" / "qc-queue.sqlite"
+        target = root / "target" / "qc-queue.sqlite"
+        source.parent.mkdir(parents=True)
+        target.parent.mkdir(parents=True)
+        source_state = node_eval(SEED_SOURCE, source)
+        node_eval(SEED_TARGET, target)
+        check("restore fixture has source queue and dead letter",
+              source_state["status"]["queue"]["total"] == 2 and
+              source_state["status"]["deadLetters"]["total"] == 1)
+
+        completed, backup_summary = run_backup(source, root / "backups")
+        check("backup for restore succeeds", completed.returncode == 0 and backup_summary.get("ok"))
+        backup = Path(str(backup_summary.get("backup") or ""))
+        check("backup file exists", backup.is_file(), str(backup))
+
+        old_rows = queue_rows(target)
+        completed, refused = run_restore(backup, target)
+        check("existing target requires --force", completed.returncode != 0 and
+              "--force" in str(refused.get("error")))
+        check("refused restore leaves target unchanged", queue_rows(target) == old_rows)
+
+        completed, dry = run_restore(backup, target, force=True, dry_run=True)
+        check("dry-run validates backup", completed.returncode == 0 and dry.get("ok") is True and
+              dry.get("restored") is False)
+        check("dry-run leaves target unchanged", queue_rows(target) == old_rows)
+        check("dry-run does not create pre-restore snapshot", not any((target.parent / "backups").glob("*.sqlite")))
+
+        completed, restored = run_restore(backup, target, force=True)
+        check("restore succeeds", completed.returncode == 0 and restored.get("ok") is True,
+              str(restored.get("error") or ""))
+        check("restore reports integrity checks",
+              restored.get("sourceIntegrityCheck") == "ok" and
+              restored.get("restoredIntegrityCheck") == "ok")
+        pre_restore = Path(str(restored.get("preRestore") or ""))
+        check("pre-restore safety snapshot exists", pre_restore.is_file(), str(pre_restore))
+        check("pre-restore snapshot preserves previous target", pre_restore.is_file() and
+              queue_rows(pre_restore) == old_rows)
+        check("stale WAL/SHM sidecars are removed",
+              not Path(str(target) + "-wal").exists() and
+              not Path(str(target) + "-shm").exists())
+
+        verified = node_eval(VERIFY_RESTORED, target)
+        check("restored queue counts match backup",
+              verified["before"]["queue"]["total"] == 2,
+              f"({verified['before']['queue']})")
+        check("restored dead letters match backup",
+              verified["before"]["deadLetters"]["total"] == 1 and
+              verified["before"]["deadLetters"]["last"]["errorCode"] == "MES_REJECTED")
+        check("restored dedup keys match backup",
+              verified["before"]["dedup"] == {
+                  "ngFingerprints": 2,
+                  "ngSerialNumbers": 2,
+                  "completedWorkOrders": 1,
+              }, f"({verified['before']['dedup']})")
+        check("restored metrics remain queryable",
+              any(item["name"] == "delivery_total" and item["type"] == "ng" and
+                  item["outcome"] == "dead" and item["value"] == 1
+                  for item in verified["metrics"]))
+        check("restored queue continues to dispatch",
+              verified["claimed"] == "send" and verified["completed"] is True)
+        check("restored queue drains after one dispatch",
+              verified["after"]["queue"]["total"] == 1)
+
+        corrupt = root / "corrupt.sqlite"
+        corrupt.write_text("not a sqlite database\n", encoding="utf-8")
+        completed, invalid = run_restore(corrupt, root / "invalid-target.sqlite")
+        check("corrupt backup is rejected", completed.returncode != 0 and
+              invalid.get("ok") is False)
+
+    passed = sum(1 for _, value in results if value)
+    print(f"\n===== RESTORE QUEUE: {passed}/{len(results)} passed =====")
+    return 0 if passed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

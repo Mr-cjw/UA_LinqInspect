@@ -26,6 +26,7 @@ CERT_DIR = REPO_ROOT / "certs"
 
 NODE_TESTS = (
     ("sqlite_queue", "tests/sqlite_queue_test.js", 30),
+    ("health", "tests/health_test.js", 30),
 )
 
 TESTS = (
@@ -34,6 +35,8 @@ TESTS = (
     ("nodered_e2e", "tests/nodered_e2e.py", 120),
     ("metrics", "tests/metrics_test.py", 120),
     ("backup_queue", "tests/backup_queue_test.py", 60),
+    ("restore_queue", "tests/restore_queue_test.py", 90),
+    ("deploy_templates", "tests/deploy_templates_test.py", 60),
     ("fault_scenarios", "tests/fault_scenarios.py", 180),
 )
 

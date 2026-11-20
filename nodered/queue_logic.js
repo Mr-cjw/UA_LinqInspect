@@ -481,6 +481,39 @@ function metrics(msg, flow, store) {
   return msg;
 }
 
+function health(msg, flow, store) {
+  const startedAt = flow.get('edgeStartedAt') || Date.now();
+  if (!flow.get('edgeStartedAt')) flow.set('edgeStartedAt', startedAt);
+  const uptimeSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  const heartbeatFailures = Number(flow.get('hbFails') || 0);
+  try {
+    const snapshot = store.status();
+    const ok = heartbeatFailures < 3;
+    msg.statusCode = ok ? 200 : 503;
+    msg.payload = {
+      ok,
+      service: 'ua-linqinspect-edge',
+      status: ok ? 'ready' : 'degraded',
+      uptimeSec,
+      heartbeatFailures,
+      queue: snapshot.queue,
+      deadLetters: snapshot.deadLetters.total,
+      at: timestamp(),
+    };
+  } catch (_) {
+    msg.statusCode = 503;
+    msg.payload = {
+      ok: false,
+      service: 'ua-linqinspect-edge',
+      status: 'unavailable',
+      errorCode: 'SQLITE_UNAVAILABLE',
+      at: timestamp(),
+    };
+  }
+  msg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+  return msg;
+}
+
 function status(msg, flow, store) {
   const snapshot = store.status();
   const startedAt = flow.get('edgeStartedAt') || Date.now();
@@ -524,4 +557,5 @@ module.exports = {
   response,
   status,
   metrics,
+  health,
 };
