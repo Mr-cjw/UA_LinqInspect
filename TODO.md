@@ -48,7 +48,7 @@
 □ [Medium] `server/qc_server.py:215-218`：统计变量逐个写入，消费者可能观察到 `InspectCount` 已增加而 `OkCount/NgCount` 未更新的中间态；应提供原子快照或统一状态版本号。
 □ [Medium] `server/qc_server.py:91-98`：三个 MES 回执变量允许客户端直接写，任何匿名客户端都能伪造回执。应改为 Method/MES 网关独占写入，或对写入值做签名/关联校验。
 ✅ [Medium] ~~没有 `correlationId`~~：UA 事件、Node-RED 请求/回执、死信和 Edge Core API 已透传并校验关联 ID。
-□ [Medium] `nodered/flows.json` 节点 `fn_status`：只返回死信最后一条，没有完整死信列表、重放、删除/确认接口，现场只能看日志。应提供受鉴权的 dead-letter 查询与人工重放 API。
+□ [Medium] `nodered/flows.json` 节点 `fn_status`：已提供受鉴权的按 ID/批量死信重放，但仍只返回最后一条死信，缺少分页列表、详情过滤、删除/确认和重放审计。应补完整 dead-letter 查询与操作记录。
 □ [Medium] `nodered/flows.json` 节点 `fn_status`、`fn_resp`：状态接口只暴露队列/死信计数，没有成功率、重试数、MES 延迟、事件丢弃数、订阅健康等指标。应增加 Prometheus/结构化指标。
 □ [Medium] `server/qc_server.py:229-238`：每次检测顺序执行 9 个 UA 变量写和 1~2 个事件发布，未提供批量写入或写入缓存；高频场景下延迟线性累积。应在压测后批处理/合并统计写入。
 □ [Medium] `server/qc_server.py:280`：`logging.basicConfig(level=INFO)` 放大 asyncua 初始化日志；本次启动产生约 1000+ 行 `add_node ... does not exists`。应把 asyncua 日志降到 WARNING，并为业务日志配置轮转。
@@ -59,7 +59,7 @@
 □ [Medium] `tests/_perm_probe.py:24`：把结果写到 `D:/UA_LinqInspect/_perm_probe.txt`，在 Ubuntu 直接失败；探针还会写入真实业务变量。应改为参数化输出路径/临时目录并只读检查。
 □ [Medium] `.install_deps.py:4-6`：硬编码 Windows 用户路径并手工复制 site-packages，不可复现且可能引入来源不明的包。应删除该脚本，改为标准 `requirements.txt`/锁文件安装。
 □ [Medium] `nodered/flows.json` 节点 `fn_alarm`：只在有下一条 NG 时输出被抑制数量；如果生产在 10 秒窗内停止，末尾抑制数永远不告警，且红色状态不会自动恢复。应使用定时汇总和明确的告警恢复事件。
-□ [Medium] 运维缺口：没有服务级健康/就绪探针、systemd/Docker 进程守护、日志轮转、指标端点和备份恢复步骤；试点现场只能靠人工查看 Node-RED。应补齐部署与运维基线。
+□ [Medium] 运维缺口：健康/就绪探针、systemd 进程守护、Prometheus 指标与 SQLite 在线备份/离线恢复已完成；仍缺日志轮转、异地/加密备份、备份过期与磁盘/WAL 增长告警、Alertmanager 值班路由以及试点主机实测 RTO。
 
 ## Low
 

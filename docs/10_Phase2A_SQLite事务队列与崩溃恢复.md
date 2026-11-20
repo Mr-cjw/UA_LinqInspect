@@ -2,7 +2,7 @@
 
 > 日期：2026-11-20 ｜ Phase 2A 证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当时结果：194/194 PASS
 >
-> 当前合并回归为 282/282（加入 Node-RED 认证、Edge Core 与工位状态恢复测试），见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。
+> Phase 2B/2C 与 M3 自动化完成后当前合并回归为 378/378（含 Node-RED 认证、Edge Core、部署、长断网、死信重放与恢复测试），见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -211,11 +211,12 @@ Phase 2A 提升了进程崩溃后的一致性，但仍不是 exactly-once：
 - ✅ 增加在线备份脚本、完整性校验和保留策略。
 - 结构化 JSON 日志与告警规则留到下一阶段。
 
-### Phase 2C：部署与运维基线
+### Phase 2C：部署与运维基线，已完成
 
-- systemd 或 Docker Compose 启动模板。
-- SQLite 定时备份、完整性检查、保留策略和恢复演练。
-- 日志轮转、健康检查、进程退出码和崩溃告警。
+- ✅ systemd service/timer 模板和渲染脚本。
+- ✅ `/healthz` 健康探针、Prometheus 告警规则和备份 textfile 指标。
+- ✅ SQLite 离线恢复、恢复前安全快照和完整自动化演练。
+- 日志轮转、异地备份和真实工厂 RTO 记录仍属于后续运维增强。
 
 ### Phase 3：真实集成
 

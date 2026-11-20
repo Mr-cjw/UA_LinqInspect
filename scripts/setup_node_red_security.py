@@ -21,6 +21,17 @@ USER_DIR = ROOT / ".node-red"
 TARGET = USER_DIR / "settings.js"
 SECRETS = USER_DIR / ".secure-env"
 FLOW_CREDENTIALS = USER_DIR / "flows_cred.json"
+ENV_KEYS = (
+    "NODERED_ADMIN_USER",
+    "NODERED_ADMIN_PASSWORD",
+    "NODERED_CREDENTIAL_SECRET",
+    "NODERED_HTTP_USER",
+    "NODERED_HTTP_PASS",
+    "NODERED_OPCUA_USER",
+    "NODERED_OPCUA_PASSWORD",
+    "QC_REPO_ROOT",
+    "QC_DB_PATH",
+)
 
 
 def read_existing() -> dict[str, str]:
@@ -48,14 +59,18 @@ def main() -> int:
         raise SystemExit(f"Missing secure settings template: {SOURCE}")
     USER_DIR.mkdir(parents=True, exist_ok=True)
     values = read_existing()
+    values.update({key: os.environ[key] for key in ENV_KEYS if os.environ.get(key)})
 
     values.setdefault("NODERED_ADMIN_USER", "admin")
     values.setdefault("NODERED_ADMIN_PASSWORD", secrets.token_urlsafe(24))
     values.setdefault("NODERED_CREDENTIAL_SECRET", secrets.token_urlsafe(32))
     values.setdefault("NODERED_HTTP_USER", values["NODERED_ADMIN_USER"])
     values.setdefault("NODERED_HTTP_PASS", secrets.token_urlsafe(24))
-    values.setdefault("NODERED_OPCUA_USER", values["NODERED_ADMIN_USER"])
-    values.setdefault("NODERED_OPCUA_PASSWORD", secrets.token_urlsafe(24))
+    values.setdefault("NODERED_OPCUA_USER", os.environ.get("UA_ADMIN_USER") or values["NODERED_ADMIN_USER"])
+    values.setdefault(
+        "NODERED_OPCUA_PASSWORD",
+        os.environ.get("UA_ADMIN_PASS") or secrets.token_urlsafe(24),
+    )
     values.setdefault("QC_REPO_ROOT", str(ROOT))
     values.setdefault("QC_DB_PATH", str(ROOT / "data" / "qc-queue.sqlite3"))
     values.setdefault("QC_STATE_PATH", str(ROOT / "data" / "qc-state.json"))

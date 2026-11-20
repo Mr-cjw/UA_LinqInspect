@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule UA LinqInspect SQLite Online Backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=5m
+AccuracySec=1m
+Persistent=true
+Unit=ua-linqinspect-backup.service
+
+[Install]
+WantedBy=timers.target

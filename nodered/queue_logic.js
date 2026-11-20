@@ -487,6 +487,39 @@ function metrics(msg, flow, store) {
   return msg;
 }
 
+function health(msg, flow, store) {
+  const startedAt = flow.get('edgeStartedAt') || Date.now();
+  if (!flow.get('edgeStartedAt')) flow.set('edgeStartedAt', startedAt);
+  const uptimeSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  const heartbeatFailures = Number(flow.get('hbFails') || 0);
+  try {
+    const snapshot = store.status();
+    const ok = heartbeatFailures < 3;
+    msg.statusCode = ok ? 200 : 503;
+    msg.payload = {
+      ok,
+      service: 'ua-linqinspect-edge',
+      status: ok ? 'ready' : 'degraded',
+      uptimeSec,
+      heartbeatFailures,
+      queue: snapshot.queue,
+      deadLetters: snapshot.deadLetters.total,
+      at: timestamp(),
+    };
+  } catch (_) {
+    msg.statusCode = 503;
+    msg.payload = {
+      ok: false,
+      service: 'ua-linqinspect-edge',
+      status: 'unavailable',
+      errorCode: 'SQLITE_UNAVAILABLE',
+      at: timestamp(),
+    };
+  }
+  msg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+  return msg;
+}
+
 function status(msg, flow, store) {
   const snapshot = store.status();
   const startedAt = flow.get('edgeStartedAt') || Date.now();
@@ -521,6 +554,55 @@ function status(msg, flow, store) {
   return msg;
 }
 
+function replayDeadLetters(msg, flow, store) {
+  let body = msg.payload;
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch (_) {
+      body = {};
+    }
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
+  const id = typeof body.id === 'string' ? body.id.trim() : '';
+  const all = body.all === true;
+  if (!id && !all) {
+    msg.statusCode = 400;
+    msg.payload = {
+      ok: false,
+      errorCode: 'REPLAY_TARGET_REQUIRED',
+      error: 'provide {"id":"<dead-letter id>"} or {"all":true}'
+    };
+    return msg;
+  }
+  try {
+    const result = store.replayDeadLetters({
+      id,
+      limit: body.limit,
+      now: Date.now(),
+    });
+    const snapshot = store.status();
+    msg.statusCode = 200;
+    msg.payload = {
+      ok: true,
+      ...result,
+      queue: snapshot.queue,
+      deadLetters: snapshot.deadLetters.total,
+      at: timestamp(),
+    };
+  } catch (error) {
+    msg.statusCode = 500;
+    msg.payload = {
+      ok: false,
+      errorCode: 'REPLAY_FAILED',
+      error: error.message,
+      at: timestamp(),
+    };
+  }
+  msg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+  return msg;
+}
+
 module.exports = {
   validateNg,
   validateDone,
@@ -530,4 +612,6 @@ module.exports = {
   response,
   status,
   metrics,
+  health,
+  replayDeadLetters,
 };

@@ -20,18 +20,23 @@ def check(name: str, condition: bool, detail: str = "") -> None:
     print(f"{'PASS' if condition else 'FAIL'} | {name} {detail}")
 
 
-def run_backup(source: Path, output_dir: Path, keep: int = 7) -> tuple[subprocess.CompletedProcess, dict]:
+def run_backup(
+    source: Path, output_dir: Path, keep: int = 7, metrics_file: Path | None = None
+) -> tuple[subprocess.CompletedProcess, dict]:
+    command = [
+        sys.executable,
+        str(BACKUP_SCRIPT),
+        "--source",
+        str(source),
+        "--output-dir",
+        str(output_dir),
+        "--keep",
+        str(keep),
+    ]
+    if metrics_file is not None:
+        command.extend(["--metrics-file", str(metrics_file)])
     completed = subprocess.run(
-        [
-            sys.executable,
-            str(BACKUP_SCRIPT),
-            "--source",
-            str(source),
-            "--output-dir",
-            str(output_dir),
-            "--keep",
-            str(keep),
-        ],
+        command,
         cwd=REPO_ROOT,
         text=True,
         stdout=subprocess.PIPE,
@@ -103,7 +108,8 @@ def main() -> int:
         source_connection = create_source(source)
         try:
             expected_counts = db_counts(source)
-            completed, summary = run_backup(source, output_dir, keep=2)
+            metrics_file = root / "node-exporter" / "qc-backup.prom"
+            completed, summary = run_backup(source, output_dir, keep=2, metrics_file=metrics_file)
             check("backup script exits successfully", completed.returncode == 0,
                   completed.stderr.strip())
             check("backup summary reports ok", summary.get("ok") is True)
@@ -120,6 +126,13 @@ def main() -> int:
                       copied.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
             finally:
                 copied.close()
+            metrics_text = metrics_file.read_text(encoding="utf-8") if metrics_file.is_file() else ""
+            check("backup writes Prometheus textfile", summary.get("metricsFile") == str(metrics_file))
+            check("backup metrics expose success timestamp",
+                  "qc_backup_last_success_timestamp_seconds " in metrics_text)
+            check("backup metrics expose integrity and row counts",
+                  "qc_backup_integrity_ok 1" in metrics_text and
+                  'qc_backup_table_rows{table="queue"} 3' in metrics_text)
 
             latest = summary
             for _ in range(4):

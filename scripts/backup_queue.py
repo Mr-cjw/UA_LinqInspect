@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -100,7 +101,36 @@ def prune_backups(
     return retained, removed, errors
 
 
-def create_backup(source: Path, output_dir: Path, keep: int) -> dict:
+def write_metrics_file(path: Path, summary: dict) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tables = summary.get("tables") or {}
+    lines = [
+        '# HELP qc_backup_last_success_timestamp_seconds Unix timestamp of the last successful backup.',
+        '# TYPE qc_backup_last_success_timestamp_seconds gauge',
+        f'qc_backup_last_success_timestamp_seconds {int(time.time())}',
+        '# HELP qc_backup_size_bytes Size of the last successful backup file.',
+        '# TYPE qc_backup_size_bytes gauge',
+        f'qc_backup_size_bytes {int(summary.get("sizeBytes") or 0)}',
+        '# HELP qc_backup_integrity_ok Whether the last backup passed integrity checks.',
+        '# TYPE qc_backup_integrity_ok gauge',
+        'qc_backup_integrity_ok 1',
+        '# HELP qc_backup_table_rows Rows copied per key table.',
+        '# TYPE qc_backup_table_rows gauge',
+    ]
+    for table in COUNTED_TABLES:
+        lines.append(f'qc_backup_table_rows{{table="{table}"}} {int(tables.get(table) or 0)}')
+    try:
+        temporary.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return str(path)
+
+
+def create_backup(source: Path, output_dir: Path, keep: int, metrics_file: Path | None = None) -> dict:
     if not source.is_file():
         raise FileNotFoundError(f"source database does not exist: {source}")
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -134,7 +164,7 @@ def create_backup(source: Path, output_dir: Path, keep: int) -> dict:
         raise
 
     retained, removed, retention_errors = prune_backups(output_dir, keep, target, source)
-    return {
+    summary = {
         "ok": True,
         "source": str(source),
         "backup": str(target),
@@ -146,6 +176,12 @@ def create_backup(source: Path, output_dir: Path, keep: int) -> dict:
         "removed": removed,
         "retentionErrors": retention_errors,
     }
+    if metrics_file is not None:
+        try:
+            summary["metricsFile"] = write_metrics_file(metrics_file, summary)
+        except Exception as exc:
+            summary["metricsError"] = f"{type(exc).__name__}: {exc}"
+    return summary
 
 
 def main() -> int:
@@ -153,6 +189,7 @@ def main() -> int:
     parser.add_argument("--source", help="SQLite source path; defaults to QC_DB_PATH or data/qc-queue.sqlite")
     parser.add_argument("--output-dir", help="backup directory; defaults to <source-parent>/backups")
     parser.add_argument("--keep", type=int, default=DEFAULT_KEEP, help="number of newest backups to retain")
+    parser.add_argument("--metrics-file", help="optional Prometheus textfile describing the last successful backup")
     args = parser.parse_args()
     if args.keep < 1:
         parser.error("--keep must be at least 1")
@@ -164,7 +201,8 @@ def main() -> int:
         else source.parent / "backups"
     )
     try:
-        summary = create_backup(source, output_dir, args.keep)
+        metrics_file = Path(args.metrics_file).expanduser().resolve() if args.metrics_file else None
+        summary = create_backup(source, output_dir, args.keep, metrics_file)
     except Exception as exc:
         summary = {
             "ok": False,

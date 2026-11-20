@@ -100,6 +100,42 @@ async def main() -> int:
             )
             with urllib.request.urlopen(request, timeout=3) as response:
                 check("Node-RED HTTP endpoint accepts authenticated access", response.status == 200)
+
+            replay_body = b"{}"
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        node_red_base + "/qc/dead-letters/replay",
+                        data=replay_body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=3,
+                )
+                check("Node-RED dead-letter replay rejects unauthenticated access", False,
+                      "(unexpected success)")
+            except urllib.error.HTTPError as exc:
+                check("Node-RED dead-letter replay rejects unauthenticated access",
+                      exc.code == 401, f"(HTTP {exc.code})")
+
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        node_red_base + "/qc/dead-letters/replay",
+                        data=replay_body,
+                        headers={
+                            "Authorization": node_red_auth,
+                            "Content-Type": "application/json",
+                        },
+                        method="POST",
+                    ),
+                    timeout=3,
+                )
+                check("authenticated dead-letter replay validates request body", False,
+                      "(unexpected success)")
+            except urllib.error.HTTPError as exc:
+                check("authenticated dead-letter replay validates request body",
+                      exc.code == 400, f"(HTTP {exc.code})")
         else:
             check("Node-RED authenticated HTTP credential configured", False, "(missing NODERED_HTTP_AUTH)")
 

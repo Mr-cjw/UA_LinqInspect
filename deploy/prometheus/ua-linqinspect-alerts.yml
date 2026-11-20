@@ -1,0 +1,65 @@
+groups:
+  - name: ua-linqinspect-edge
+    rules:
+      - alert: QcEdgeDown
+        expr: up{job="ua-linqinspect-edge"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "UA LinqInspect Node-RED endpoint is down"
+          description: "Prometheus has failed to scrape the edge metrics endpoint for 2 minutes."
+
+      - alert: QcQueueBacklogHigh
+        expr: qc_queue_depth{status="pending"} > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UA LinqInspect pending queue is growing"
+          description: "Pending queue depth has remained above 20 for 5 minutes."
+
+      - alert: QcOldestQueueItemTooOld
+        expr: qc_queue_oldest_age_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest queued MES item is older than 60 seconds"
+          description: "The edge queue is not draining at the expected rate."
+
+      - alert: QcDeadLettersGrowing
+        expr: delta(qc_dead_letters[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UA LinqInspect dead letters increased"
+          description: "At least one new dead letter appeared in the last 15 minutes; inspect /qc/status and edge logs."
+
+      - alert: QcDeliveryRetrySpike
+        expr: increase(qc_delivery_total{outcome="retry"}[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MES delivery retries are elevated"
+          description: "More than five delivery retries occurred in the last 10 minutes."
+
+      - alert: QcHeartbeatDegraded
+        expr: max_over_time(qc_heartbeat_failures[5m]) >= 3
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OPC UA heartbeat is failing"
+          description: "The edge gateway observed three or more consecutive UA heartbeat failures."
+
+      - alert: QcBackupStale
+        expr: time() - qc_backup_last_success_timestamp_seconds > 129600
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SQLite online backup is stale"
+          description: "No successful SQLite backup has been recorded for more than 36 hours."

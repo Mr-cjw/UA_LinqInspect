@@ -1,0 +1,36 @@
+[Unit]
+Description=UA LinqInspect Node-RED Edge Gateway
+Documentation=file://@REPO_ROOT@/README.md
+Wants=network-online.target ua-linqinspect-server.service
+After=network-online.target ua-linqinspect-server.service
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory=@REPO_ROOT@
+EnvironmentFile=-@ENV_FILE@
+Environment=HOME=/var/lib/ua-linqinspect
+Environment=QC_REPO_ROOT=@REPO_ROOT@
+Environment=NODE_RED_PORT=1880
+ExecStart=@REPO_ROOT@/.node-red/node_modules/.bin/node-red --userDir @REPO_ROOT@/.node-red --port ${NODE_RED_PORT} --no-telemetry
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+StateDirectory=ua-linqinspect
+StateDirectoryMode=0750
+ReadWritePaths=@REPO_ROOT@/data @REPO_ROOT@/.node-red
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
