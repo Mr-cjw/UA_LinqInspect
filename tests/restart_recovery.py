@@ -107,27 +107,29 @@ async def seed():
         initial_ng = str(await read(nodes["last_ng"]) or "")
         initial_rc = str(await read(nodes["last_rc"]) or "")
         initial_dead = int(edge_status()["deadLetters"]["total"])
+        initial_dedup = edge_status()["dedup"]
 
         check("seed sets MES 5xx", inject("inj_5xx"))
         check("seed confirms 5xx mode", edge_status()["mesMode"] == "5xx")
         ret = await nodes["root"].call_method(f"{nodes['idx']}:StartInspection", work_order, 5)
         check("seed StartInspection accepted", ret and ret[0] is True,
               f"({ret[1] if len(ret) > 1 else ''})")
-        queue_raised = await wait_until(
-            lambda: edge_status()["queue"]["total"] >= 1,
+        ng_queued = await wait_until(
+            lambda: edge_status()["dedup"]["ngSerialNumbers"] > initial_dedup["ngSerialNumbers"],
             timeout=20,
-            description="new NG item queued before restart",
+            description="new NG dedup key queued before restart",
         )
-        check("seed queues a new NG item", queue_raised)
+        check("seed queues a new NG item", ng_queued)
 
         ret_done = await nodes["root"].call_method(f"{nodes['idx']}:CompleteWorkOrder", work_order)
         check("seed CompleteWorkOrder accepted", ret_done and ret_done[0] is True,
               f"({ret_done[1] if len(ret_done) > 1 else ''})")
-        both_queued = await wait_until(
-            lambda: edge_status()["queue"]["total"] >= 2,
+        done_queued = await wait_until(
+            lambda: edge_status()["dedup"]["completedWorkOrders"] > initial_dedup["completedWorkOrders"],
             timeout=20,
-            description="NG and completion items queued before restart",
+            description="new completion dedup key queued before restart",
         )
+        both_queued = done_queued and edge_status()["queue"]["total"] >= 2
         check("seed queues both NG and completion items", both_queued)
 
         await asyncio.sleep(2.5)

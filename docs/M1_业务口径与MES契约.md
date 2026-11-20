@@ -79,7 +79,7 @@ UA Server                    Node-RED                     模拟MES
 | 模拟MES 429 | 优先读取 `Retry-After`（秒数或 HTTP 日期，夹紧到 0.1~30s）；未提供时按 1s/2s/4s；总共 4 次尝试后进入死信，错误码 `MES_BUSY` |
 | 模拟MES 5xx / 超时(>3s) / 传输异常 | Node-RED 共 4 次尝试，间隔 1s/2s/4s（指数退避）；仍失败则流转 **FAILED（死信）** 并在 debug 亮红灯，不无限重试阻塞队列；错误码 `MES_UNAVAILABLE` / `TRANSPORT_ERROR` 等 |
 | 响应关联校验 | MES 回执的 `correlationId` 必须回显请求值；Node-RED 只在匹配成功后写回 UA，避免把迟到响应写到错误任务上 |
-| 缓冲状态机 | 单向闭环 `PENDING → SENDING → SUCCESS(出队) / PENDING(退避等待) / FAILED(死信)`；**单飞行发送**（同一时刻仅一条在途），规避并发写回与未来 SQLite 的 `SQLITE_BUSY` |
+| 缓冲状态机 | 单向闭环 `PENDING → SENDING → SUCCESS(出队) / PENDING(退避等待) / FAILED(死信)`；**单飞行发送**（同一时刻仅一条在途），SQLite 原子 `claimNext` 规避并发写回 |
 | 发送看门狗 | 单条请求在 `SENDING` 超过 15s 未收到响应，由 1s 泵判定超时并回到退避；超过重试上限进入死信，防止永久卡死 |
 | 防重 | 双侧防线：Node-RED 按 `serialNumber`（NG单）/`workOrderId`（报工）指纹去重；MES 侧同指纹重复请求返回原单号+`duplicated:true`——**绝不重复生成两张 NG 工单** |
 | UA Method 拒绝（accepted=False） | summary 中原因必须打印（debug error 级），**阻断后续 MES 报工动作**，绝不带病继续 |
@@ -88,7 +88,7 @@ UA Server                    Node-RED                     模拟MES
 | 告警疲劳 | NG 报警设 10s 抑制窗：窗内合并计数、超窗一次性亮灯并携带合并条数（具备告警抑制机制） |
 | 陈旧事件 | 断网恢复后 age>60s 的事件直接丢弃（防 overflow 洪峰）；心跳每 5s 同时读 DeviceStatus 与 ServerStatus.StartTime，读写异常连续 3 次告警，StartTime 变化触发显式重连 |
 | 空窗口 NgRate=-1.0 | 完工报工时按 3.2 传 -1.0，MES 侧显示"样本不足"，不算异常 |
-| **MES 不可达（断网）** | NG 开单/报工请求进入**边缘缓冲队列**（Node-RED flow context，状态机见上），恢复后按 FIFO 补传；缓冲上限 100 条，溢出丢弃最旧并告警。context 已由 localfilesystem 近实时落盘，可降低重启丢失风险；但它是非事务型存储，不能据此宣称 exactly-once，试点阶段应换 SQLite 事务队列（见 Phase0 §6-5） |
+| **MES 不可达（断网）** | NG 开单/报工请求进入 **SQLite 事务队列**（状态机见上），恢复后按 FIFO 补传；缓冲上限 100 条，溢出丢弃最旧并告警。去重与入队在同一事务提交，进程崩溃后可由看门狗恢复；但仍是至少一次投递，需要 MES 接收端幂等，不能据此宣称 exactly-once |
 
 ### 3.4 M2 验收口径
 

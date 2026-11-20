@@ -40,6 +40,11 @@ RECOVERY_TESTS = (
     ("restart_recovery_verify", "tests/restart_recovery.py", "verify", 70),
 )
 
+CRASH_TESTS = (
+    ("crash_recovery_prepare", "tests/crash_recovery.py", "prepare", 70),
+    ("crash_recovery_verify", "tests/crash_recovery.py", "verify", 120),
+)
+
 OUTAGE_TESTS = (
     ("short_outage", "tests/outage_recovery.py", "stall", 90),
     ("stale_filter", "tests/outage_recovery.py", "stale", 45),
@@ -164,6 +169,13 @@ def stop_process(process: subprocess.Popen | None) -> None:
         process.wait(timeout=5)
 
 
+def kill_process(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    os.kill(process.pid, signal.SIGKILL)
+    process.wait(timeout=8)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-going", action="store_true", help="run all tests even after a failure")
@@ -221,6 +233,7 @@ def main() -> int:
     nr_log = artifact_dir / "node-red.log"
     ua_process = None
     nr_process = None
+    node_red_restart_log = nr_log
     results: list[dict] = []
     summary: dict = {
         "status": "failed",
@@ -318,6 +331,45 @@ def main() -> int:
                 results.append(verify_result)
 
         if all(result["passed"] for result in results):
+            crash_state = artifact_dir / "crash-recovery-state.json"
+            crash_env = base_env | {"CRASH_STATE": str(crash_state)}
+            prepare_name, prepare_path, prepare_arg, prepare_timeout = CRASH_TESTS[0]
+            print(f"\n===== RUN {prepare_name} =====")
+            crash_prepare = run_test(
+                prepare_name, prepare_path, prepare_timeout, crash_env, artifact_dir, prepare_arg
+            )
+            results.append(crash_prepare)
+            if crash_prepare["passed"]:
+                kill_process(nr_process)
+                nr_process = None
+                time.sleep(1)
+                node_red_restart_log = artifact_dir / "node-red-crash-restart.log"
+                with node_red_restart_log.open("w", encoding="utf-8") as handle:
+                    nr_process = subprocess.Popen(
+                        [
+                            str(NODE_RED_BIN),
+                            "--userDir",
+                            str(node_red_user_dir),
+                            "--port",
+                            str(nr_port),
+                            "--no-telemetry",
+                        ],
+                        cwd=REPO_ROOT,
+                        env=base_env,
+                        stdout=handle,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                wait_for_log(node_red_restart_log, "Started flows", 35)
+                wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
+                verify_name, verify_path, verify_arg, verify_timeout = CRASH_TESTS[1]
+                print(f"\n===== RUN {verify_name} =====")
+                crash_verify = run_test(
+                    verify_name, verify_path, verify_timeout, crash_env, artifact_dir, verify_arg
+                )
+                results.append(crash_verify)
+
+        if all(result["passed"] for result in results):
             outage_state = artifact_dir / "ua-outage-state.json"
             outage_env = base_env | {
                 "OUTAGE_STATE": str(outage_state),
@@ -369,7 +421,9 @@ def main() -> int:
         stop_process(nr_process)
         stop_process(ua_process)
 
-    expected_results = len(NODE_TESTS) + len(TESTS) + len(RECOVERY_TESTS) + len(OUTAGE_TESTS)
+    expected_results = (
+        len(NODE_TESTS) + len(TESTS) + len(RECOVERY_TESTS) + len(CRASH_TESTS) + len(OUTAGE_TESTS)
+    )
     passed = failure is None and all(result["passed"] for result in results) and len(results) == expected_results
     summary.update(
         {

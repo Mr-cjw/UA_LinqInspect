@@ -11,15 +11,18 @@ cd ~/UA_LinqInspect
 
 脚本会依次执行：
 
-1. `tests/security_test.py`：传输安全、匿名只读、管理员写/Method 权限。
-2. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
-3. `tests/nodered_e2e.py`：UA 事件 → Node-RED 队列 → 模拟 MES → UA 回执。
-4. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
-5. `tests/restart_recovery.py seed`：制造非空队列，等待 context 落盘后退出。
-6. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
-7. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
-8. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
-9. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
+1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、单飞行、退避/看门狗和旧 context 导入。
+2. `tests/security_test.py`：传输安全、匿名只读、管理员写/Method 权限。
+3. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
+4. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
+5. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
+6. `tests/restart_recovery.py seed`：制造非空 SQLite 队列后退出。
+7. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
+8. `tests/crash_recovery.py prepare`：让一条请求处于 `SENDING` 并制造待恢复任务。
+9. `tests/crash_recovery.py verify`：`SIGKILL` 重启后验证看门狗续传、唯一性和回执续写。
+10. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
+11. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
+12. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -35,12 +38,12 @@ cd ~/UA_LinqInspect
 - `node-red.log`
 - 各测试阶段的日志
 - `summary.json`
-- 临时 Node-RED userDir、flow context 和凭据
+- 临时 Node-RED userDir、独立 `qc-queue.sqlite` 和凭据
 
 隔离措施：
 
 - UA Server 与 Node-RED 使用随机空闲端口，不占用日常 `4840/1880`。
-- Node-RED 使用临时 userDir，不修改 `.node-red/context`、去重状态或死信。
+- Node-RED 使用临时 userDir 和 `QC_DB_PATH=<artifact>/qc-queue.sqlite`，不修改本地 SQLite 队列。
 - 每次生成随机管理员密码，并同步写入临时 `flows_cred.json`。
 - 临时 flow 会同时替换 UA Endpoint 和流内模拟 MES 地址。
 - 结束后向两个进程发送 `SIGTERM`，超时再强制结束。
@@ -52,17 +55,19 @@ cd ~/UA_LinqInspect
 
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
+| SQLite 队列单测 | 13/13 PASS | 唯一约束、事务回滚、单飞行、退避、看门狗、迁移、上限 |
 | 安全回归 | 6/6 PASS | NoSecurity 拒绝、匿名只读、匿名写/Method 拒绝、管理员写/Method |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
-| 重启恢复 | 18/18 PASS | 非空队列 context 恢复、队列排空、NG/完工回执续写、无新增死信 |
+| 重启恢复 | 18/18 PASS | 非空 SQLite 队列恢复、队列排空、NG/完工回执续写、无新增死信 |
+| SIGKILL 崩溃恢复 | 23/23 PASS | 在途状态持久化、看门狗续传、无重复队列行、回执续写 |
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **158/158 PASS** | 一键隔离回归 |
+| **合计** | **194/194 PASS** | 一键隔离回归 |
 
-实际产物示例：`.tmp/regression-20261120-133950/summary.json`。
+实际产物示例：`.tmp/regression-20261120-142021/summary.json`。
 
 ## 4. 手工执行单个测试
 
@@ -94,13 +99,14 @@ certificate does not contain the hostname in DNSNames ...
 
 ## 6. 下一步
 
-Phase 0 完成后进入 Phase 1：
+Phase 0/1 与 Phase 2A 已完成：
 
 1. ✅ `correlationId` 贯穿 UA 事件、Node-RED、MES 请求与回执。
 2. ✅ MES `4xx/429/5xx/timeout` 分类和稳定错误码。
 3. ✅ 非空队列 Node-RED 重启恢复测试。
 4. ✅ 短时断网与会话恢复测试。
 5. ✅ UA Server 重启后的订阅重建与 60 秒陈旧事件过滤测试。
+6. ✅ SQLite 事务队列、去重/入队原子性与 `SIGKILL` 崩溃恢复。
 
 剩余证据工作：Wireshark 抓包、真实交换机断链/防火墙切换和长时断网。
 

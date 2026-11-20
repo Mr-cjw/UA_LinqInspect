@@ -17,7 +17,7 @@ Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调
 | 质检数据源 | 虚拟 AI 质检循环 | 产生 OK/NG、缺陷类型、置信度、SN、图片 ID |
 | OPC UA Server | `server/qc_server.py`（asyncua） | QCStation 信息模型、工单状态机、Method、Event、审计与权限 |
 | 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读，管理员可写可调 Method |
-| 边缘网关 | Node-RED + `node-red-contrib-opcua` | 订阅事件、去重、队列、退避重试、死信、MES 调用与 UA 写回 |
+| 边缘网关 | Node-RED + `node-red-contrib-opcua` + SQLite | 订阅事件、事务去重/入队、单飞行发送、退避重试、死信、MES 调用与 UA 写回 |
 | 模拟 MES | Node-RED `http in` 节点 | 模拟 NG 开单、完工报工、回执与故障注入 |
 | 硬件扩展 | `hardware/` | 可选的树莓派 5 + open62541 + STM32 现场节点方案 |
 
@@ -56,6 +56,8 @@ Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会�
 3. **终端 3 运行验证**：先跑 `tests/smoke_test.py` 验证 UA 模型，再跑
    `tests/nodered_e2e.py` 验证完整链路，最后跑 `tests/fault_scenarios.py` 验证重试与死信。
 
+Node-RED 默认把事务队列写到 `data/qc-queue.sqlite`；可用 `QC_DB_PATH` 指定其他位置。
+
 Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目录缺失/无效时
 会直接拒绝启动，不会回退到 `NoSecurity`。匿名客户端只能读；只有
 `UA_ADMIN_USER` / `UA_ADMIN_PASS` 对应的会话可以 Write 和调用 Method。若未配置
@@ -76,6 +78,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [工程化优化路线图](docs/05_工程化优化路线图.md)
 - [作品集答辩与工厂试点落地](docs/06_作品集答辩与工厂试点落地.md)
 - [Ubuntu 迁移与验证报告](docs/07_Ubuntu迁移与验证报告.md)
+- [Phase 2A：SQLite 事务队列与崩溃恢复](docs/10_Phase2A_SQLite事务队列与崩溃恢复.md)
 
 ## 项目结构
 
@@ -87,7 +90,10 @@ UA_LinqInspect/
 │   ├── qc_server.py           # M1：Server 主体（信息模型 §2 全量落地）
 │   └── requirements.txt
 ├── nodered/
-│   └── flows.json             # M2：带状态的边缘节点流（缓冲队列状态机/去重/退避/削峰/心跳）
+│   ├── flows.json             # M2：Node-RED 流（薄 Function 节点 + 回执写回）
+│   ├── sqlite_store.js        # 事务队列、死信、去重、看门狗与旧 context 迁移
+│   ├── queue_logic.js         # 入队、发送泵、响应校验与 /qc/status
+│   └── settings.js            # 注入 qstore/qlogic 的 Node-RED 配置模板
 ├── scripts/
 │   ├── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
@@ -112,7 +118,9 @@ UA_LinqInspect/
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
+    ├── sqlite_queue_test.js   # SQLite 事务、单飞行、看门狗与迁移单测（13 项断言）
     ├── restart_recovery.py    # Node-RED 非空队列重启恢复（seed/verify，18 项断言）
+    ├── crash_recovery.py      # SIGKILL 崩溃恢复（prepare/verify，23 项断言）
     └── outage_recovery.py     # 短断网、陈旧事件过滤、UA Server 重启订阅恢复（31 项断言）
 ```
 
@@ -377,7 +385,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 - 心跳每 5 秒同时读取 `DeviceStatus` 和标准 `ServerStatus.StartTime`（`ns=0;i=2257`）。
   UA Server 重启后 StartTime 变化，流会主动向三个客户端广播 `action=reconnect`，
   重建旧 Session 上的事件订阅；仅靠读写心跳恢复不足以证明 Event Subscription 已恢复。
-- 缓冲队列、去重集合和死信队列使用 flow context；`.node-red/settings.js` 已启用 localfilesystem 持久化（`cache:true`、`flushInterval:1`），可降低重启丢失风险，但它是非事务型存储，不能据此宣称 exactly-once。
+- 缓冲队列、去重集合和死信队列使用 SQLite 事务存储（WAL + `synchronous=FULL`）；去重与入队在同一事务提交，发送泵用原子 `claimNext` 保持单飞行。当前是“至少一次投递 + 接收端幂等”，仍不能宣称 exactly-once。
 
 ## 里程碑
 
@@ -387,6 +395,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + 持久化 context + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
 | Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（一键回归 158/158 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（一键回归 194/194 PASS） |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 短断网、陈旧过滤、Server 重启订阅重建已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 

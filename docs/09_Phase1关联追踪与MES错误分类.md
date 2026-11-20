@@ -2,6 +2,9 @@
 
 > 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
+> 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A SQLite 事务队列完成后，
+> 当前一键回归为 194/194，见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)。
+
 ## 1. 本阶段解决的问题
 
 Phase 0 已经证明链路能跑通，但异常发生时还缺三样东西：
@@ -76,17 +79,17 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 2. ✅ UA Server 重启后显式重建事件订阅。
 3. ✅ 超过 60 秒的陈旧事件不进入队列和回执链路。
 
-仍需补充但不阻塞 Phase 2 启动：Wireshark 的 `CreateMonitoredItems`/`Publish` 证据、真实交换机断链/防火墙切换、长时断网恢复耗时。Phase 2 的重点是 SQLite 事务队列、单一状态写入者、可观测性与部署基线。
+仍需补充：Wireshark 的 `CreateMonitoredItems`/`Publish` 证据、真实交换机断链/防火墙切换、长时断网恢复耗时。Phase 2A 已完成 SQLite 事务队列与崩溃恢复；下一阶段重点是可观测性、部署基线和接收端幂等契约。
 
 ## 6. 后续规划
 
 ### Phase 2：可靠性与可运维性
 
-- 用 SQLite 事务表替换 flow context 队列，增加唯一约束和状态迁移审计。
+- ✅ 用 SQLite 事务表替换 flow context 队列，增加唯一约束、原子领取和崩溃恢复。
 - 所有队列状态只允许一个写入者，避免 Node-RED 多实例并发写。
 - `/qc/status` 增加积压时长、成功率、重试分布和最近错误聚合。
 - 提供 systemd/docker compose 启动基线、日志轮转和健康检查。
-- 增加 MES 契约测试和数据库崩溃恢复测试。
+- ✅ 增加 MES 契约测试和数据库崩溃恢复测试。
 
 ### Phase 3：真实集成与试点
 
@@ -99,6 +102,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通，158 项隔离回归全部通过；下一步补真实网络切换与抓包证据，并把非事务型 context 队列升级为 SQLite 事务队列。
+> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 又完成了 SQLite 事务队列与 `SIGKILL` 恢复，当前 194 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并完善指标、备份和 MES 接收端幂等契约。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

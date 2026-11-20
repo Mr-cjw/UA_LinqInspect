@@ -1,6 +1,8 @@
 # Ubuntu 迁移与验证报告
 
-> 验证日期：2026-11-20 ｜ 环境：Ubuntu / Linux 7.0.0-43-generic ｜ 结论：158 项隔离回归全部通过；短断网、陈旧过滤与 UA Server 重启订阅重建已自动化，Wireshark/真实网络切换仍待补。
+> 验证日期：2026-11-20 ｜ 环境：Ubuntu / Linux 7.0.0-43-generic ｜ 本报告记录 Phase 1 时点的 158 项结果。
+> Phase 2A 完成 SQLite 事务队列后，当前一键回归为 194/194，见
+> [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)。
 
 ## 1. 环境结果
 
@@ -81,7 +83,9 @@ Node-RED 重启后会加载 `.node-red/context/qcflow/flow.json`。本次验证�
 - **已验证**：UA Server 重启后，心跳读取的 `ServerStatus.StartTime` 发生变化并触发三个 UA Client 显式重连，旧事件订阅重新挂载。
 - **未验证**：断电一致性、重复开单/报工的跨进程严格证明。
 
-因此当前只能表述为“具备近实时落盘基础，已通过正常停止/重启恢复测试”，不能宣称断电安全或 exactly-once。工厂试点前应迁移到 SQLite 事务队列或独立边缘发送服务。
+本节是 Phase 1 时点的结论。Phase 2A 已迁移到 SQLite 事务队列，并补充 `SIGKILL`
+恢复测试；但仍不能宣称断电安全或 exactly-once，详见
+[10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)。
 
 ## 5. 尚未完成
 
