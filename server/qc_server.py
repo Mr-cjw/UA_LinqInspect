@@ -17,6 +17,7 @@
   UA_SERVER_PRIVATE_KEY_PASSWORD 私钥密码（可选）
   UA_TRUSTED_CLIENT_CERTS_DIR 受信客户端证书目录（必填，至少包含一个 .pem/.der）
   UA_AUDIT_LOG        审计日志路径（默认 server_audit.log，自动轮转）
+  QC_STATE_PATH       工位状态快照路径（默认 data/qc-state.json）
   QC_AUTO_INSPECT     是否启动虚拟质检循环（1=开，默认；0=关，交给真实 YOLOv8/外部写入）
   QC_INSPECT_INTERVAL 检测间隔秒（默认 2.0）
   QC_NG_PROBABILITY   虚拟 NG 概率（默认 0.3）
@@ -46,6 +47,11 @@ from asyncua.crypto.validator import CertificateValidator, CertificateValidatorO
 from asyncua.server.internal_session import InternalSession
 from asyncua.server.user_managers import UserManager
 
+try:
+    from .qc_state import QCStateStore, QCStationSnapshot, last_timestamp_or_default
+except ImportError:  # direct execution: python server/qc_server.py
+    from qc_state import QCStateStore, QCStationSnapshot, last_timestamp_or_default
+
 NS_URI = "urn:fde:linqinspect:qc"
 DEFECT_CODES = ("SCRATCH", "DENT", "STAIN", "BURR", "MISSING")
 
@@ -59,6 +65,7 @@ SERVER_KEY_PATH = os.getenv("UA_SERVER_PRIVATE_KEY", "").strip()
 SERVER_KEY_PASSWORD = os.getenv("UA_SERVER_PRIVATE_KEY_PASSWORD", "")
 CLIENT_TRUST_DIR = os.getenv("UA_TRUSTED_CLIENT_CERTS_DIR", "").strip()
 AUDIT_LOG_PATH = os.getenv("UA_AUDIT_LOG", "server_audit.log").strip() or "server_audit.log"
+STATE_PATH = os.getenv("QC_STATE_PATH", "data/qc-state.json").strip() or "data/qc-state.json"
 AUTO_INSPECT = os.getenv("QC_AUTO_INSPECT", "1") != "0"
 INSPECT_INTERVAL = float(os.getenv("QC_INSPECT_INTERVAL", "2.0"))
 NG_PROBABILITY = float(os.getenv("QC_NG_PROBABILITY", "0.3"))
@@ -332,14 +339,31 @@ class QCStation:
     def __init__(self, server: Server):
         self.server = server
         self.idx = None
-        self.status = ST_IDLE
-        self.work_order_id = ""
-        self.target_count = 0
-        self.inspect_count = 0
-        self.ok_count = 0
-        self.ng_count = 0
-        self.window = deque(maxlen=WINDOW_SIZE)  # True=OK, False=NG
+        self._lock = asyncio.Lock()
+        self.state_store = QCStateStore(STATE_PATH, window_size=WINDOW_SIZE)
+        snapshot = self.state_store.load()
+        self.status = snapshot.status
+        self.work_order_id = snapshot.work_order_id
+        self.target_count = snapshot.target_count
+        self.inspect_count = snapshot.inspect_count
+        self.ok_count = snapshot.ok_count
+        self.ng_count = snapshot.ng_count
+        self.window = deque(snapshot.window, maxlen=WINDOW_SIZE)  # True=OK, False=NG
+        self.current_part_sn = snapshot.current_part_sn
+        self.sn_day = snapshot.sn_day
+        self.sn_seq = snapshot.sn_seq
+        self.last_result = snapshot.last_result
+        self.last_defect = snapshot.last_defect
+        self.last_confidence = snapshot.last_confidence
+        self.last_image_id = snapshot.last_image_id
+        self.last_timestamp = last_timestamp_or_default(snapshot.last_timestamp)
         self.nd = {}
+        if self.state_store.path.exists():
+            _log.info(
+                "Restored QC state from %s: status=%d workOrder=%s inspect=%d ok=%d ng=%d",
+                self.state_store.path, self.status, self.work_order_id,
+                self.inspect_count, self.ok_count, self.ng_count,
+            )
 
     # ---------- 地址空间构建 ----------
     async def build(self):
@@ -370,25 +394,25 @@ class QCStation:
             await node.set_writable()
             return node
 
-        self.nd["status"] = await _rw(await root.add_variable(nid("QCStation.DeviceStatus"), "2:DeviceStatus", ua.Variant(ST_IDLE, ua.VariantType.Int32)))
-        self.nd["work_order"] = await _rw(await root.add_variable(nid("QCStation.CurrentWorkOrderId"), "2:CurrentWorkOrderId", ""))
-        # Part Traceability：单件序列号（ReadWrite，由数据源/Node-RED 写入，追溯基石）
-        self.nd["part_sn"] = await _rw(await root.add_variable(nid("QCStation.CurrentPartSN"), "2:CurrentPartSN", ""))
+        self.nd["status"] = await _ro(await root.add_variable(nid("QCStation.DeviceStatus"), "2:DeviceStatus", ua.Variant(self.status, ua.VariantType.Int32)))
+        self.nd["work_order"] = await _ro(await root.add_variable(nid("QCStation.CurrentWorkOrderId"), "2:CurrentWorkOrderId", self.work_order_id))
+        # Part Traceability：外部只读，服务端检测入口负责更新，避免绕过单件追溯状态。
+        self.nd["part_sn"] = await _ro(await root.add_variable(nid("QCStation.CurrentPartSN"), "2:CurrentPartSN", self.current_part_sn))
         # MES 回执落地：按业务语义拆分；LastMesOrderNo 仅作为最近回执的兼容镜像
         self.nd["mes_order"] = await _rw(await root.add_variable(nid("QCStation.LastMesOrderNo"), "2:LastMesOrderNo", ""))
         self.nd["ng_mes_order"] = await _rw(await root.add_variable(nid("QCStation.LastNgMesOrderNo"), "2:LastNgMesOrderNo", ""))
         self.nd["completion_receipt"] = await _rw(await root.add_variable(nid("QCStation.LastCompletionReceiptNo"), "2:LastCompletionReceiptNo", ""))
 
-        self.nd["last_result"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastResult"), "2:LastResult", False))
-        self.nd["last_defect"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastDefectType"), "2:LastDefectType", ""))
-        self.nd["last_conf"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastConfidence"), "2:LastConfidence", 0.0))
-        self.nd["last_img"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastImageId"), "2:LastImageId", ""))
-        self.nd["last_ts"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastTimestamp"), "2:LastTimestamp", datetime(2000, 1, 1, tzinfo=timezone.utc)))
-        self.nd["ng_rate"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.NgRate"), "2:NgRate", -1.0))  # -1.0 = 空窗口保护
+        self.nd["last_result"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastResult"), "2:LastResult", self.last_result))
+        self.nd["last_defect"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastDefectType"), "2:LastDefectType", self.last_defect))
+        self.nd["last_conf"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastConfidence"), "2:LastConfidence", self.last_confidence))
+        self.nd["last_img"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastImageId"), "2:LastImageId", self.last_image_id))
+        self.nd["last_ts"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastTimestamp"), "2:LastTimestamp", self.last_timestamp))
+        self.nd["ng_rate"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.NgRate"), "2:NgRate", self._ng_rate()))  # -1.0 = 空窗口保护
 
-        self.nd["cnt_all"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.InspectCount"), "2:InspectCount", ua.Variant(0, ua.VariantType.UInt32)))
-        self.nd["cnt_ok"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.OkCount"), "2:OkCount", ua.Variant(0, ua.VariantType.UInt32)))
-        self.nd["cnt_ng"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.NgCount"), "2:NgCount", ua.Variant(0, ua.VariantType.UInt32)))
+        self.nd["cnt_all"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.InspectCount"), "2:InspectCount", ua.Variant(self.inspect_count, ua.VariantType.UInt32)))
+        self.nd["cnt_ok"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.OkCount"), "2:OkCount", ua.Variant(self.ok_count, ua.VariantType.UInt32)))
+        self.nd["cnt_ng"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.NgCount"), "2:NgCount", ua.Variant(self.ng_count, ua.VariantType.UInt32)))
 
         # ---------- 自定义 EventType（必须继承 BaseEventType，Phase0 §2.6-1） ----------
         base = sv.nodes.base_event_type
@@ -419,6 +443,31 @@ class QCStation:
         await root.add_method(nid("QCStation.ResetCounters"), "2:ResetCounters", self._reset_counters, [], [])
 
         _log.info("AddressSpace built: ns=%d uri=%s", idx, NS_URI)
+        await self._persist()
+
+    def _snapshot(self) -> QCStationSnapshot:
+        return QCStationSnapshot(
+            status=self.status,
+            work_order_id=self.work_order_id,
+            target_count=self.target_count,
+            inspect_count=self.inspect_count,
+            ok_count=self.ok_count,
+            ng_count=self.ng_count,
+            window=list(self.window),
+            current_part_sn=self.current_part_sn,
+            sn_day=self.sn_day,
+            sn_seq=self.sn_seq,
+            last_result=self.last_result,
+            last_defect=self.last_defect,
+            last_confidence=self.last_confidence,
+            last_image_id=self.last_image_id,
+            last_timestamp=self.last_timestamp.isoformat(timespec="milliseconds"),
+        )
+
+    async def _persist(self) -> None:
+        # fsync can occasionally take seconds on industrial/consumer storage.
+        # Keep it off the OPC UA event loop so subscriptions do not starve.
+        await asyncio.to_thread(self.state_store.save, self._snapshot())
 
     # ---------- 事件触发 ----------
     async def _fire(self, etype_key: str, fields: dict, severity: int, message: str):
@@ -433,7 +482,11 @@ class QCStation:
     async def _start_inspection(self, parent, work_order_id, target_count):
         audit_args = {"workOrderId": _val(work_order_id), "targetCount": _val(target_count)}
         try:
-            result = await self._start_inspection_impl(work_order_id, target_count)
+            async with self._lock:
+                before = (self.status, self.work_order_id, self.target_count)
+                result = await self._start_inspection_impl(work_order_id, target_count)
+                if (self.status, self.work_order_id, self.target_count) != before:
+                    await self._persist()
         except Exception as exc:
             _audit_method_call("StartInspection", audit_args, f"error: {type(exc).__name__}: {exc}")
             raise
@@ -464,7 +517,10 @@ class QCStation:
     async def _complete_work_order(self, parent, work_order_id):
         audit_args = {"workOrderId": _val(work_order_id)}
         try:
-            result = await self._complete_work_order_impl(work_order_id)
+            async with self._lock:
+                result = await self._complete_work_order_impl(work_order_id)
+                if result and bool(_val(result[0])):
+                    await self._persist()
         except Exception as exc:
             _audit_method_call("CompleteWorkOrder", audit_args, f"error: {type(exc).__name__}: {exc}")
             raise
@@ -504,7 +560,9 @@ class QCStation:
 
     async def _reset_counters(self, parent):
         try:
-            result = await self._reset_counters_impl()
+            async with self._lock:
+                result = await self._reset_counters_impl()
+                await self._persist()
         except Exception as exc:
             _audit_method_call("ResetCounters", {}, f"error: {type(exc).__name__}: {exc}")
             raise
@@ -531,65 +589,97 @@ class QCStation:
         await self.nd["cnt_ng"].write_value(ua.Variant(self.ng_count, ua.VariantType.UInt32))
 
     async def record_inspection(self, is_ok: bool, defect_type: str, confidence: float,
-                                image_id: str, serial_number: str = ""):
-        self.inspect_count += 1
-        self.window.append(is_ok)
-        if is_ok:
-            self.ok_count += 1
-        else:
-            self.ng_count += 1
+                                image_id: str, serial_number: str = "") -> bool:
+        async with self._lock:
+            # A completion can become visible between the source's pre-check and
+            # this write. Re-check under the same lock to prevent late results from
+            # being attached to an already-completed work order.
+            if self.status != ST_RUNNING or not self.work_order_id:
+                _log.warning("Inspection ignored: station is not running")
+                return False
+            if is_ok and defect_type:
+                _log.warning("OK result carried defect=%s; normalizing defect to empty", defect_type)
+                defect_type = ""
+            confidence = min(1.0, max(0.0, float(confidence)))
+            self.inspect_count += 1
+            self.window.append(is_ok)
+            if is_ok:
+                self.ok_count += 1
+            else:
+                self.ng_count += 1
 
-        now = datetime.now(timezone.utc)
-        correlation_id = f"corr-{uuid.uuid4()}"
-        await self.nd["last_result"].write_value(is_ok)
-        await self.nd["last_defect"].write_value(defect_type)
-        await self.nd["last_conf"].write_value(confidence)
-        await self.nd["last_img"].write_value(image_id)
-        await self.nd["last_ts"].write_value(now)
-        if serial_number:
-            await self.nd["part_sn"].write_value(serial_number)
-        await self._write_stats()
-        await self.nd["ng_rate"].write_value(self._ng_rate())
+            now = datetime.now(timezone.utc)
+            correlation_id = f"corr-{uuid.uuid4()}"
+            self.last_result = is_ok
+            self.last_defect = defect_type
+            self.last_confidence = confidence
+            self.last_image_id = image_id
+            self.last_timestamp = now
+            if serial_number:
+                self.current_part_sn = serial_number
+            await self.nd["last_result"].write_value(is_ok)
+            await self.nd["last_defect"].write_value(defect_type)
+            await self.nd["last_conf"].write_value(confidence)
+            await self.nd["last_img"].write_value(image_id)
+            await self.nd["last_ts"].write_value(now)
+            if serial_number:
+                await self.nd["part_sn"].write_value(serial_number)
+            await self._write_stats()
+            await self.nd["ng_rate"].write_value(self._ng_rate())
 
-        await self._fire("insp", {
-            "WorkOrderId": self.work_order_id,
-            "SerialNumber": serial_number,
-            "Result": "OK" if is_ok else "NG",
-            "DefectType": defect_type,
-            "Confidence": confidence,
-            "ImageId": image_id,
-            "CorrelationId": correlation_id,
-        }, severity=1, message=f"Inspection {image_id} SN={serial_number}: {'OK' if is_ok else 'NG ' + defect_type}")
-
-        if not is_ok:
-            await self._fire("ng", {
+            await self._fire("insp", {
                 "WorkOrderId": self.work_order_id,
                 "SerialNumber": serial_number,
+                "Result": "OK" if is_ok else "NG",
                 "DefectType": defect_type,
                 "Confidence": confidence,
                 "ImageId": image_id,
                 "CorrelationId": correlation_id,
-            }, severity=3, message=f"NG detected on {image_id} SN={serial_number}: {defect_type}")
-            _log.warning("NG: %s SN=%s %s conf=%.3f corr=%s", image_id, serial_number, defect_type, confidence, correlation_id)
+            }, severity=1, message=f"Inspection {image_id} SN={serial_number}: {'OK' if is_ok else 'NG ' + defect_type}")
+
+            if not is_ok:
+                await self._fire("ng", {
+                    "WorkOrderId": self.work_order_id,
+                    "SerialNumber": serial_number,
+                    "DefectType": defect_type,
+                    "Confidence": confidence,
+                    "ImageId": image_id,
+                    "CorrelationId": correlation_id,
+                }, severity=3, message=f"NG detected on {image_id} SN={serial_number}: {defect_type}")
+                _log.warning("NG: %s SN=%s %s conf=%.3f corr=%s", image_id, serial_number, defect_type, confidence, correlation_id)
+
+            if self.target_count and self.inspect_count >= self.target_count:
+                _log.info("Target count reached (%d); wait for CompleteWorkOrder call", self.target_count)
+                self.target_count = 0  # advisory marker: only log once
+            await self._persist()
+            return True
 
     # ---------- 虚拟 AI 质检循环（阶段一数据源，预留 YOLOv8 切换点） ----------
+    async def _next_virtual_identity(self) -> tuple[str, int] | None:
+        async with self._lock:
+            if self.status != ST_RUNNING or not self.work_order_id:
+                return None
+            day = datetime.now(timezone.utc).strftime("%Y%m%d")
+            if self.sn_day != day:
+                self.sn_day = day
+                self.sn_seq = 0
+            self.sn_seq += 1
+            return day, self.sn_seq
+
     async def inspection_loop(self):
-        seq = 0
         while True:
             await asyncio.sleep(INSPECT_INTERVAL)
-            if self.status != ST_RUNNING:
+            identity = await self._next_virtual_identity()
+            if identity is None:
                 continue
-            seq += 1
+            day, seq = identity
             is_ok = random.random() > NG_PROBABILITY
             defect = "" if is_ok else random.choice(DEFECT_CODES)
             confidence = round(random.uniform(0.85, 0.99) if is_ok else random.uniform(0.55, 0.95), 3)
-            image_id = f"IMG-{datetime.now(timezone.utc):%Y%m%d}-{seq:06d}"
-            serial_number = f"SN-{datetime.now(timezone.utc):%Y%m%d}-{seq:06d}"
+            image_id = f"IMG-{day}-{seq:06d}"
+            serial_number = f"SN-{day}-{seq:06d}"
             # TODO(YOLOv8 切换点): 用真实推理结果+产线 SN 替换上面的 random 分支后调用 record_inspection
             await self.record_inspection(is_ok, defect, confidence, image_id, serial_number)
-            if self.target_count and self.inspect_count >= self.target_count:
-                _log.info("Target count reached (%d); wait for CompleteWorkOrder call", self.target_count)
-                self.target_count = 0  # 仅提示一次
 
 
 async def main():

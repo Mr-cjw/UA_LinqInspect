@@ -30,6 +30,8 @@ NODE_TESTS = (
 )
 
 TESTS = (
+    ("state_persistence", "tests/state_persistence_test.py", 30),
+    ("qc_state_restart", "tests/qc_state_restart_test.py", 60),
     ("edge_core", "tests/edge_core_test.py", 60),
     ("security", "tests/security_test.py", 60),
     ("smoke", "tests/smoke_test.py", 90),
@@ -279,6 +281,7 @@ def main() -> int:
             "NODERED_HTTP_AUTH": basic_auth,
             "QC_REPO_ROOT": str(REPO_ROOT),
             "QC_DB_PATH": str(artifact_dir / "qc-queue.sqlite"),
+            "QC_STATE_PATH": str(artifact_dir / "qc-state.json"),
         }
     )
     http_auth_headers = {"authorization": basic_auth}

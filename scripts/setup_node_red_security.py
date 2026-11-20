@@ -58,6 +58,7 @@ def main() -> int:
     values.setdefault("NODERED_OPCUA_PASSWORD", secrets.token_urlsafe(24))
     values.setdefault("QC_REPO_ROOT", str(ROOT))
     values.setdefault("QC_DB_PATH", str(ROOT / "data" / "qc-queue.sqlite3"))
+    values.setdefault("QC_STATE_PATH", str(ROOT / "data" / "qc-state.json"))
 
     lines = ["# Generated local-only Node-RED secrets. Never commit this file."]
     for key in (
@@ -70,6 +71,7 @@ def main() -> int:
         "NODERED_OPCUA_PASSWORD",
         "QC_REPO_ROOT",
         "QC_DB_PATH",
+        "QC_STATE_PATH",
     ):
         value = values[key].replace("'", "'\\''")
         lines.append(f"export {key}='{value}'")

@@ -20,8 +20,10 @@ jobs:
         run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
       - name: Python syntax
         run: python -m compileall -q edge_core server tests scripts
-      - name: Edge Core tests
-        run: python -m unittest tests.edge_core_test -v
+      - name: State and Edge Core tests
+        run: |
+          python -m unittest tests.state_persistence_test -v
+          python -m unittest tests.edge_core_test -v
       - name: Node syntax
         run: |
           node --check nodered/queue_logic.js
