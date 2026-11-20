@@ -17,6 +17,9 @@ cd ~/UA_LinqInspect
 4. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
 5. `tests/restart_recovery.py seed`：制造非空队列，等待 context 落盘后退出。
 6. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
+7. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
+8. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
+9. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -30,7 +33,7 @@ cd ~/UA_LinqInspect
 
 - `ua-server.log`、`ua-server-audit.log`
 - `node-red.log`
-- 四个测试各自的日志
+- 各测试阶段的日志
 - `summary.json`
 - 临时 Node-RED userDir、flow context 和凭据
 
@@ -53,10 +56,13 @@ cd ~/UA_LinqInspect
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
-| 重启恢复 | 15/15 PASS | 非空队列 context 恢复、队列排空、NG/完工回执续写、无新增死信 |
-| **合计** | **124/124 PASS** | 一键隔离回归 |
+| 重启恢复 | 18/18 PASS | 非空队列 context 恢复、队列排空、NG/完工回执续写、无新增死信 |
+| 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
+| 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
+| UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
+| **合计** | **158/158 PASS** | 一键隔离回归 |
 
-实际产物示例：`.tmp/regression-20261120-131213/summary.json`。
+实际产物示例：`.tmp/regression-20261120-133950/summary.json`。
 
 ## 4. 手工执行单个测试
 
@@ -93,7 +99,9 @@ Phase 0 完成后进入 Phase 1：
 1. ✅ `correlationId` 贯穿 UA 事件、Node-RED、MES 请求与回执。
 2. ✅ MES `4xx/429/5xx/timeout` 分类和稳定错误码。
 3. ✅ 非空队列 Node-RED 重启恢复测试。
-4. ⬜ 短时断网与会话恢复测试。
-5. ⬜ 长时断网/Server 重启后的订阅重建与陈旧事件过滤测试。
+4. ✅ 短时断网与会话恢复测试。
+5. ✅ UA Server 重启后的订阅重建与 60 秒陈旧事件过滤测试。
+
+剩余证据工作：Wireshark 抓包、真实交换机断链/防火墙切换和长时断网。
 
 第 1、2 项的实测与契约见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)。

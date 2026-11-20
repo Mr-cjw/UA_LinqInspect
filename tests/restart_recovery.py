@@ -97,6 +97,13 @@ async def seed():
     async with client:
         nodes = await get_nodes(client)
         await ensure_idle(nodes)
+        check("seed restores MES ok before baseline", inject("inj_ok") and edge_status()["mesMode"] == "ok")
+        drained = await wait_until(
+            lambda: edge_status()["queue"]["total"] == 0,
+            timeout=35,
+            description="queue drained before recovery seed",
+        )
+        check("seed starts with empty queue", drained)
         initial_ng = str(await read(nodes["last_ng"]) or "")
         initial_rc = str(await read(nodes["last_rc"]) or "")
         initial_dead = int(edge_status()["deadLetters"]["total"])
@@ -107,15 +114,21 @@ async def seed():
         check("seed StartInspection accepted", ret and ret[0] is True,
               f"({ret[1] if len(ret) > 1 else ''})")
         queue_raised = await wait_until(
-            lambda: edge_status()["queue"]["total"] > 0,
+            lambda: edge_status()["queue"]["total"] >= 1,
             timeout=20,
-            description="non-empty queue before restart",
+            description="new NG item queued before restart",
         )
-        check("seed queue becomes non-empty", queue_raised)
+        check("seed queues a new NG item", queue_raised)
 
         ret_done = await nodes["root"].call_method(f"{nodes['idx']}:CompleteWorkOrder", work_order)
         check("seed CompleteWorkOrder accepted", ret_done and ret_done[0] is True,
               f"({ret_done[1] if len(ret_done) > 1 else ''})")
+        both_queued = await wait_until(
+            lambda: edge_status()["queue"]["total"] >= 2,
+            timeout=20,
+            description="NG and completion items queued before restart",
+        )
+        check("seed queues both NG and completion items", both_queued)
 
         await asyncio.sleep(2.5)
         status = edge_status()

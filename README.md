@@ -112,7 +112,8 @@ UA_LinqInspect/
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
-    └── restart_recovery.py    # Node-RED 非空队列重启恢复（seed/verify，15 项断言）
+    ├── restart_recovery.py    # Node-RED 非空队列重启恢复（seed/verify，18 项断言）
+    └── outage_recovery.py     # 短断网、陈旧事件过滤、UA Server 重启订阅恢复（31 项断言）
 ```
 
 ## 关键设计速览
@@ -373,6 +374,9 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
   只订阅 BaseEventType（`i=2041`）在当前 Server/contrib 组合下可能收不到自定义字段。
 - `node-red-contrib-opcua@0.2.355` 的首条 `action=events` 消息只建立 Subscription，
   流内会在 5 秒后重发同一订阅消息，确保 Event MonitoredItem 真正挂载。
+- 心跳每 5 秒同时读取 `DeviceStatus` 和标准 `ServerStatus.StartTime`（`ns=0;i=2257`）。
+  UA Server 重启后 StartTime 变化，流会主动向三个客户端广播 `action=reconnect`，
+  重建旧 Session 上的事件订阅；仅靠读写心跳恢复不足以证明 Event Subscription 已恢复。
 - 缓冲队列、去重集合和死信队列使用 flow context；`.node-red/settings.js` 已启用 localfilesystem 持久化（`cache:true`、`flushInterval:1`），可降低重启丢失风险，但它是非事务型存储，不能据此宣称 exactly-once。
 
 ## 里程碑
@@ -382,8 +386,8 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + 持久化 context + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 非空队列重启恢复 | ✅ 完成（一键回归 124/124 PASS） |
-| M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 订阅/心跳/陈旧过滤已实现；短时/长时断网与抓包证据待验收 |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（一键回归 158/158 PASS） |
+| M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 短断网、陈旧过滤、Server 重启订阅重建已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 
 > 硬件扩展（open62541 / 树莓派 / STM32）为后置可选项，默认不启动。

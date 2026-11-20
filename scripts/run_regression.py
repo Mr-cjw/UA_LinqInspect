@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import secrets
+import signal
 import shutil
 import socket
 import subprocess
@@ -32,6 +33,13 @@ TESTS = (
 RECOVERY_TESTS = (
     ("restart_recovery_seed", "tests/restart_recovery.py", "seed", 70),
     ("restart_recovery_verify", "tests/restart_recovery.py", "verify", 70),
+)
+
+OUTAGE_TESTS = (
+    ("short_outage", "tests/outage_recovery.py", "stall", 90),
+    ("stale_filter", "tests/outage_recovery.py", "stale", 45),
+    ("ua_restart_prepare", "tests/outage_recovery.py", "prepare_restart", 60),
+    ("ua_restart_verify", "tests/outage_recovery.py", "verify_restart", 120),
 )
 
 
@@ -266,8 +274,8 @@ def main() -> int:
             if seed_result["passed"]:
                 stop_process(nr_process)
                 nr_process = None
-                restart_log = artifact_dir / "node-red-restart.log"
-                with restart_log.open("w", encoding="utf-8") as handle:
+                node_red_restart_log = artifact_dir / "node-red-restart.log"
+                with node_red_restart_log.open("w", encoding="utf-8") as handle:
                     nr_process = subprocess.Popen(
                         [
                             str(NODE_RED_BIN),
@@ -283,12 +291,58 @@ def main() -> int:
                         stderr=subprocess.STDOUT,
                         text=True,
                     )
-                wait_for_log(restart_log, "Started flows", 35)
+                wait_for_log(node_red_restart_log, "Started flows", 35)
                 wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
                 verify_name, verify_path, verify_arg, verify_timeout = RECOVERY_TESTS[1]
                 print(f"\n===== RUN {verify_name} =====")
                 verify_result = run_test(
                     verify_name, verify_path, verify_timeout, recovery_env, artifact_dir, verify_arg
+                )
+                results.append(verify_result)
+
+        if all(result["passed"] for result in results):
+            outage_state = artifact_dir / "ua-outage-state.json"
+            outage_env = base_env | {
+                "OUTAGE_STATE": str(outage_state),
+                "UA_SERVER_PID": str(ua_process.pid if ua_process and ua_process.poll() is None else 0),
+            }
+            for name, path, argument, timeout in OUTAGE_TESTS[:2]:
+                print(f"\n===== RUN {name} =====")
+                result = run_test(name, path, timeout, outage_env, artifact_dir, argument)
+                results.append(result)
+                if name == "short_outage" and ua_process and ua_process.poll() is None:
+                    try:
+                        os.kill(ua_process.pid, signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
+
+            prepare_name, prepare_path, prepare_arg, prepare_timeout = OUTAGE_TESTS[2]
+            print(f"\n===== RUN {prepare_name} =====")
+            prepare_result = run_test(
+                prepare_name, prepare_path, prepare_timeout, outage_env, artifact_dir, prepare_arg
+            )
+            results.append(prepare_result)
+            if prepare_result["passed"]:
+                stop_process(ua_process)
+                ua_process = None
+                time.sleep(8)
+                restart_log = artifact_dir / "ua-server-restart.log"
+                with restart_log.open("w", encoding="utf-8") as handle:
+                    ua_process = subprocess.Popen(
+                        [sys.executable, str(REPO_ROOT / "server" / "qc_server.py")],
+                        cwd=REPO_ROOT,
+                        env=server_env,
+                        stdout=handle,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                wait_for_log(restart_log, "OPC UA Server listening", 25)
+                wait_for_log(node_red_restart_log, "[UA重连]", 45)
+                time.sleep(3)
+                verify_name, verify_path, verify_arg, verify_timeout = OUTAGE_TESTS[3]
+                print(f"\n===== RUN {verify_name} =====")
+                verify_result = run_test(
+                    verify_name, verify_path, verify_timeout, outage_env, artifact_dir, verify_arg
                 )
                 results.append(verify_result)
     except Exception as exc:
@@ -298,7 +352,7 @@ def main() -> int:
         stop_process(nr_process)
         stop_process(ua_process)
 
-    expected_results = len(TESTS) + len(RECOVERY_TESTS)
+    expected_results = len(TESTS) + len(RECOVERY_TESTS) + len(OUTAGE_TESTS)
     passed = failure is None and all(result["passed"] for result in results) and len(results) == expected_results
     summary.update(
         {

@@ -86,7 +86,7 @@ UA Server                    Node-RED                     模拟MES
 | 完工报工触发源 | **唯一发令枪是 UA Server 的 WorkOrderCompletedEvent**，Node-RED 禁止自行推断"数量够了就报工" |
 | 时间戳 | 报文 occurredAt 一律 ISO8601 UTC（`new Date().toISOString()`，带 Z 后缀），规避时区偏移 |
 | 告警疲劳 | NG 报警设 10s 抑制窗：窗内合并计数、超窗一次性亮灯并携带合并条数（具备告警抑制机制） |
-| 陈旧事件 | 断网恢复后 age>60s 的事件直接丢弃（防 overflow 洪峰）；心跳每 5s 读 DeviceStatus，连续 3 次异常判定连接假死并告警 |
+| 陈旧事件 | 断网恢复后 age>60s 的事件直接丢弃（防 overflow 洪峰）；心跳每 5s 同时读 DeviceStatus 与 ServerStatus.StartTime，读写异常连续 3 次告警，StartTime 变化触发显式重连 |
 | 空窗口 NgRate=-1.0 | 完工报工时按 3.2 传 -1.0，MES 侧显示"样本不足"，不算异常 |
 | **MES 不可达（断网）** | NG 开单/报工请求进入**边缘缓冲队列**（Node-RED flow context，状态机见上），恢复后按 FIFO 补传；缓冲上限 100 条，溢出丢弃最旧并告警。context 已由 localfilesystem 近实时落盘，可降低重启丢失风险；但它是非事务型存储，不能据此宣称 exactly-once，试点阶段应换 SQLite 事务队列（见 Phase0 §6-5） |
 

@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+server/venv/
 
 # 本地 conda 环境（可重建，不入库）
 .conda/
