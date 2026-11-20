@@ -67,6 +67,21 @@ async def main() -> int:
         await root.call_method(f"{idx}:ResetCounters")
         check("admin Method call is accepted", True)
 
+    admin = await create_secure_client(admin=True)
+    async with admin:
+        idx, root = await station_nodes(admin)
+        for name in ("DeviceStatus", "CurrentWorkOrderId"):
+            control = await root.get_child([f"{idx}:{name}"])
+            original = await control.read_value()
+            try:
+                await control.write_value(2 if name == "DeviceStatus" else "BYPASS")
+                check(f"direct write to {name} is rejected", False, "(unexpected success)")
+            except Exception as exc:
+                check(f"direct write to {name} is rejected", True, f"({type(exc).__name__})")
+            self_value = await control.read_value()
+            check(f"direct write rejection preserves {name}", self_value == original,
+                  f"({self_value!r})")
+
     node_red_base = os.getenv("NODERED_BASE", "").rstrip("/")
     node_red_auth = os.getenv("NODERED_HTTP_AUTH", "").strip()
     if node_red_base:

@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -92,6 +93,43 @@ async def get_nodes(client):
     }
 
 
+@asynccontextmanager
+async def secure_nodes():
+    """Open a disposable UA session and always close it.
+
+    asyncua sessions that existed across SIGSTOP can enter a terminal
+    "disconnected" state even after the server resumes. The product's
+    recovery guarantee is about Node-RED re-subscription, so test assertions
+    must not depend on reusing one client session after the outage.
+    """
+    client = await create_secure_client()
+    await client.connect()
+    try:
+        yield client, await get_nodes(client)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def read_fresh(key, attempts=3):
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            async with secure_nodes() as (_, nodes):
+                value = await read(nodes[key])
+                if value is not None:
+                    return value
+        except Exception as exc:
+            last_error = exc
+        if attempt + 1 < attempts:
+            await asyncio.sleep(1)
+    if last_error is not None:
+        print(f"WARN | UA {key} read failed after {attempts} attempts: {last_error}")
+    return None
+
+
 async def ensure_idle(nodes):
     if await read(nodes["status"]) == 1:
         current = str(await read(nodes["work_order"]) or "")
@@ -105,36 +143,67 @@ async def wait_queue_empty(timeout=30):
                             timeout=timeout, description="queue drain")
 
 
-async def exercise_work_order(nodes, label):
-    await ensure_idle(nodes)
+async def exercise_work_order(label):
+    async with secure_nodes() as (_, nodes):
+        await ensure_idle(nodes)
+
     check(f"{label} MES ok mode", inject("inj_ok") and edge_status()["mesMode"] == "ok")
     work_order = f"WO-{label}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    before_ng = str(await read(nodes["last_ng"]) or "")
-    before_rc = str(await read(nodes["last_rc"]) or "")
-    ret = await nodes["root"].call_method(f"{nodes['idx']}:StartInspection", work_order, 5)
+    before_ng = str(await read_fresh("last_ng") or "")
+    before_rc = str(await read_fresh("last_rc") or "")
+    before_ng_corr = str(
+        (edge_status().get("lastRequestByType") or {}).get("ng", {}).get("correlationId") or ""
+    )
+    before_done_corr = str(
+        (edge_status().get("lastRequestByType") or {}).get("complete", {}).get("correlationId") or ""
+    )
+
+    async with secure_nodes() as (_, nodes):
+        ret = await nodes["root"].call_method(f"{nodes['idx']}:StartInspection", work_order, 5)
     check(f"{label} StartInspection accepted", ret and ret[0] is True,
           f"({ret[1] if len(ret) > 1 else ''})")
 
     async def ng_changed():
-        value = str(await read(nodes["last_ng"]) or "")
-        return value.startswith("MES-") and value != before_ng
+        status = edge_status()
+        request = (status.get("lastRequestByType") or {}).get("ng") or {}
+        response = status.get("lastResponse") or {}
+        correlation_id = str(request.get("correlationId") or "")
+        return bool(
+            correlation_id
+            and correlation_id != before_ng_corr
+            and response.get("correlationId") == correlation_id
+            and response.get("type") == "ng"
+            and response.get("status") == "SUCCESS"
+        )
 
     ng_ok = await wait_until(ng_changed, timeout=35, description=f"{label} NG receipt")
+    ng_now = str(await read_fresh("last_ng") or "") if ng_ok else ""
     check(f"{label} NG event reaches MES after recovery", ng_ok,
-          f"(before={before_ng or 'empty'}, now={await read(nodes['last_ng']) or 'empty'})")
+          f"(before={before_ng or 'empty'}, now={ng_now or 'empty'})")
 
-    ret_done = await nodes["root"].call_method(f"{nodes['idx']}:CompleteWorkOrder", work_order)
+    async with secure_nodes() as (_, nodes):
+        ret_done = await nodes["root"].call_method(f"{nodes['idx']}:CompleteWorkOrder", work_order)
     check(f"{label} CompleteWorkOrder accepted", ret_done and ret_done[0] is True,
           f"({ret_done[1] if len(ret_done) > 1 else ''})")
 
     async def rc_changed():
-        value = str(await read(nodes["last_rc"]) or "")
-        return value.startswith("RC-") and value != before_rc
+        status = edge_status()
+        request = (status.get("lastRequestByType") or {}).get("complete") or {}
+        response = status.get("lastResponse") or {}
+        correlation_id = str(request.get("correlationId") or "")
+        if not correlation_id or correlation_id == before_done_corr:
+            return False
+        return (
+            response.get("correlationId") == correlation_id
+            and response.get("type") == "complete"
+            and response.get("status") == "SUCCESS"
+        )
 
     rc_ok = await wait_until(rc_changed, timeout=35, description=f"{label} completion receipt")
+    rc_now = str(await read_fresh("last_rc") or "") if rc_ok else ""
     check(f"{label} completion event reaches MES after recovery", rc_ok,
-          f"(before={before_rc or 'empty'}, now={await read(nodes['last_rc']) or 'empty'})")
-    check(f"{label} DeviceStatus idle after recovery", await read(nodes["status"]) == 0)
+          f"(before={before_rc or 'empty'}, now={rc_now or 'empty'})")
+    check(f"{label} DeviceStatus idle after recovery", await read_fresh("status") == 0)
 
 
 async def stall():
@@ -167,7 +236,7 @@ async def stall():
     async with client:
         nodes = await get_nodes(client)
         check("short outage UA accepts a fresh secure session", (await read(nodes["status"])) is not None)
-        await exercise_work_order(nodes, "STALL")
+    await exercise_work_order("STALL")
 
     return finish("SHORT OUTAGE")
 
@@ -231,17 +300,17 @@ async def verify_restart():
     async with client:
         nodes = await get_nodes(client)
         check("UA Server responds after restart", (await read(nodes["status"])) is not None)
-        await exercise_work_order(nodes, "UA-RESTART")
-        ng_now = str(await read(nodes["last_ng"]) or "")
-        rc_now = str(await read(nodes["last_rc"]) or "")
-        check("UA restart NG receipt differs from baseline",
-              ng_now.startswith("MES-") and ng_now != state["lastNgReceipt"],
-              f"(before={state['lastNgReceipt'] or 'empty'}, now={ng_now or 'empty'})")
-        check("UA restart completion receipt differs from baseline",
-              rc_now.startswith("RC-") and rc_now != state["lastCompletionReceipt"],
-              f"(before={state['lastCompletionReceipt'] or 'empty'}, now={rc_now or 'empty'})")
-        check("UA restart leaves queue empty", await wait_queue_empty())
-        check("UA restart status healthy", edge_status().get("ok") is True)
+    await exercise_work_order("UA-RESTART")
+    ng_now = str(await read_fresh("last_ng") or "")
+    rc_now = str(await read_fresh("last_rc") or "")
+    check("UA restart NG receipt differs from baseline",
+          ng_now.startswith("MES-") and ng_now != state["lastNgReceipt"],
+          f"(before={state['lastNgReceipt'] or 'empty'}, now={ng_now or 'empty'})")
+    check("UA restart completion receipt differs from baseline",
+          rc_now.startswith("RC-") and rc_now != state["lastCompletionReceipt"],
+          f"(before={state['lastCompletionReceipt'] or 'empty'}, now={rc_now or 'empty'})")
+    check("UA restart leaves queue empty", await wait_queue_empty())
+    check("UA restart status healthy", edge_status().get("ok") is True)
     return finish("UA RESTART VERIFY")
 
 
