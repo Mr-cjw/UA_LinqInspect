@@ -22,6 +22,45 @@ function ngKeys(serialNumber, occurredAt) {
   ];
 }
 
+const UA_WRITE_TOPICS = {
+  ng: ['ns=2;s=QCStation.LastNgMesOrderNo', 'ns=2;s=QCStation.LastMesOrderNo'],
+  complete: ['ns=2;s=QCStation.LastCompletionReceiptNo', 'ns=2;s=QCStation.LastMesOrderNo'],
+};
+
+function uaTargetsFor(item, receipt) {
+  return (UA_WRITE_TOPICS[item.type] || []).map(topic => ({
+    topic,
+    value: String(receipt),
+  }));
+}
+
+function uaWriteMessages(item, targets) {
+  return (targets || []).map(entry => {
+    const topic = entry.topic || entry.target || '';
+    const value = entry.value == null ? entry.expectedValue : entry.value;
+    return {
+      topic,
+      action: 'write',
+      payload: String(value),
+      datatype: 'String',
+      _uaKind: 'write',
+      _qc: {
+        id: item.id,
+        type: item.type,
+        correlationId: item.correlationId || '',
+        uaTarget: topic,
+      },
+    };
+  });
+}
+
+function pumpOutputs(result) {
+  if (result && result.__qcOutputs) {
+    return [result.http || [], result.ua || []];
+  }
+  return [result ? [result] : [], []];
+}
+
 function validateNg(msg, node, store) {
   const serialNumber = String(msg.serialNumber || '').trim();
   if (!serialNumber) {
@@ -144,6 +183,43 @@ function pump(msg, flow, node, store) {
     return null;
   }
 
+  if (result.state === 'ua-write') {
+    node.warn('[UA写回][' + (result.item.correlationId || '') + '] ' + result.item.id +
+      ' → ' + (result.targets || []).map(target => target.target).join(', '));
+    node.status({ fill: 'blue', shape: 'dot', text: 'UA写回 ' + result.item.type });
+    return {
+      __qcOutputs: true,
+      http: [],
+      ua: uaWriteMessages(result.item, result.targets),
+    };
+  }
+  if (result.state === 'ua-write-complete') {
+    node.warn('[UA写回完成][' + (result.item.correlationId || '') + '] ' + result.item.id);
+    return null;
+  }
+  if (result.state === 'ua-write-retry') {
+    node.warn('[UA写回重试][' + (result.item.correlationId || '') + '] ' + result.delay + 'ms');
+    node.status({ fill: 'yellow', shape: 'ring', text: 'UA写回退避 ' + result.delay + 'ms' });
+    return null;
+  }
+  if (result.state === 'ua-write-dead') {
+    const item = result.item;
+    flow.set('lastResponse', {
+      correlationId: item.correlationId || '',
+      type: item.type,
+      status: 'DEAD',
+      errorCode: item.errorCode,
+      at: timestamp(),
+    });
+    node.error('[死信FAILED][' + (item.correlationId || '') + '][' + item.errorCode + '] ' +
+      item.type + ' ' + item.id + '：' + item.lastStatus + '，需人工处置', item.body);
+    node.status({ fill: 'red', shape: 'dot', text: '死信 ' + item.errorCode });
+    return null;
+  }
+  if (result.state === 'ua-write-inflight') {
+    node.status({ fill: 'blue', shape: 'dot', text: 'UA写回在途，队列=' + result.queueLength });
+    return null;
+  }
   if (result.state === 'inflight') {
     node.status({ fill: 'blue', shape: 'dot', text: '在途 1 条，队列=' + result.queueLength });
     return null;
@@ -275,44 +351,42 @@ function response(msg, flow, node, store) {
       return null;
     }
 
+    const receiptNo = item.type === 'ng' ? body.mesOrderNo : body.receiptNo;
+    const targets = uaTargetsFor(item, receiptNo);
     let completed;
     try {
       completed = store.complete({
         id: item.id,
         correlationId: item.correlationId || '',
+        receipt: receiptNo,
+        targets,
       });
     } catch (error) {
       node.error('[SQLite完成事务失败] ' + error.message, item.body);
       return null;
     }
     if (!completed) {
-      node.warn('[响应忽略] 任务已被其他响应完成：' + item.id);
+      node.warn('[响应忽略] 任务已进入写回阶段或已被其他响应完成：' + item.id);
       return null;
     }
     flow.set('lastResponse', {
       correlationId,
       type: item.type,
-      status: 'SUCCESS',
+      status: 'UA_WRITE_PENDING',
+      mesStatus: 'SUCCESS',
       statusCode,
-      receiptNo: item.type === 'ng' ? body.mesOrderNo : body.receiptNo,
+      receiptNo,
       at: timestamp(),
     });
     if (item.type === 'ng') {
       const orderNo = body.mesOrderNo;
-      node.warn('[回执][' + correlationId + '] MES工单号=' + orderNo + ' → 写回 LastNgMesOrderNo / LastMesOrderNo');
-      node.status({ fill: 'green', shape: 'dot', text: '开单成功 ' + orderNo });
-      return [
-        { topic: 'ns=2;s=QCStation.LastNgMesOrderNo', action: 'write', payload: orderNo, datatype: 'String', _uaKind: 'write' },
-        { topic: 'ns=2;s=QCStation.LastMesOrderNo', action: 'write', payload: orderNo, datatype: 'String', _uaKind: 'write' },
-      ];
+      node.warn('[回执][' + correlationId + '] MES工单号=' + orderNo + ' → 等待 UA 写回确认');
+      node.status({ fill: 'blue', shape: 'dot', text: '开单成功，待UA确认 ' + orderNo });
+      return uaWriteMessages(completed, targets);
     }
-    const receiptNo = body.receiptNo;
-    node.warn('[报工回执][' + correlationId + '] receiptNo=' + receiptNo + ' → 写回 LastCompletionReceiptNo / LastMesOrderNo');
-    node.status({ fill: 'green', shape: 'dot', text: '报工成功 ' + receiptNo });
-    return [
-      { topic: 'ns=2;s=QCStation.LastCompletionReceiptNo', action: 'write', payload: receiptNo, datatype: 'String', _uaKind: 'write' },
-      { topic: 'ns=2;s=QCStation.LastMesOrderNo', action: 'write', payload: receiptNo, datatype: 'String', _uaKind: 'write' },
-    ];
+    node.warn('[报工回执][' + correlationId + '] receiptNo=' + receiptNo + ' → 等待 UA 写回确认');
+    node.status({ fill: 'blue', shape: 'dot', text: '报工成功，待UA确认 ' + receiptNo });
+    return uaWriteMessages(completed, targets);
   }
 
   if (statusCode >= 400 && statusCode < 500 && statusCode !== 429) {
@@ -379,6 +453,86 @@ function response(msg, flow, node, store) {
   node.warn('[重试][' + correlationId + '][' + errorCode + '] ' + item.type + ' ' + item.id +
     ' 失败(' + reason + ')，' + retried.delay + 'ms 后第 ' + retried.item.attempts + ' 次重试');
   node.status({ fill: 'yellow', shape: 'ring', text: '退避 ' + retried.delay + 'ms' });
+  return null;
+}
+
+function uaWriteSuccess(msg, flow, node, store) {
+  const meta = msg._qc || {};
+  if (!meta.id || !meta.uaTarget) return null;
+  let result;
+  try {
+    result = store.confirmUaWriteTarget({
+      id: meta.id,
+      correlationId: meta.correlationId || '',
+      target: meta.uaTarget,
+      value: undefined,
+    });
+  } catch (error) {
+    node.error('[UA写回确认失败] ' + error.message);
+    return null;
+  }
+  if (!result) {
+    node.warn('[UA写回确认忽略] ' + meta.id + ' ' + meta.uaTarget);
+    return null;
+  }
+  if (result.outcome === 'mismatch') {
+    node.error('[UA写回值不一致] ' + meta.uaTarget + ' expected=' + result.expected +
+      ' actual=' + result.actual);
+    uaWriteFailure({
+      _qc: meta,
+      error: { message: 'UA_WRITE_VALUE_MISMATCH' },
+    }, flow, node, store);
+    return null;
+  }
+  if (result.outcome === 'complete') {
+    flow.set('lastResponse', Object.assign({}, flow.get('lastResponse') || {}, {
+      status: 'SUCCESS',
+      uaWrite: 'confirmed',
+      at: timestamp(),
+    }));
+    node.warn('[UA写回完成][' + (meta.correlationId || '') + '] ' + meta.id + ' 全部变量已确认');
+    node.status({ fill: 'green', shape: 'dot', text: 'UA写回完成 ' + meta.id });
+    return null;
+  }
+  node.warn('[UA写回确认][' + (meta.correlationId || '') + '] ' + meta.uaTarget +
+    '，剩余 ' + result.confirmed);
+  return null;
+}
+
+function uaWriteFailure(msg, flow, node, store) {
+  const meta = msg._qc || {};
+  if (!meta.id || !meta.uaTarget) return null;
+  const detail = msg.error ? String(msg.error.message || msg.error.code || msg.error) : 'unknown';
+  const errorCode = /VALUE_MISMATCH/.test(detail) ? 'UA_WRITE_VALUE_MISMATCH' : 'UA_WRITE_FAILED';
+  let result;
+  try {
+    result = store.failUaWrite({
+      id: meta.id,
+      correlationId: meta.correlationId || '',
+      errorCode,
+      reason: detail,
+    });
+  } catch (error) {
+    node.error('[UA写回失败迁移异常] ' + error.message);
+    return null;
+  }
+  if (!result) return null;
+  if (result.outcome === 'dead') {
+    flow.set('lastResponse', {
+      correlationId: meta.correlationId || '',
+      type: meta.type || '',
+      status: 'DEAD',
+      errorCode,
+      at: timestamp(),
+    });
+    node.error('[死信FAILED][' + (meta.correlationId || '') + '][' + errorCode + '] ' +
+      meta.id + '：' + detail + '，需人工处置');
+    node.status({ fill: 'red', shape: 'dot', text: '死信 ' + errorCode });
+    return null;
+  }
+  node.warn('[UA写回失败][' + (meta.correlationId || '') + '] ' + meta.uaTarget + '：' +
+    detail + '，' + result.delay + 'ms 后重试');
+  node.status({ fill: 'yellow', shape: 'ring', text: 'UA写回退避 ' + result.delay + 'ms' });
   return null;
 }
 
@@ -469,6 +623,30 @@ function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec) {
       prometheusValue(value('watchdog_total', '', outcome))
     );
   }
+
+  const uaWriteback = state.uaWriteback || { pending: 0, sending: 0 };
+  family('qc_ua_write_pending', 'Queued UA write-backs awaiting all target confirmations.', 'gauge');
+  lines.push(`qc_ua_write_pending ${prometheusValue(
+    Number(uaWriteback.pending || 0) + Number(uaWriteback.sending || 0)
+  )}`);
+  family('qc_ua_write_total', 'UA write-back outcomes by event type.', 'counter');
+  for (const type of ['ng', 'complete']) {
+    for (const outcome of ['success', 'retry', 'dead']) {
+      lines.push(
+        `qc_ua_write_total{type="${type}",outcome="${outcome}"} ` +
+        prometheusValue(value('ua_write_total', type, outcome))
+      );
+    }
+  }
+  family('qc_ua_write_errors_total', 'UA write-back failures by event type and stable error code.', 'counter');
+  const uaErrorRows = snapshot.filter(item => item.name === 'ua_write_errors_total');
+  for (const item of uaErrorRows) {
+    lines.push(
+      `qc_ua_write_errors_total{type="${prometheusLabel(item.type)}",` +
+      `error_code="${prometheusLabel(item.errorCode)}"} ` +
+      prometheusValue(item.value)
+    );
+  }
   return lines.join('\n') + '\n';
 }
 
@@ -554,6 +732,7 @@ function status(msg, flow, store) {
     lastRequestByType: flow.get('lastRequestByType') || {},
     lastResponse: flow.get('lastResponse') || null,
     dedup: snapshot.dedup,
+    uaWriteback: snapshot.uaWriteback,
     storage: snapshot.storage,
   };
   msg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
@@ -615,7 +794,10 @@ module.exports = {
   enqueueNg,
   enqueueDone,
   pump,
+  pumpOutputs,
   response,
+  uaWriteSuccess,
+  uaWriteFailure,
   status,
   metrics,
   health,

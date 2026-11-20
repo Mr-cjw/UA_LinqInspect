@@ -65,6 +65,39 @@ function enqueueNg(store, serialNumber, occurredAt, now = 1000) {
   });
 }
 
+function uaTargets(receipt = 'MES-TEST-0001') {
+  return [
+    { topic: 'ns=2;s=QCStation.LastNgMesOrderNo', value: receipt },
+    { topic: 'ns=2;s=QCStation.LastMesOrderNo', value: receipt },
+  ];
+}
+
+function startUaWriteback(store, claimed, now = 2000, receipt = 'MES-TEST-0001') {
+  const targets = uaTargets(receipt);
+  store.complete({
+    id: claimed.item.id,
+    correlationId: claimed.item.correlationId,
+    receipt,
+    targets,
+    now,
+  });
+  return targets;
+}
+
+function confirmUaWriteback(store, claimed, targets, now = 2002) {
+  let result = null;
+  for (const target of targets) {
+    result = store.confirmUaWriteTarget({
+      id: claimed.item.id,
+      correlationId: claimed.item.correlationId,
+      target: target.topic,
+      value: target.value,
+      now,
+    });
+  }
+  return result;
+}
+
 function metricValue(store, name, type = '', outcome = '', errorCode = '') {
   const row = store.metricSnapshot().find(item =>
     item.name === name &&
@@ -196,10 +229,15 @@ try {
       assert.equal(first.item.status, 'SENDING');
       assert.equal(second.state, 'inflight');
       assert.equal(store.status().queue.sending, 1);
+      const targets = uaTargets();
       assert.equal(store.complete({
         id: first.item.id,
         correlationId: first.item.correlationId,
+        receipt: 'MES-TEST-0001',
+        targets,
+        now: 2001,
       }).id, first.item.id);
+      assert.equal(confirmUaWriteback(store, first, targets).outcome, 'complete');
       const third = store.claimNext(2002);
       assert.equal(third.state, 'send');
       assert.notEqual(third.item.id, first.item.id);
@@ -215,10 +253,15 @@ try {
       const sent = store.claimNext(2000);
       assert.equal(store.complete({ id: sent.item.id, correlationId: 'wrong' }), null);
       assert.equal(store.status().queue.sending, 1);
+      const targets = uaTargets();
       assert.equal(store.complete({
         id: sent.item.id,
         correlationId: sent.item.correlationId,
+        receipt: 'MES-TEST-0001',
+        targets,
+        now: 2001,
       }).id, sent.item.id);
+      assert.equal(confirmUaWriteback(store, sent, targets).outcome, 'complete');
       assert.equal(store.status().queue.total, 0);
     } finally {
       store.close();
@@ -276,7 +319,8 @@ try {
       enqueueNg(first, 'SN-METRIC', '2026-11-20T12:00:00.000Z', 1001);
       enqueueNg(first, 'SN-METRIC', '2026-11-20T12:00:01.000Z', 1002);
       const sent = first.claimNext(2000);
-      first.complete({ id: sent.item.id, correlationId: sent.item.correlationId });
+      const targets = startUaWriteback(first, sent, 2001);
+      confirmUaWriteback(first, sent, targets, 2002);
 
       first.enqueue({
         id: 'done|WO-METRIC',
@@ -390,6 +434,149 @@ try {
       assert.equal(recovered.item.id, sent.item.id);
     } finally {
       second.close();
+    }
+  });
+
+  check('MES success waits for every UA write target', () => {
+    const store = createStore({ dbPath: freshDbPath('ua-write-confirm') });
+    try {
+      enqueueNg(store, 'SN-UA-CONFIRM', '2026-11-20T12:00:00.000Z');
+      const sent = store.claimNext(2000);
+      const targets = startUaWriteback(store, sent, 2001, 'MES-UA-CONFIRM');
+      const pending = store.status();
+      assert.equal(pending.queue.total, 1);
+      assert.equal(pending.queue.sending, 1);
+      assert.equal(pending.uaWriteback.sending, 1);
+
+      const first = store.confirmUaWriteTarget({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        target: targets[0].topic,
+        value: targets[0].value,
+        now: 2002,
+      });
+      assert.equal(first.outcome, 'confirmed');
+      assert.equal(first.confirmed, 1);
+      assert.equal(store.status().queue.total, 1);
+
+      const second = store.confirmUaWriteTarget({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        target: targets[1].topic,
+        value: targets[1].value,
+        now: 2003,
+      });
+      assert.equal(second.outcome, 'complete');
+      assert.equal(store.status().queue.total, 0);
+      assert.equal(store.status().uaWriteback.pending + store.status().uaWriteback.sending, 0);
+      assert.equal(metricValue(store, 'ua_write_total', 'ng', 'success'), 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  check('UA write-back resumes after restart and retries only missing targets', () => {
+    const dbPath = freshDbPath('ua-write-restart');
+    const first = createStore({ dbPath });
+    let sent;
+    let targets;
+    try {
+      enqueueNg(first, 'SN-UA-RESTART', '2026-11-20T12:00:00.000Z');
+      sent = first.claimNext(2000);
+      targets = startUaWriteback(first, sent, 2001, 'MES-UA-RESTART');
+      first.confirmUaWriteTarget({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        target: targets[0].topic,
+        value: targets[0].value,
+        now: 2002,
+      });
+    } finally {
+      first.close();
+    }
+
+    const second = createStore({ dbPath });
+    try {
+      const restored = second.status();
+      assert.equal(restored.queue.total, 1);
+      assert.equal(restored.uaWriteback.sending, 1);
+      const timeoutAt = 2001 + WATCHDOG_MS + 1;
+      const retry = second.claimNext(timeoutAt);
+      assert.equal(retry.state, 'ua-write-retry');
+      const resumed = second.claimNext(timeoutAt + retry.delay);
+      assert.equal(resumed.state, 'ua-write');
+      assert.equal(resumed.targets.length, 1);
+      assert.equal(resumed.targets[0].target, targets[1].topic);
+      const completed = second.confirmUaWriteTarget({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        target: targets[1].topic,
+        value: targets[1].value,
+        now: timeoutAt + retry.delay + 1,
+      });
+      assert.equal(completed.outcome, 'complete');
+      assert.equal(second.status().queue.total, 0);
+    } finally {
+      second.close();
+    }
+  });
+
+  check('UA write failures retry and eventually dead-letter', () => {
+    const store = createStore({ dbPath: freshDbPath('ua-write-failure') });
+    try {
+      enqueueNg(store, 'SN-UA-FAIL', '2026-11-20T12:00:00.000Z');
+      const sent = store.claimNext(2000);
+      startUaWriteback(store, sent, 2001, 'MES-UA-FAIL');
+      let now = 2002;
+      let failure = store.failUaWrite({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        errorCode: 'UA_WRITE_FAILED',
+        reason: 'UA transport failed',
+        now,
+      });
+      assert.equal(failure.outcome, 'retry');
+      for (let attempt = 2; attempt <= 3; attempt += 1) {
+        now += failure.delay + 1;
+        const resumed = store.claimNext(now);
+        assert.equal(resumed.state, 'ua-write');
+        failure = store.failUaWrite({
+          id: sent.item.id,
+          correlationId: sent.item.correlationId,
+          errorCode: 'UA_WRITE_FAILED',
+          reason: 'UA transport failed',
+          now: now + 1,
+        });
+      }
+      assert.equal(failure.outcome, 'dead');
+      const status = store.status();
+      assert.equal(status.queue.total, 0);
+      assert.equal(status.deadLetters.total, 1);
+      assert.equal(status.deadLetters.last.errorCode, 'UA_WRITE_FAILED');
+      assert.equal(metricValue(store, 'ua_write_total', 'ng', 'dead'), 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  check('UA write confirmation rejects an unexpected value', () => {
+    const store = createStore({ dbPath: freshDbPath('ua-write-mismatch') });
+    try {
+      enqueueNg(store, 'SN-UA-MISMATCH', '2026-11-20T12:00:00.000Z');
+      const sent = store.claimNext(2000);
+      const targets = startUaWriteback(store, sent, 2001, 'MES-EXPECTED');
+      const mismatch = store.confirmUaWriteTarget({
+        id: sent.item.id,
+        correlationId: sent.item.correlationId,
+        target: targets[0].topic,
+        value: 'MES-WRONG',
+        now: 2002,
+      });
+      assert.equal(mismatch.outcome, 'mismatch');
+      assert.equal(store.status().queue.total, 1);
+      assert.equal(metricValue(store, 'ua_write_errors_total', 'ng', '', 'UA_WRITE_VALUE_MISMATCH'), 1);
+    } finally {
+      store.close();
     }
   });
 
@@ -527,10 +714,15 @@ try {
       assert.equal(resent.state, 'send');
       assert.equal(resent.item.attempts, 0);
       assert.equal(resent.item.lastStatus, 'replayed');
+      const targets = uaTargets();
       assert.equal(store.complete({
         id: resent.item.id,
         correlationId: resent.item.correlationId,
+        receipt: 'MES-TEST-0001',
+        targets,
+        now: 4003,
       }).id, resent.item.id);
+      assert.equal(confirmUaWriteback(store, resent, targets, 4004).outcome, 'complete');
       assert.equal(store.status().queue.total, 0);
       assert.equal(store.status().deadLetters.total, 0);
     } finally {

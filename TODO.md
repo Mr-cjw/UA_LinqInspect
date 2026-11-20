@@ -10,7 +10,7 @@
 □ [High] 匿名写已拒绝，但管理员仍可直接写 `DeviceStatus`、`CurrentWorkOrderId`、`CurrentPartSN` 和三个回执变量，而 Method 状态机使用另一份内部字段。仍需消除双源状态，把控制/回执变量改为外部只读或统一写入校验。
 □ [High] `server/qc_server.py:151-199,220-257`：`StartInspection`、`CompleteWorkOrder`、`record_inspection` 没有并发锁；完工与正在进行的检测可交错，出现晚到检测事件、工单已清空、计数快照与事件不一致。应增加单一状态锁与一致性快照，并明确“检测中是否允许完工”。
 □ [High] `server/qc_server.py:142-148,185-199,220-257`：状态、计数、UA 写入、事件发布没有事务或 outbox；`_fire()` 抛异常会让虚拟检测循环直接退出，或出现变量已更新但事件丢失、事件已发出但状态写回失败。应将状态变更、事件发布和持久化纳入可恢复的事务/outbox 流程。
-□ [High] 在线 Node-RED 已使用 SQLite 队列，但仍有“MES 回执成功后先完成任务、UA 写回失败缺少最终确认”的语义缺口；需把在线队列收敛到 `UA_WRITE_PENDING → DONE` 并复核死信/重放。
+✅ [High] ~~在线 Node-RED 已使用 SQLite 队列，但仍有“MES 回执成功后先完成任务、UA 写回失败缺少最终确认”的语义缺口~~：已用持久化 `ua_writebacks`/`ua_write_targets` 把 MES 成功与 UA 写回确认分离；两个目标全部确认后才删除任务，失败按退避重试并进入死信。
 ✅ [High] ~~MES 2xx/4xx/429/5xx/timeout 未分类~~：Phase 1 已实现回执 schema、关联 ID、错误码、4xx 终态死信、429 `Retry-After`、5xx/timeout 退避和非法 2xx 拒绝；Edge Core 另有事务化死信重放接口。
 □ [High] `nodered/flows.json` 节点 `fn_dedup_ng`、`fn_dedup_done`、`fn_enq_ng`、`fn_enq_done`：先去重并置位，再入队；入队异常、进程崩溃或队列溢出后，同一事件会永久被当作重复丢弃。应先去重与入队原子化，或让去重状态随任务成功/死信状态回滚，并提供重放。
 □ [High] `nodered/flows.json` 节点 `fn_enq_ng`、`fn_enq_done`：队列达到 100 时直接丢弃最旧 PENDING 任务且不写死信；高 NG 率或 MES 慢时会静默丢业务。应转入死信并记录丢弃原因，同时提供背压/告警。
@@ -29,7 +29,7 @@
 □ [Medium] `server/qc_server.py:151-170`：同一工单重复 `StartInspection` 会返回 `already running`，但新的 `targetCount` 被静默忽略；同一工单完工后可再次开工且计数器不重置。应引入工单执行批次/attemptId，明确幂等键和目标更新语义。
 □ [Medium] `nodered/flows.json` 节点 `fn_dedup_done`：`doneSeen` 只按 `workOrderId` 永久去重；工单返修、重新开检或第二批次完工会被视为重复报工，而服务端又没有禁止工单复用。应使用 `workOrderId + attemptId` 或明确工单唯一生命周期。
 □ [Medium] `nodered/flows.json` 节点 `fn_resp`：只校验 `2xx`，未要求 `accepted === true` 或响应 schema/Content-Type；任意 2xx 空对象或 HTML 都可能被当作成功。应严格校验回执字段、类型和业务状态。
-□ [Medium] `nodered/flows.json` 节点 `fn_ua_result`、`fn_ua_err`：没有校验 UA `StatusCode/Quality`；任何 `opcua` 消息都可能清零心跳失败，Method/写回异常也会计入心跳失败，造成假健康/假断线。应区分读、写、Method、订阅错误并检查服务质量。
+□ [Medium] `nodered/flows.json` 节点 `fn_ua_result`、`fn_ua_err`：写回异常已分流到 UA 写回重试/死信，但读、Method 和订阅结果仍未完整校验 `StatusCode/Quality`；应继续区分各类错误，避免假健康或假断线。
 □ [Medium] `nodered/flows.json` 节点 `/qc/status`：`ok` 永远为 `true`，死信、积压、心跳失败和 MES 故障都不会改变健康状态；`uptimeSec` 从首次状态查询/持久化时间计算，重启后也不是真实进程 uptime。应改为分项健康判定和真实运行时长。
 □ [Medium] `server/qc_server.py:30-34`：环境变量在导入时直接 `int/float` 转换，端口越界、`QC_NG_WINDOW<=0`、`QC_INSPECT_INTERVAL<=0`、概率越界均未校验；负间隔会造成忙循环和高频事件洪峰。应集中校验配置并在启动时给出可读错误。
 □ [Medium] `server/qc_server.py:283` 与 `nodered/flows.json`：UA Server 端口可配置，但 Node-RED endpoint 仍写死 `opc.tcp://localhost:4840`；队列目标写死 `127.0.0.1:1880`，换成其他端口即断路。应统一使用环境变量/配置注入。

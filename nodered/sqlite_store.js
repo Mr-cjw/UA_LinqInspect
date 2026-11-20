@@ -9,6 +9,9 @@ const MAX_DEAD_LETTERS = 100;
 const MAX_DEDUP_KEYS = 500;
 const RETRY_DELAYS = [1000, 2000, 4000];
 const WATCHDOG_MS = 15000;
+const MAX_UA_WRITE_ATTEMPTS = 3;
+const UA_WRITE_PENDING = 'PENDING';
+const UA_WRITE_SENDING = 'SENDING';
 const LEGACY_MIGRATION_KEY = 'legacy_context_imported_v1';
 const METRIC_TYPES = new Set(['ng', 'complete']);
 const METRIC_ERROR_CODES = new Set([
@@ -23,6 +26,9 @@ const METRIC_ERROR_CODES = new Set([
   'CORRELATION_MISMATCH',
   'MISSING_MES_ORDER_NO',
   'MISSING_RECEIPT_NO',
+  'UA_WRITE_FAILED',
+  'UA_WRITE_TIMEOUT',
+  'UA_WRITE_VALUE_MISMATCH',
 ]);
 
 function resolveDbPath() {
@@ -155,6 +161,29 @@ class SqliteQueueStore {
       );
       CREATE INDEX IF NOT EXISTS idx_dedup_kind_id ON dedup(kind, id);
 
+      CREATE TABLE IF NOT EXISTS ua_writebacks (
+        queue_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'SENDING')),
+        receipt TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_at INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER,
+        last_error_code TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ua_writebacks_status_next
+        ON ua_writebacks(status, next_at);
+
+      CREATE TABLE IF NOT EXISTS ua_write_targets (
+        queue_id TEXT NOT NULL,
+        target TEXT NOT NULL,
+        expected_value TEXT NOT NULL,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (queue_id, target)
+      );
+
       CREATE TABLE IF NOT EXISTS meta (
         meta_key TEXT PRIMARY KEY,
         meta_value TEXT NOT NULL
@@ -243,6 +272,26 @@ class SqliteQueueStore {
     return this.db.prepare('SELECT * FROM queue WHERE id = ?').get(id);
   }
 
+  _uaWritebackRow(queueId) {
+    return this.db.prepare('SELECT * FROM ua_writebacks WHERE queue_id = ?').get(queueId);
+  }
+
+  _uaWriteTargets(queueId, unconfirmedOnly = false) {
+    const sql = unconfirmedOnly
+      ? 'SELECT * FROM ua_write_targets WHERE queue_id = ? AND confirmed = 0 ORDER BY target'
+      : 'SELECT * FROM ua_write_targets WHERE queue_id = ? ORDER BY target';
+    return this.db.prepare(sql).all(queueId).map(row => ({
+      target: row.target,
+      expectedValue: row.expected_value,
+      confirmed: Boolean(row.confirmed),
+    }));
+  }
+
+  _deleteUaWriteback(queueId) {
+    this.db.prepare('DELETE FROM ua_write_targets WHERE queue_id = ?').run(queueId);
+    this.db.prepare('DELETE FROM ua_writebacks WHERE queue_id = ?').run(queueId);
+  }
+
   _findInflight(id) {
     if (id) {
       return this.db.prepare(
@@ -302,6 +351,7 @@ class SqliteQueueStore {
       errorCode,
       failedAt
     );
+    this._deleteUaWriteback(row.id);
     this.db.prepare('DELETE FROM queue WHERE id = ?').run(row.id);
     this._pruneDeadLetters();
     this._metricIncrement('delivery_total', row.type, 'dead', '', now);
@@ -552,6 +602,84 @@ class SqliteQueueStore {
     return this._transaction(() => {
       const inflight = this._findInflight('');
       if (inflight) {
+        const writeback = this._uaWritebackRow(inflight.id);
+        if (writeback) {
+          const remainingTargets = this._uaWriteTargets(inflight.id, true);
+          if (!remainingTargets.length) {
+            this._deleteUaWriteback(inflight.id);
+            this.db.prepare('DELETE FROM queue WHERE id = ?').run(inflight.id);
+            this._metricIncrement('ua_write_total', inflight.type, 'success', '', now);
+            return {
+              state: 'ua-write-complete',
+              item: rowToQueueItem(inflight),
+              queueLength: this._queueCount(),
+              queueTotal: this._queueCount(),
+            };
+          }
+
+          const startedAt = asInteger(writeback.started_at);
+          const writeExpired = !startedAt || now - startedAt > this.watchdogMs;
+          if (writeback.status === UA_WRITE_SENDING && writeExpired) {
+            const attempts = asInteger(writeback.attempts);
+            if (attempts >= MAX_UA_WRITE_ATTEMPTS) {
+              const dead = this._moveToDead(
+                inflight, 'UA_WRITE_TIMEOUT', 'ua-write-timeout', attempts, now
+              );
+              this._metricIncrement('ua_write_total', inflight.type, 'dead', '', now);
+              this._metricIncrement(
+                'ua_write_errors_total', inflight.type, '', 'UA_WRITE_TIMEOUT', now
+              );
+              return {
+                state: 'ua-write-dead',
+                item: dead,
+                queueLength: this._queueCount(),
+                queueTotal: this._queueCount(),
+              };
+            }
+            const delay = RETRY_DELAYS[Math.min(attempts - 1, RETRY_DELAYS.length - 1)];
+            this.db.prepare(`
+              UPDATE ua_writebacks
+              SET status = ?, next_at = ?, started_at = NULL,
+                  last_error_code = 'UA_WRITE_TIMEOUT', updated_at = ?
+              WHERE queue_id = ? AND status = 'SENDING'
+            `).run(UA_WRITE_PENDING, now + delay, now, inflight.id);
+            this._metricIncrement('ua_write_total', inflight.type, 'retry', '', now);
+            this._metricIncrement(
+              'ua_write_errors_total', inflight.type, '', 'UA_WRITE_TIMEOUT', now
+            );
+            return {
+              state: 'ua-write-retry',
+              item: rowToQueueItem(inflight),
+              delay,
+              queueLength: this._queueCount(),
+              queueTotal: this._queueCount(),
+            };
+          }
+
+          if (writeback.status === UA_WRITE_PENDING && asInteger(writeback.next_at) <= now) {
+            const attempts = asInteger(writeback.attempts) + 1;
+            this.db.prepare(`
+              UPDATE ua_writebacks
+              SET status = ?, attempts = ?, started_at = ?, updated_at = ?
+              WHERE queue_id = ? AND status = 'PENDING'
+            `).run(UA_WRITE_SENDING, attempts, now, now, inflight.id);
+            return {
+              state: 'ua-write',
+              item: rowToQueueItem(inflight),
+              targets: this._uaWriteTargets(inflight.id, true),
+              queueLength: this._queueCount(),
+              queueTotal: this._queueCount(),
+            };
+          }
+
+          return {
+            state: 'ua-write-inflight',
+            item: rowToQueueItem(inflight),
+            queueLength: this._queueCount(),
+            queueTotal: this._queueCount(),
+          };
+        }
+
         const sentAt = asInteger(inflight.sent_at);
         if (!sentAt || now - sentAt > this.watchdogMs) {
           const attempts = asInteger(inflight.attempts) + 1;
@@ -602,16 +730,110 @@ class SqliteQueueStore {
     });
   }
 
-  complete({ id, correlationId = '' }) {
+  complete({ id, correlationId = '', receipt, targets = [], now = Date.now() }) {
     return this._transaction(() => {
       const row = this._findInflight(id);
       if (!row || (correlationId && row.correlation_id !== correlationId)) return null;
-      const result = this.db.prepare(
-        "DELETE FROM queue WHERE id = ? AND status = 'SENDING' AND correlation_id = ?"
-      ).run(id, correlationId || row.correlation_id || '');
-      if (!result.changes) return null;
-      this._metricIncrement('delivery_total', row.type, 'success', '', Date.now());
+      if (this._uaWritebackRow(row.id)) return null;
+      const writebackReceipt = asString(receipt);
+      if (!writebackReceipt) throw new Error('UA writeback receipt is required');
+      if (!Array.isArray(targets) || targets.length === 0) {
+        throw new Error('UA writeback targets are required');
+      }
+
+      this.db.prepare(`
+        INSERT INTO ua_writebacks(
+          queue_id, status, receipt, attempts, next_at, started_at,
+          last_error_code, created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, '', ?, ?)
+      `).run(row.id, UA_WRITE_SENDING, writebackReceipt, now, now, now, now);
+      const insertTarget = this.db.prepare(`
+        INSERT INTO ua_write_targets(queue_id, target, expected_value, confirmed, updated_at)
+        VALUES (?, ?, ?, 0, ?)
+      `);
+      for (const target of targets) {
+        const topic = asString(target && target.topic);
+        const expectedValue = asString(target && target.value);
+        if (!topic || !expectedValue) throw new Error('UA writeback target topic/value is required');
+        insertTarget.run(row.id, topic, expectedValue, now);
+      }
+      this._metricIncrement('delivery_total', row.type, 'success', '', now);
       return rowToQueueItem(row);
+    });
+  }
+
+  confirmUaWriteTarget({ id, correlationId = '', target, value, now = Date.now() }) {
+    return this._transaction(() => {
+      const row = this._findInflight(id);
+      if (!row || (correlationId && row.correlation_id !== correlationId)) return null;
+      const writeback = this._uaWritebackRow(row.id);
+      if (!writeback || writeback.status !== UA_WRITE_SENDING) return null;
+      const topic = asString(target);
+      const expected = this.db.prepare(
+        'SELECT * FROM ua_write_targets WHERE queue_id = ? AND target = ?'
+      ).get(row.id, topic);
+      if (!expected) return null;
+      if (value !== undefined && value !== null && asString(value) !== expected.expected_value) {
+        this._metricIncrement(
+          'ua_write_errors_total', row.type, '', 'UA_WRITE_VALUE_MISMATCH', now
+        );
+        return {
+          outcome: 'mismatch',
+          id: row.id,
+          target: topic,
+          expected: expected.expected_value,
+          actual: asString(value),
+          confirmed: 0,
+        };
+      }
+      this.db.prepare(`
+        UPDATE ua_write_targets SET confirmed = 1, updated_at = ?
+        WHERE queue_id = ? AND target = ?
+      `).run(now, row.id, topic);
+      this.db.prepare(
+        'UPDATE ua_writebacks SET updated_at = ? WHERE queue_id = ?'
+      ).run(now, row.id);
+      const remaining = Number(this.db.prepare(`
+        SELECT COUNT(*) AS count FROM ua_write_targets
+        WHERE queue_id = ? AND confirmed = 0
+      `).get(row.id).count || 0);
+      if (remaining === 0) {
+        this._deleteUaWriteback(row.id);
+        this.db.prepare('DELETE FROM queue WHERE id = ?').run(row.id);
+        this._metricIncrement('ua_write_total', row.type, 'success', '', now);
+        return { outcome: 'complete', id: row.id, target: topic, confirmed: 0 };
+      }
+      return { outcome: 'confirmed', id: row.id, target: topic, confirmed: remaining };
+    });
+  }
+
+  failUaWrite({ id, correlationId = '', errorCode = 'UA_WRITE_FAILED', reason = '', now = Date.now() }) {
+    return this._transaction(() => {
+      const row = this._findInflight(id);
+      if (!row || (correlationId && row.correlation_id !== correlationId)) return null;
+      const writeback = this._uaWritebackRow(row.id);
+      if (!writeback || writeback.status !== UA_WRITE_SENDING) return null;
+      const attempts = asInteger(writeback.attempts);
+      if (attempts >= MAX_UA_WRITE_ATTEMPTS) {
+        const dead = this._moveToDead(row, errorCode, reason, attempts, now);
+        this._metricIncrement('ua_write_total', row.type, 'dead', '', now);
+        this._metricIncrement('ua_write_errors_total', row.type, '', errorCode, now);
+        return { outcome: 'dead', item: dead, queueLength: this._queueCount() };
+      }
+      const delay = RETRY_DELAYS[Math.min(attempts - 1, RETRY_DELAYS.length - 1)];
+      this.db.prepare(`
+        UPDATE ua_writebacks
+        SET status = ?, next_at = ?, started_at = NULL, last_error_code = ?, updated_at = ?
+        WHERE queue_id = ? AND status = 'SENDING'
+      `).run(UA_WRITE_PENDING, now + delay, errorCode, now, row.id);
+      this._metricIncrement('ua_write_total', row.type, 'retry', '', now);
+      this._metricIncrement('ua_write_errors_total', row.type, '', errorCode, now);
+      return {
+        outcome: 'retry',
+        item: rowToQueueItem(row),
+        delay,
+        queueLength: this._queueCount(),
+      };
     });
   }
 
@@ -732,6 +954,13 @@ class SqliteQueueStore {
     const latestDead = this.db.prepare(
       'SELECT * FROM dead_letters ORDER BY seq DESC LIMIT 1'
     ).get();
+    const uaCounts = { PENDING: 0, SENDING: 0 };
+    const uaRows = this.db.prepare(
+      'SELECT status, COUNT(*) AS count FROM ua_writebacks GROUP BY status'
+    ).all();
+    for (const row of uaRows) {
+      if (uaCounts[row.status] !== undefined) uaCounts[row.status] = Number(row.count || 0);
+    }
     return {
       queue: {
         total: this._queueCount(),
@@ -744,6 +973,10 @@ class SqliteQueueStore {
         last: rowToDeadLetter(latestDead),
       },
       dedup: dedupCounts,
+      uaWriteback: {
+        pending: uaCounts.PENDING,
+        sending: uaCounts.SENDING,
+      },
       storage: this.storage(),
     };
   }
@@ -776,4 +1009,5 @@ module.exports = {
   MAX_DEDUP_KEYS,
   RETRY_DELAYS,
   WATCHDOG_MS,
+  MAX_UA_WRITE_ATTEMPTS,
 };

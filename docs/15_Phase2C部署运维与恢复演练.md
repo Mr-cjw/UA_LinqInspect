@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-171815/summary.json` ｜ 当前综合结果：388/388 PASS
+> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-171641/summary.json` ｜ 当前结果：403/403 PASS
 
 ## 1. 阶段目标
 
@@ -298,8 +298,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 23 个测试模块、**388/388 PASS**，摘要为
-`.tmp/regression-20261120-171815/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 综合回归共 23 个测试模块、**403/403 PASS**，摘要为
+`.tmp/regression-20261120-171641/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

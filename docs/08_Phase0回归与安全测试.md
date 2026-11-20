@@ -11,7 +11,7 @@ cd ~/UA_LinqInspect
 
 脚本会依次执行：
 
-1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、指标持久化、单飞行、退避/看门狗、死信重放和旧 context 导入。
+1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、UA 写回确认、指标持久化、单飞行、退避/看门狗、死信重放和旧 context 导入。
 2. `tests/health_test.js`：`/healthz` 的 ready/degraded/unavailable、响应头和 flow 接线。
 3. `tests/state_persistence_test.py`：状态快照往返、非法 Running 回退和损坏 JSON 回退。
 4. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证运行中工单、计数和 SN 序列恢复，并完成恢复后的工单。
@@ -19,7 +19,7 @@ cd ~/UA_LinqInspect
 6. `tests/security_test.py`：UA 传输安全、匿名只读、管理员写/Method、控制变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
 7. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
 8. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
-9. `tests/metrics_test.py`：Prometheus 指标格式、SQLite/WAL/SHM 体积、gauge 一致性和 correlationId 契约。
+9. `tests/metrics_test.py`：Prometheus 指标格式、UA 写回、SQLite/WAL/SHM 体积和 correlationId 契约。
 10. `tests/backup_queue_test.py`：WAL 在线备份、完整性检查、行数一致、保留策略和 Prometheus textfile。
 11. `tests/restore_queue_test.py`：dry-run、`--force`、恢复前快照、WAL/SHM 清理和恢复后继续消费。
 12. `tests/deploy_templates_test.py`：模板渲染、systemd verify、Alertmanager、logrotate、告警规则和环境变量。
@@ -61,11 +61,11 @@ cd ~/UA_LinqInspect
 
 ## 3. 当前结果
 
-2026-11-20 实测：
+2026-11-21 实测：
 
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
-| SQLite 队列单测 | 15/15 PASS | 唯一约束、事务回滚、指标持久化、单飞行、退避、看门狗、迁移、上限、死信重放 |
+| SQLite 队列单测 | 19/19 PASS | 唯一约束、事务回滚、UA 写回确认、单飞行、退避、看门狗、迁移、上限、死信重放 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | 状态工具单测 | 3/3 PASS | 快照往返、非法 Running 回退、损坏 JSON 回退 |
 | 工位状态重启 | 11/11 PASS | `SIGKILL` 后工单、计数、SN 续增、恢复后完工 |
@@ -73,7 +73,7 @@ cd ~/UA_LinqInspect
 | 安全回归 | 14/14 PASS | UA NoSecurity/匿名权限、控制变量直接写拒绝、Node-RED 401/认证和死信重放鉴权 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
-| Prometheus 指标 | 49/49 PASS | 文本格式、HELP/TYPE、gauge 一致性、计数增量、SQLite/WAL/SHM 体积、响应契约 |
+| Prometheus 指标 | 60/60 PASS | 文本格式、HELP/TYPE、gauge 一致性、UA 写回计数、SQLite/WAL/SHM 体积、响应契约 |
 | SQLite 备份 | 20/20 PASS | WAL 热备、完整性校验、行数一致、保留策略、运行中数据库、textfile 指标 |
 | 离线恢复 | 20/20 PASS | dry-run、`--force`、安全快照、WAL/SHM 清理、恢复后继续消费 |
 | 部署模板 | 20/20 PASS | 模板渲染、systemd verify、Prometheus/Alertmanager、logrotate、环境变量、Node-RED 认证配置 |
@@ -85,9 +85,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **388/388 PASS** | 23 个测试模块 |
+| **合计** | **403/403 PASS** | 23 个测试模块 |
 
-实际产物：`.tmp/regression-20261120-171815/summary.json`。
+实际产物：`.tmp/regression-20261120-172856/summary.json`。
 
 ## 4. 手工执行单个测试
 

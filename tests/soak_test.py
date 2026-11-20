@@ -143,13 +143,13 @@ async def main() -> int:
                   receipt_ok and unique_receipt,
                   f"(receipt={receipt or 'empty'}, elapsed={elapsed:.2f}s)")
 
-    final_drained = await wait_until(
+    final_queue_empty = await wait_until(
         lambda: edge_status()["queue"]["total"] == 0,
         timeout=20,
         description="final soak queue drain",
     )
     final = edge_status()
-    check("soak leaves queue empty", final_drained and final["queue"]["total"] == 0,
+    check("soak leaves queue empty", final_queue_empty and final["queue"]["total"] == 0,
           f"(queue={final['queue']['total']})")
     check("soak adds no dead letters",
           int(final["deadLetters"]["total"]) == dead_before,

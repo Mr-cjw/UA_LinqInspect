@@ -139,7 +139,7 @@ async def wait_queue_stable_empty(timeout: float = 45, stable_for: float = 2.0) 
 
 
 async def main() -> int:
-    # A late completion from the previous fault matrix can arrive after an
+    # A late completion from the previous matrix can arrive after an
     # instantaneous zero. Require a short stable-empty window before baseline.
     drained_before = await wait_queue_stable_empty()
     baseline = edge_status()
@@ -221,10 +221,10 @@ async def main() -> int:
           f"({rto:.2f}s <= {RTO_BUDGET_SEC:.0f}s)")
 
     recovered = edge_status()
-    dead_before_replay = int(recovered["deadLetters"]["total"])
+    dead_after_outage = int(recovered["deadLetters"]["total"])
     check("dead letter remains until explicit replay",
-          dead_before_replay > dead_before,
-          f"(dead={dead_before_replay}, baseline={dead_before})")
+          dead_after_outage >= dead_before + 1,
+          f"(dead={dead_after_outage}, baseline={dead_before})")
     check("replay target has a dead-letter id", bool(dead_letter.get("id")),
           f"(id={dead_letter.get('id') or 'empty'})")
 
@@ -240,9 +240,9 @@ async def main() -> int:
 
     check("replayed dead letter drains", await wait_queue_empty(timeout=20))
     final = edge_status()
-    check("explicit replay removes exactly one dead letter",
-          int(final["deadLetters"]["total"]) == dead_before_replay - 1,
-          f"(dead={final['deadLetters']['total']}, beforeReplay={dead_before_replay})")
+    check("replay removes exactly one dead letter",
+          int(final["deadLetters"]["total"]) == dead_after_outage - 1,
+          f"(dead={final['deadLetters']['total']}, before_replay={dead_after_outage})")
     check("long outage leaves queue empty", int(final["queue"]["total"]) == 0)
     check("long outage leaves edge healthy", final.get("ok") is True)
 
