@@ -16,7 +16,7 @@ Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调
 |---|---|---|
 | 质检数据源 | 虚拟 AI 质检循环 | 产生 OK/NG、缺陷类型、置信度、SN、图片 ID |
 | OPC UA Server | `server/qc_server.py`（asyncua） | QCStation 信息模型、工单状态机、Method、Event、审计与权限 |
-| 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读，管理员可写可调 Method |
+| 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读；管理员可调 Method 和写 MES 回执变量，工单控制变量只读 |
 | 边缘网关 | Node-RED + `node-red-contrib-opcua` + SQLite | 订阅事件、事务去重/入队、单飞行发送、退避重试、死信、MES 调用、指标与在线备份 |
 | 模拟 MES | Node-RED `http in` 节点 | 模拟 NG 开单、完工报工、回执与故障注入 |
 | 硬件扩展 | `hardware/` | 可选的树莓派 5 + open62541 + STM32 现场节点方案 |
@@ -63,6 +63,7 @@ Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会�
    `tests/nodered_e2e.py` 验证完整链路，最后跑 `tests/fault_scenarios.py` 验证重试与死信。
 
 Node-RED 默认把事务队列写到 `data/qc-queue.sqlite`；可用 `QC_DB_PATH` 指定其他位置。
+OPC UA Server 默认把工位控制状态写到 `data/qc-state.json`；可用 `QC_STATE_PATH` 指定其他位置。
 运行指标可访问 `GET /metrics`；SQLite 热备可执行
 `.venv/bin/python scripts/backup_queue.py`，默认保留最近 7 份并做完整性校验。
 
@@ -97,6 +98,7 @@ UA_LinqInspect/
 ├── Phase0_需求拆解与信息模型.md  # 设计基准（NodeId/变量/Method/Event 全部以此为准）
 ├── server/                    # asyncua OPC UA Server + 虚拟 AI 质检数据源
 │   ├── qc_server.py           # M1：Server 主体（信息模型 §2 全量落地）
+│   ├── qc_state.py            # 工位控制状态快照、校验与原子持久化
 │   └── requirements.txt
 ├── nodered/
 │   ├── flows.json             # M2：Node-RED 流（薄 Function 节点 + 回执写回）
@@ -129,12 +131,15 @@ UA_LinqInspect/
 │   ├── 12_连接器SOW与验收模板.md
 │   ├── 13_视觉增值包SOW与验收模板.md
 │   ├── 14_投资人BP叙事.md
+│   ├── 15_状态源重构与持久化恢复.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
     ├── ua_test_client.py      # 安全 OPC UA 客户端测试夹具
-    ├── security_test.py       # 传输安全与读写/Method 权限回归（6 项断言）
+    ├── state_persistence_test.py # 状态快照校验与恢复单测（3 项）
+    ├── qc_state_restart_test.py  # 工位状态 SIGKILL 重启恢复（11 项）
+    ├── security_test.py       # 传输安全、权限与控制变量只读回归（12 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
     ├── metrics_test.py        # Prometheus 指标、计数增量与状态一致性（43 项断言）
@@ -160,7 +165,7 @@ UA_LinqInspect/
 - **交互范式**：只用 OPC UA 的 Variable 读写 / Method 调用 / Event 订阅；模拟 MES 用 Node-RED `http in` 假扮，仅是仿真道具
 - **关联追踪**：每次检测/完工生成 `corr-<uuid4>`，经 UA 事件、Node-RED 队列、MES 请求与回执全链路透传
 - **失败分类**：4xx 立即死信、429 按 `Retry-After` 退避、5xx/timeout 指数退避、非法 2xx 拒绝写回
-- **重启恢复**：一键回归会保留非空队列，停止/重启 Node-RED 或 `SIGKILL` 进程，验证 SQLite 续传与回执续写
+- **重启恢复**：一键回归会保留非空队列，停止/重启 Node-RED 或 `SIGKILL` 进程，验证 SQLite 续传与回执续写；UA Server 的工单、计数和 SN 序号也会从快照恢复
 - **可观测性**：`GET /metrics` 暴露队列深度、死信、去重、入队/投递结果和看门狗计数；计数与队列状态同事务持久化
 - **在线备份**：`scripts/backup_queue.py` 使用 SQLite backup API，先校验再原子落盘，避免 WAL 模式下直接复制主文件
 
@@ -448,9 +453,10 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（一键回归 264/264 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（合并回归 264/264 PASS） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（含安全/Edge Core 合并回归 264/264 PASS） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 282/282 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（合并回归 282/282 PASS） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（合并回归 282/282 PASS） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（状态重启 11/11 PASS；与投递队列尚未同事务） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 短断网、陈旧过滤、Server 重启订阅重建已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |

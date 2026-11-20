@@ -29,13 +29,14 @@
 | [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md) | 一键隔离回归、安全用例、测试产物和实测结果 | 每次改动后复验 |
 | [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md) | correlationId 贯通、MES 错误码矩阵、重启/断网订阅恢复、158 项回归证据与后续规划 | 做可靠性增强或答辩前 |
 | [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md) | SQLite 表结构、事务边界、旧 context 迁移、SIGKILL 恢复与 194 项回归证据 | 做生产化增强或评审可靠性时 |
-| [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md) | Prometheus 指标、事务计数、在线备份、完整性校验、255 项回归证据与下一步 | 做运维化、监控或备份评审时 |
+| [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md) | Prometheus 指标、事务计数、在线备份、完整性校验与历史阶段证据 | 做运维化、监控或备份评审时 |
 | [10_内部经营宪章.md](10_内部经营宪章.md) | 产品主线、融资节奏、分层 KPI、经营护栏和自检问题 | 做产品、商业和融资决策前 |
 | [11_Edge_Core_接口与状态机.md](11_Edge_Core_接口与状态机.md) | Edge Core 权威边界、Outbox 状态机、SQLite 契约和验收矩阵 | 进入外部控制面或接口设计前 |
 | [api/edge-core.openapi.yaml](api/edge-core.openapi.yaml) | 输入事件、投递状态、死信重放和运行状态 OpenAPI 契约 | 开发连接器 API 或对接测试前 |
 | [12_连接器SOW与验收模板.md](12_连接器SOW与验收模板.md) | 连接器范围、责任、故障验收、变更与付款模板 | 准备付费试点或正式报价 |
 | [13_视觉增值包SOW与验收模板.md](13_视觉增值包SOW与验收模板.md) | YOLO 视觉范围、指标、数据责任和独立验收模板 | 准备视觉增值合同或现场验证 |
 | [14_投资人BP叙事.md](14_投资人BP叙事.md) | 问题、产品、渠道、收入、单位经济、风险和融资门槛 | 非正式融资交流和 BP 打磨 |
+| [15_状态源重构与持久化恢复.md](15_状态源重构与持久化恢复.md) | 工位状态所有权、单写者规则、JSON 快照、SIGKILL 恢复与边界 | 做状态重构、可靠性评审或现场恢复排障前 |
 
 ## 3. 原始依据文档
 
@@ -83,26 +84,28 @@
 
 ## 5. 当前验证状态
 
-2026-11-20 完成安全环境、Phase 1 关联追踪、Phase 2A SQLite 事务队列和断网/重启/崩溃恢复，并通过一键隔离回归：
+2026-11-21 完成安全环境、Phase 1 关联追踪、Phase 2A SQLite 事务队列、工位状态持久化和断网/重启/崩溃恢复，并通过一键隔离回归：
 
 - Python：`.venv`，Python 3.14.4，`asyncua 2.1.0`
 - Node.js：26.13.0；Node-RED：5.0.9；`node-red-contrib-opcua`：0.2.355
+- SQLite 队列单测：14/14 PASS
+- 状态工具单测：3/3 PASS
+- 工位状态 `SIGKILL` 重启：11/11 PASS
 - Edge Core API/状态机：7/7 PASS
-- 安全回归：8/8 PASS（含 Node-RED HTTP 认证）
+- 安全回归：12/12 PASS（含控制变量直接写拒绝和 Node-RED HTTP 认证）
 - M1 冒烟测试：36/36 PASS
 - M2 正常链路端到端测试：15/15 PASS
 - Prometheus 指标：43/43 PASS
 - SQLite 在线备份：17/17 PASS
 - M2 故障场景测试：52/52 PASS（5xx、timeout、4xx、429、非法 2xx、Method 拒绝）
 - Node-RED 非空队列重启恢复：18/18 PASS
-- SQLite 队列单测：14/14 PASS
 - Node-RED SIGKILL 崩溃恢复：23/23 PASS
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：264/264 PASS
+- 一键隔离回归合计：282/282 PASS（18 个测试模块）
 
-一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
+一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。工位状态单写者与恢复边界见 [15_状态源重构与持久化恢复.md](15_状态源重构与持久化恢复.md)；Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 
 ## 6. 项目一句话与三句话
 

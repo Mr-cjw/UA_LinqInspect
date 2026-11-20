@@ -6,7 +6,7 @@
 
 | 路径 | 作用 |
 |---|---|
-| `server/qc_server.py` | OPC UA Server、虚拟质检源、信息模型 |
+| `server/qc_server.py` + `server/qc_state.py` | OPC UA Server、虚拟质检源、信息模型、工位状态快照 |
 | `server/requirements.txt` | Python 依赖，当前为 `asyncua==2.1.0` |
 | `nodered/flows.json` | Node-RED 流导出文件 |
 | `nodered/flows.legacy.json` | 旧版流，仅作历史参考 |
@@ -19,14 +19,15 @@
 
 ### 2.1 配置与状态容器
 
-阅读：`server/qc_server.py:26-60`
+阅读：`server/qc_server.py` 的配置区与 `QCStation.__init__`，以及 `server/qc_state.py`。
 
 要点：
 
 - `NS_URI` 固定为 `urn:fde:linqinspect:qc`。
 - `DEFECT_CODES` 是虚拟缺陷源。
-- 端口、自动检测、间隔、NG 概率、窗口大小全部来自环境变量。
-- `QCStation` 保存设备状态、工单、计数、滑动窗口和节点字典 `self.nd`。
+- 端口、自动检测、间隔、NG 概率、窗口大小和 `QC_STATE_PATH` 全部来自环境变量。
+- `QCStation` 保存设备状态、工单、计数、滑动窗口和节点字典 `self.nd`；启动时从 `QCStateStore` 恢复快照。
+- `_persist()` 把快照写入工作线程，避免文件 `fsync` 阻塞 OPC UA 事件循环。
 
 ### 2.2 建立地址空间
 
@@ -37,7 +38,7 @@
 1. 注册命名空间，取得索引 `ns`。
 2. 创建 `QCStation`、`Inspection`、`Statistics`、`Events`。
 3. 对 `Events` 设置 `SubscribeToEvents`。
-4. 创建 6 个根层 ReadWrite 变量（含两个拆分回执变量和兼容镜像）。
+4. 创建 3 个根层只读控制变量和 3 个 MES 回执 ReadWrite 变量。
 5. 创建 6 个 Inspection 只读变量。
 6. 创建 3 个 Statistics 只读变量。
 7. 创建 3 个继承 `BaseEventType` 的 EventType。
@@ -57,17 +58,19 @@
 
 ### 2.4 Method 校验
 
-阅读：`server/qc_server.py:150-205`
+阅读：`server/qc_server.py` 的三个 Method 包装与实现。
 
 必须记住：
 
+- 三个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工与迟到检测交错。
 - `StartInspection` 先判断空工单、Running、Fault、目标数，最后才改状态。
 - `CompleteWorkOrder` 先判断无活动工单、工单不一致、状态不对，最后才发事件并回 Idle。
 - `ResetCounters` 清累计统计和窗口，`NgRate` 回到 `-1.0`。
+- 成功状态变更后持久化；拒绝调用不得修改业务状态。
 
 ### 2.5 检测结果落地
 
-阅读：`server/qc_server.py:207-256`
+阅读：`server/qc_server.py` 的 `record_inspection()`。
 
 `record_inspection()` 的顺序：
 
@@ -77,6 +80,7 @@
 4. 写统计和 `NgRate`。
 5. 发 `InspectionFinishedEventType`。
 6. 如果 NG，再发 `NgDetectedEventType`。
+7. 持久化当前工位快照。
 
 注意：一次 NG 会收到两个事件，这解释了为什么 Node-RED 必须按事件类型分流。
 
