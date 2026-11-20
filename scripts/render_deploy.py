@@ -63,7 +63,8 @@ def main() -> int:
     systemd_dir = output_dir / "systemd"
     prometheus_dir = output_dir / "prometheus"
     env_dir = output_dir / "env"
-    for directory in (systemd_dir, prometheus_dir, env_dir):
+    logrotate_dir = output_dir / "logrotate"
+    for directory in (systemd_dir, prometheus_dir, env_dir, logrotate_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     rendered = []
@@ -77,6 +78,18 @@ def main() -> int:
     alerts_target = prometheus_dir / alerts_source.name
     alerts_target.write_text(alerts_source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(alerts_target, 0o644)
+
+    alertmanager_source = repo_root / "deploy" / "prometheus" / "alertmanager.yml"
+    alertmanager_target = prometheus_dir / alertmanager_source.name
+    alertmanager_target.write_text(alertmanager_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(alertmanager_target, 0o644)
+
+    logrotate_files = []
+    for source in sorted((repo_root / "deploy" / "logrotate").glob("*.in")):
+        destination = logrotate_dir / source.name.removesuffix(".in")
+        destination.write_text(render(source.read_text(encoding="utf-8"), values), encoding="utf-8")
+        os.chmod(destination, 0o644)
+        logrotate_files.append(str(destination))
 
     env_source = repo_root / "deploy" / "env" / "ua-linqinspect.env.example"
     env_target = env_dir / env_source.name
@@ -92,6 +105,8 @@ def main() -> int:
         "outputDir": str(output_dir),
         "systemdUnits": rendered,
         "prometheusRules": str(alerts_target),
+        "alertmanagerConfig": str(alertmanager_target),
+        "logrotateConfigs": logrotate_files,
         "envExample": str(env_target),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))

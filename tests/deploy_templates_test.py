@@ -27,6 +27,8 @@ EXPECTED_ALERTS = {
     "QcDeliveryRetrySpike",
     "QcHeartbeatDegraded",
     "QcBackupStale",
+    "QcDatabaseWalGrowing",
+    "QcDiskSpaceLow",
 }
 REQUIRED_ENV = {
     "UA_ADMIN_USER",
@@ -147,6 +149,30 @@ def main() -> int:
               "max_over_time(qc_heartbeat_failures[5m]) >= 3" in alerts_text and
               "129600" in alerts_text)
 
+        alertmanager_text = (output_dir / "prometheus" / "alertmanager.yml").read_text(encoding="utf-8")
+        check("Alertmanager config routes critical and warning alerts",
+              'severity="critical"' in alertmanager_text and
+              'severity="warning"' in alertmanager_text and
+              "ua-linqinspect-critical" in alertmanager_text and
+              "ua-linqinspect-warning" in alertmanager_text)
+        check("Alertmanager config sends resolved notifications and inhibits edge fan-out",
+              alertmanager_text.count("send_resolved: true") >= 3 and
+              'alertname="QcEdgeDown"' in alertmanager_text)
+
+        check("WAL and disk alerts encode operational thresholds",
+              'qc_database_bytes{kind="wal"} > 268435456' in alerts_text and
+              "node_filesystem_avail_bytes" in alerts_text and
+              "< 0.10" in alerts_text)
+
+        logrotate_path = output_dir / "logrotate" / "ua-linqinspect"
+        logrotate_text = logrotate_path.read_text(encoding="utf-8") if logrotate_path.is_file() else ""
+        check("logrotate config covers state logs with bounded retention",
+              "/var/lib/ua-linqinspect/*.log" in logrotate_text and
+              "rotate 7" in logrotate_text and
+              "maxsize 100M" in logrotate_text and
+              "copytruncate" in logrotate_text and
+              "su qc-deploy-test qc-deploy-test" in logrotate_text)
+
         env_path = output_dir / "env" / "ua-linqinspect.env.example"
         env_text = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
         env_keys = {
@@ -164,6 +190,9 @@ def main() -> int:
               "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text)
         check("render summary points at generated artifacts",
               Path(str(summary.get("prometheusRules") or "")).is_file() and
+              Path(str(summary.get("alertmanagerConfig") or "")).is_file() and
+              bool(summary.get("logrotateConfigs")) and
+              all(Path(str(path)).is_file() for path in summary.get("logrotateConfigs") or []) and
               Path(str(summary.get("envExample") or "")).is_file())
 
     passed = sum(1 for _, value in results if value)

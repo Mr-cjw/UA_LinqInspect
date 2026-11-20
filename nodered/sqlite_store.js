@@ -223,6 +223,22 @@ class SqliteQueueStore {
     return Number(this._deadCountStatement.get().count || 0);
   }
 
+  _fileSize(suffix = '') {
+    try {
+      return Number(fs.statSync(this.dbPath + suffix).size || 0);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  storage() {
+    return {
+      mainBytes: this._fileSize(''),
+      walBytes: this._fileSize('-wal'),
+      shmBytes: this._fileSize('-shm'),
+    };
+  }
+
   _queueRow(id) {
     return this.db.prepare('SELECT * FROM queue WHERE id = ?').get(id);
   }
@@ -728,6 +744,7 @@ class SqliteQueueStore {
         last: rowToDeadLetter(latestDead),
       },
       dedup: dedupCounts,
+      storage: this.storage(),
     };
   }
 

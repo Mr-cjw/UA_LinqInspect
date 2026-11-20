@@ -92,11 +92,11 @@
 - 安全回归：10/10 PASS（含 Node-RED HTTP 认证与死信重放鉴权）
 - M1 冒烟测试：36/36 PASS
 - M2 正常链路端到端测试：15/15 PASS
-- Prometheus 指标：43/43 PASS
+- Prometheus 指标：49/49 PASS（含 SQLite/WAL/SHM 体积）
 - 健康探针：10/10 PASS
 - SQLite 在线备份：20/20 PASS
 - 离线恢复：20/20 PASS
-- 部署模板与 systemd：16/16 PASS
+- 部署模板、Alertmanager 与 logrotate：20/20 PASS
 - M2 故障场景测试：52/52 PASS（5xx、timeout、4xx、429、非法 2xx、Method 拒绝）
 - M3 长断网与死信重放：24/24 PASS（实测排空 RTO 17.95s）
 - 周期 soak：20/20 PASS（6 个工单、回执唯一、无队列/死信漂移）
@@ -106,7 +106,7 @@
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：360/360 PASS
+- 一键隔离回归合计：370/370 PASS
 
 一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 

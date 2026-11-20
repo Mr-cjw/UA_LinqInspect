@@ -1,0 +1,11 @@
+/var/lib/ua-linqinspect/*.log {
+    su @RUN_USER@ @RUN_GROUP@
+    daily
+    rotate 7
+    maxsize 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

@@ -63,3 +63,21 @@ groups:
         annotations:
           summary: "SQLite online backup is stale"
           description: "No successful SQLite backup has been recorded for more than 36 hours."
+
+      - alert: QcDatabaseWalGrowing
+        expr: qc_database_bytes{kind="wal"} > 268435456
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UA LinqInspect SQLite WAL exceeds 256 MiB"
+          description: "The WAL has stayed above 256 MiB for 15 minutes; check long readers, checkpoint failures and disk pressure."
+
+      - alert: QcDiskSpaceLow
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem free space is below 10%"
+          description: "A monitored filesystem has remained below 10% free space for 10 minutes; protect SQLite, WAL and backup writes."

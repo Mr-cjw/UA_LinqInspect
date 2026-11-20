@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-163640/summary.json` ｜ 当前结果：360/360 PASS
+> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-164716/summary.json` ｜ 当前结果：370/370 PASS
 
 ## 1. 阶段目标
 
@@ -170,8 +170,14 @@ node_exporter 只应读取备份指标文件，不应直接采集 SQLite。启�
 | `QcDeliveryRetrySpike` | 10 分钟重试超过 5 次持续 5 分钟 | MES 质量或网络抖动 |
 | `QcHeartbeatDegraded` | 心跳失败数达到 3 持续 2 分钟 | UA 订阅链路异常 |
 | `QcBackupStale` | 距上次成功备份超过 36 小时持续 15 分钟 | 备份 timer 失败或指标未采集 |
+| `QcDatabaseWalGrowing` | WAL 超过 256 MiB 持续 15 分钟 | 长读事务、checkpoint 失败或写放大 |
+| `QcDiskSpaceLow` | 文件系统剩余空间低于 10% 持续 10 分钟 | SQLite、WAL 或备份写入面临磁盘耗尽 |
 
-这些阈值是作品集/试点默认值，不是工厂最终 SLA。上线前应按 MES 延迟、工单节拍和告警噪声调整，并配置 Alertmanager 路由。
+这些阈值是作品集/试点默认值，不是工厂最终 SLA。上线前应按 MES 延迟、工单节拍和告警噪声调整。
+渲染目录同时提供 `prometheus/alertmanager.yml`：critical 重复 30 分钟、warning 重复 4 小时，并抑制
+`QcEdgeDown` 引发的队列关联告警；部署前必须把示例 webhook 替换为现场接收端。
+
+状态日志的 logrotate 模板位于 `logrotate/ua-linqinspect`，默认每日检查、100 MiB 上限、保留 7 份并压缩。
 
 ## 6. 备份与 RPO/RTO
 
@@ -278,7 +284,7 @@ Phase 2C 新增专项：
 | 测试 | 结果 | 覆盖 |
 |---|---:|---|
 | `tests/health_test.js` | 10/10 PASS | ready/degraded/unavailable、边界、响应头、flow 接线 |
-| `tests/deploy_templates_test.py` | 16/16 PASS | 渲染、模板残留、systemd verify、unit 入口、告警、环境变量、Node-RED 认证配置 |
+| `tests/deploy_templates_test.py` | 20/20 PASS | 渲染、systemd verify、Prometheus/Alertmanager、logrotate、环境变量、Node-RED 认证配置 |
 | `tests/restore_queue_test.py` | 20/20 PASS | dry-run、--force、安全快照、WAL/SHM 清理、业务继续消费 |
 | `tests/backup_queue_test.py` | 20/20 PASS | 在线备份、指标 textfile、完整性、保留策略、活跃库备份 |
 | `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
@@ -290,8 +296,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 完整回归共 21 个测试脚本、**360/360 PASS**，摘要为
-`.tmp/regression-20261120-163640/summary.json`。单独运行备份测试且没有活跃
+2026-11-20 完整回归共 21 个测试脚本、**370/370 PASS**，摘要为
+`.tmp/regression-20261120-164716/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
@@ -310,6 +316,7 @@ curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
 ### 9.1 已具备
 
 - systemd 部署模板、健康探针、Prometheus 告警规则和备份 timer。
+- SQLite 主库/WAL/SHM 体积指标、WAL 与磁盘空间告警、Alertmanager 路由模板和 logrotate 模板。
 - SQLite 在线备份、离线恢复、恢复前安全快照和完整性校验。
 - 进程重启、SIGKILL、短断网和 UA Server 重启后的队列恢复。
 - MES 长断网后的积压排空、死信保留与受鉴权重放；6 工单 soak 无漂移。
@@ -320,13 +327,13 @@ curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
 - 异地/加密/不可变备份，以及备份恢复的定期自动化演练。
 - MES 真实鉴权、TLS、限流和接收端幂等契约的现场验证。
 - 真实交换机断链、防火墙切换、跨小时长时断网、断电和磁盘满场景证据。
-- MES 请求延迟直方图、日志轮转、结构化日志集中采集和完整的 Alertmanager 值班流程。
+- MES 请求延迟直方图、结构化日志集中采集，以及真实 Alertmanager 接收端/值班流程联调。
 
 ### 9.3 推荐下一步
 
 1. 在试点主机完成一次有记录的全链路恢复演练，实测并记录 RTO。
 2. 根据业务可接受损失把备份频率从每日提升到每小时，并增加异地副本校验。
-3. 接入 Alertmanager 路由、静默和升级策略，补充磁盘空间、WAL 增长和进程重启告警。
+3. 把 Alertmanager 路由接入真实值班渠道，补齐静默、升级和进程重启告警。
 4. 进入 Phase 3，与真实 MES 联调错误码、幂等键、限流和回执契约。
 
 准确边界：**至少一次投递 + 去重 + MES 接收端幂等，具备进程崩溃恢复、在线备份和离线恢复能力，但不是 exactly-once。**

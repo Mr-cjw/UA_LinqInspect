@@ -69,10 +69,10 @@ cd ~/UA_LinqInspect
 | 安全回归 | 10/10 PASS | UA NoSecurity/匿名权限 + Node-RED 未认证 401/认证 200 + 死信重放鉴权 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
-| Prometheus 指标 | 43/43 PASS | 文本格式、HELP/TYPE、gauge 一致性、计数增量、响应契约 |
+| Prometheus 指标 | 49/49 PASS | 文本格式、HELP/TYPE、gauge 一致性、计数增量、SQLite/WAL/SHM 体积、响应契约 |
 | SQLite 备份 | 20/20 PASS | WAL 热备、完整性校验、行数一致、保留策略、运行中数据库、textfile 指标 |
 | 离线恢复 | 20/20 PASS | dry-run、`--force`、安全快照、WAL/SHM 清理、恢复后继续消费 |
-| 部署模板 | 16/16 PASS | 模板渲染、systemd verify、unit 入口、Prometheus 告警、环境变量、Node-RED 认证配置 |
+| 部署模板 | 20/20 PASS | 模板渲染、systemd verify、Prometheus/Alertmanager、logrotate、环境变量、Node-RED 认证配置 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
 | MES 长断网 | 24/24 PASS | 重试耗尽死信、积压保留、恢复排空、实测 RTO、受鉴权重放 |
 | 周期 soak | 20/20 PASS | 6 个工单循环、回执唯一、无新增死信、无队列漂移 |
@@ -81,9 +81,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **360/360 PASS** | 一键隔离回归 |
+| **合计** | **370/370 PASS** | 一键隔离回归 |
 
-实际产物：`.tmp/regression-20261120-163640/summary.json`。
+实际产物：`.tmp/regression-20261120-164716/summary.json`。
 
 ## 4. 手工执行单个测试
 
