@@ -29,6 +29,11 @@ TESTS = (
     ("fault_scenarios", "tests/fault_scenarios.py", 180),
 )
 
+RECOVERY_TESTS = (
+    ("restart_recovery_seed", "tests/restart_recovery.py", "seed", 70),
+    ("restart_recovery_verify", "tests/restart_recovery.py", "verify", 70),
+)
+
 
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -92,8 +97,17 @@ def prepare_node_red(
     return user_dir
 
 
-def run_test(name: str, relative_path: str, timeout: int, env: dict[str, str], log_dir: Path) -> dict:
+def run_test(
+    name: str,
+    relative_path: str,
+    timeout: int,
+    env: dict[str, str],
+    log_dir: Path,
+    argument: str | None = None,
+) -> dict:
     command = [sys.executable, str(REPO_ROOT / relative_path)]
+    if argument:
+        command.append(argument)
     log_path = log_dir / f"{name}.log"
     started = time.monotonic()
     try:
@@ -241,6 +255,42 @@ def main() -> int:
             results.append(result)
             if not result["passed"] and not args.keep_going:
                 break
+
+        recovery_state = artifact_dir / "restart-recovery-state.json"
+        recovery_env = base_env | {"RECOVERY_STATE": str(recovery_state)}
+        if all(result["passed"] for result in results):
+            seed_name, seed_path, seed_arg, seed_timeout = RECOVERY_TESTS[0]
+            print(f"\n===== RUN {seed_name} =====")
+            seed_result = run_test(seed_name, seed_path, seed_timeout, recovery_env, artifact_dir, seed_arg)
+            results.append(seed_result)
+            if seed_result["passed"]:
+                stop_process(nr_process)
+                nr_process = None
+                restart_log = artifact_dir / "node-red-restart.log"
+                with restart_log.open("w", encoding="utf-8") as handle:
+                    nr_process = subprocess.Popen(
+                        [
+                            str(NODE_RED_BIN),
+                            "--userDir",
+                            str(node_red_user_dir),
+                            "--port",
+                            str(nr_port),
+                            "--no-telemetry",
+                        ],
+                        cwd=REPO_ROOT,
+                        env=base_env,
+                        stdout=handle,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                wait_for_log(restart_log, "Started flows", 35)
+                wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
+                verify_name, verify_path, verify_arg, verify_timeout = RECOVERY_TESTS[1]
+                print(f"\n===== RUN {verify_name} =====")
+                verify_result = run_test(
+                    verify_name, verify_path, verify_timeout, recovery_env, artifact_dir, verify_arg
+                )
+                results.append(verify_result)
     except Exception as exc:
         failure = f"{type(exc).__name__}: {exc}"
         print(f"\nRegression setup/run error: {failure}", file=sys.stderr)
@@ -248,7 +298,8 @@ def main() -> int:
         stop_process(nr_process)
         stop_process(ua_process)
 
-    passed = failure is None and all(result["passed"] for result in results) and len(results) == len(TESTS)
+    expected_results = len(TESTS) + len(RECOVERY_TESTS)
+    passed = failure is None and all(result["passed"] for result in results) and len(results) == expected_results
     summary.update(
         {
             "status": "passed" if passed else "failed",

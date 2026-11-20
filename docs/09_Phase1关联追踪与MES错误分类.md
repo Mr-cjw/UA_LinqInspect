@@ -1,6 +1,6 @@
 # Phase 1：关联追踪与 MES 错误分类
 
-> 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-130414/summary.json`
+> 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
 ## 1. 本阶段解决的问题
 
@@ -53,7 +53,8 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 | UA 冒烟 | 36/36 PASS | 三类事件均携带 `CorrelationId` |
 | Node-RED E2E | 15/15 PASS | UA 事件关联 ID 传到 MES，回执关联 ID 回显，请求 schemaVersion=1.0 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、Method 拒绝 |
-| **合计** | **109/109 PASS** | 一键隔离回归 |
+| 重启恢复 | 15/15 PASS | 非空队列 context 恢复、回执续写、无新增死信 |
+| **合计** | **124/124 PASS** | 一键隔离回归 |
 
 故障矩阵新增断言：
 
@@ -61,15 +62,15 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 - 429：4 次尝试后死信 `MES_BUSY`，退避窗口符合 `Retry-After: 1s` 加 1s 泵轮询量化。
 - 非法 2xx：不重试，死信 `INVALID_RESPONSE_SCHEMA`，不误写 NG 回执。
 - 每类故障恢复为正常模式后，完工报工仍可用，队列最终清空。
+- Node-RED 停止前保留 3 条非空队列；同 userDir 重启后队列恢复并排空，NG 与完工回执均续写，死信数保持不变。
 
 ## 5. Phase 1 仍未完成
 
 以下属于可靠性验证，不与本阶段的关联/错误分类混在一起：
 
-1. 非空队列时重启 Node-RED，验证 localfilesystem context 恢复与单飞行状态修复。
-2. 短时断网，验证 UA 原会话恢复和订阅续推。
-3. 长时断网/Server 重启，验证订阅重建和 60 秒陈旧事件过滤。
-4. 把上述场景纳入 `scripts/run_regression.py`，避免依赖人工观察。
+1. 短时断网，验证 UA 原会话恢复和订阅续推。
+2. 长时断网/Server 重启，验证订阅重建和 60 秒陈旧事件过滤。
+3. 把上述场景纳入 `scripts/run_regression.py`，避免依赖人工观察。
 
 完成这些场景后再进入 Phase 2：SQLite 事务队列、单一状态写入者、可观测性与部署基线。
 
@@ -94,6 +95,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID 和 MES 失败分类跑通，109 项隔离回归全部通过；下一步不是继续堆功能，而是证明重启和断网后队列仍可恢复，再把非事务型 context 队列升级为 SQLite 事务队列。
+> Phase 1 已把关联 ID、MES 失败分类和非空队列重启恢复跑通，124 项隔离回归全部通过；下一步不是继续堆功能，而是证明断网后订阅和队列仍可恢复，再把非事务型 context 队列升级为 SQLite 事务队列。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

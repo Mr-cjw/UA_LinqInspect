@@ -62,6 +62,7 @@ UA_ENDPOINT_PORT=4840 .venv/bin/python tests/fault_scenarios.py
 | 新增 `GET /qc/status` | 可在现场查看队列、死信、心跳和 MES 模式 |
 | Node-RED 启用 localfilesystem context | 队列、去重、死信和模式近实时落盘 |
 | 新增 `tests/fault_scenarios.py` | 把 5xx、timeout、Method 拒绝变成可重复证据 |
+| 新增 `tests/restart_recovery.py` | 把非空队列重启恢复变成可重复证据 |
 | 修复 M1 冒烟测试 SN 竞态 | 高频检测下断言稳定 |
 
 ## 4. 持久化观察
@@ -71,18 +72,18 @@ Node-RED 重启后会加载 `.node-red/context/qcflow/flow.json`。本次验证�
 但必须区分两件事：
 
 - **已验证**：context 能跨 Node-RED 进程重启保留状态。
-- **未验证**：非空发送队列在重启/断电后恢复，且不重复开单/报工。
+- **已验证**：5xx 下保留 3 条非空队列，Node-RED 用同一 userDir 重启后恢复并排空，NG/完工回执续写，死信数不增加。
+- **未验证**：断电一致性、重复开单/报工的跨进程严格证明。
 
-因此当前只能表述为“具备近实时落盘基础，降低重启丢失风险”，不能宣称 exactly-once。工厂试点前应迁移到 SQLite 事务队列或独立边缘发送服务，并补重启恢复测试。
+因此当前只能表述为“具备近实时落盘基础，已通过正常停止/重启恢复测试”，不能宣称断电安全或 exactly-once。工厂试点前应迁移到 SQLite 事务队列或独立边缘发送服务。
 
 ## 5. 尚未完成
 
-- OPC UA 证书、信任列表、写操作角色权限。
+- 企业 PKI、证书轮换和按角色最小权限（本地 CA/管理员账号已实现）。
 - M3 短时断网恢复、长时断网订阅重建、Wireshark 抓包证据。
 - Node-RED 注入节点触发的 Method 拒绝流级录屏证据（服务端拒绝已自动化）。
 - 真实 MES 接口与真实 YOLOv8/ONNX 推理数据。
-- `correlationId` 贯穿、MES 4xx/429/5xx 分类、结构化日志与集中监控。
-- 非空队列重启恢复、断电恢复、长时间 soak 测试。
+- 结构化日志、集中监控和长时间 soak 测试。
 
 ## 6. 复现与排障
 
