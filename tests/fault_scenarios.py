@@ -19,6 +19,7 @@ from datetime import datetime
 from ua_test_client import create_secure_client
 
 NR_BASE = os.getenv("NODERED_BASE", "http://127.0.0.1:1880").rstrip("/")
+NODERED_HTTP_AUTH = os.getenv("NODERED_HTTP_AUTH", "").strip()
 NS_URI = "urn:fde:linqinspect:qc"
 
 results = []
@@ -32,6 +33,8 @@ def check(name, cond, detail=""):
 def http_request(method, path, payload=None, timeout=5):
     data = None
     headers = {}
+    if NODERED_HTTP_AUTH:
+        headers["authorization"] = NODERED_HTTP_AUTH
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["content-type"] = "application/json"
@@ -42,7 +45,8 @@ def http_request(method, path, payload=None, timeout=5):
 
 
 def inject(node_id):
-    status, _ = http_request("POST", f"/inject/{node_id}")
+    mode = {"inj_to": "timeout"}.get(node_id, node_id.removeprefix("inj_"))
+    status, _ = http_request("POST", f"/lab/mode/{mode}")
     return 200 <= status < 300
 
 

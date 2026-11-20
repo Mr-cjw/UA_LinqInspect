@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-154310/summary.json` ｜ 当前结果：303/303 PASS
+> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-161215/summary.json` ｜ 当前结果：313/313 PASS
 
 ## 1. 阶段目标
 
@@ -36,9 +36,12 @@ cd /opt/ua-linqinspect
 python3 -m venv .venv
 .venv/bin/pip install -r server/requirements.txt
 .venv/bin/python scripts/setup_pki.py
+npm install --prefix .node-red --no-audit --no-fund
 ```
 
-确认以下文件存在：`.venv/bin/python`、`.node-red/node_modules/.bin/node-red`、`server/qc_server.py`、`scripts/backup_queue.py`。
+确认以下文件存在：`.venv/bin/python`、`.node-red/node_modules/.bin/node-red`、
+`nodered/settings.secure.js`、`scripts/setup_node_red_security.py`、
+`server/qc_server.py`、`scripts/backup_queue.py`。
 
 ### 3.2 渲染并安装
 
@@ -63,6 +66,9 @@ sudo install -o root -g ua-linqinspect -m 0640 \
   /etc/ua-linqinspect/ua-linqinspect.env
 sudo editor /etc/ua-linqinspect/ua-linqinspect.env
 
+sudo -u ua-linqinspect bash -c 'set -a; . /etc/ua-linqinspect/ua-linqinspect.env; set +a; \
+  cd /opt/ua-linqinspect && .venv/bin/python scripts/setup_node_red_security.py'
+
 sudo install -m 0644 .tmp/deploy-rendered/systemd/*.service \
   .tmp/deploy-rendered/systemd/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -71,14 +77,20 @@ sudo systemctl enable --now ua-linqinspect-nodered.service
 sudo systemctl enable --now ua-linqinspect-backup.timer
 ```
 
-至少替换环境文件中的 `UA_ADMIN_PASS`、证书路径、私钥路径、数据库路径和备份目录。`EnvironmentFile` 在 unit 中标记为可选，缺失时进程可能启动但配置不完整；部署检查不应把“能启动”当作“配置正确”。
+至少替换环境文件中的 `UA_ADMIN_PASS`、`NODERED_*_PASSWORD`、
+`NODERED_CREDENTIAL_SECRET`、证书路径、私钥路径、数据库路径和备份目录。
+`UA_ADMIN_USER/PASS` 必须与 `NODERED_OPCUA_USER/PASSWORD` 一致，否则 Node-RED
+无法以管理员身份订阅事件和写回执。安全初始化脚本会按环境变量生成
+`.node-red/settings.js`、加密的 `flows_cred.json` 和本地 `.secure-env`。
+
+`EnvironmentFile` 在 unit 中标记为可选，缺失时进程可能启动但配置不完整；部署检查不应把“能启动”当作“配置正确”。
 
 ### 3.3 Unit 边界
 
 | Unit | 关键行为 |
 |---|---|
 | `ua-linqinspect-server.service` | `Restart=on-failure`，只写审计日志和 StateDirectory |
-| `ua-linqinspect-nodered.service` | 等待 Server，使用 SQLite WAL；只写 `data/` 与 `.node-red/` |
+| `ua-linqinspect-nodered.service` | 等待 Server，使用 SQLite WAL 和 HTTP Basic Auth；只写 `data/` 与 `.node-red/` |
 | `ua-linqinspect-backup.service` | `Type=oneshot`，执行在线备份并写 Prometheus textfile |
 | `ua-linqinspect-backup.timer` | 每日 02:15，随机延迟 5 分钟，`Persistent=true` 补跑漏掉的任务 |
 
@@ -96,7 +108,8 @@ Node-RED 停止时仍可能留有待发送队列；重启后由 SQLite 队列和
 
 ## 4. 健康检查
 
-`GET /healthz` 返回机器可读 JSON，用于 systemd 外部检查和人工排障：
+`GET /healthz` 返回机器可读 JSON，用于外部检查和人工排障。它和 `/metrics`、
+`/qc/status` 一样受 Node-RED `httpNodeAuth` 保护：
 
 | HTTP | `status` | 含义 |
 |---:|---|---|
@@ -105,11 +118,14 @@ Node-RED 停止时仍可能留有待发送队列；重启后由 SQLite 队列和
 | 503 | `unavailable` | SQLite 状态查询失败，队列不能正常工作 |
 
 ```bash
-curl -fsS http://127.0.0.1:1880/healthz | python3 -m json.tool
-curl -s -o /tmp/health.json -w '%{http_code}\n' http://127.0.0.1:1880/healthz
+set -a; . /etc/ua-linqinspect/ua-linqinspect.env; set +a
+curl -fsS -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  http://127.0.0.1:1880/healthz | python3 -m json.tool
+curl -s -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -o /tmp/health.json -w '%{http_code}\n' http://127.0.0.1:1880/healthz
 ```
 
-`degraded` 不会自动停止发送泵；它表示运行能力已下降，需要结合 `/qc/status`、`/metrics` 和日志判断是否进入维护。该接口没有独立认证，必须由反向代理、防火墙或现场网络边界限制访问。
+`degraded` 不会自动停止发送泵；它表示运行能力已下降，需要结合 `/qc/status`、`/metrics` 和日志判断是否进入维护。HTTP Basic Auth 不能替代 TLS；跨主机访问必须放在 HTTPS 反向代理或受信任运维网络之后。
 
 ## 5. Prometheus 采集与告警
 
@@ -120,9 +136,16 @@ scrape_configs:
   - job_name: ua-linqinspect-edge
     metrics_path: /metrics
     scrape_interval: 15s
+    basic_auth:
+      username: prometheus
+      password_file: /etc/prometheus/ua-linqinspect-http.pass
     static_configs:
       - targets: ["127.0.0.1:1880"]
 ```
+
+`password_file` 内容必须是环境文件中的 `NODERED_HTTP_PASS`，并由 Prometheus
+运行用户只读访问。没有配置 `basic_auth` 时 `/metrics` 会返回 401，`QcEdgeDown`
+会被误触发。
 
 ### 5.2 采集备份 textfile
 
@@ -255,7 +278,7 @@ Phase 2C 新增专项：
 | 测试 | 结果 | 覆盖 |
 |---|---:|---|
 | `tests/health_test.js` | 10/10 PASS | ready/degraded/unavailable、边界、响应头、flow 接线 |
-| `tests/deploy_templates_test.py` | 15/15 PASS | 渲染、模板残留、systemd verify、unit 入口、告警、环境变量 |
+| `tests/deploy_templates_test.py` | 16/16 PASS | 渲染、模板残留、systemd verify、unit 入口、告警、环境变量、Node-RED 认证配置 |
 | `tests/restore_queue_test.py` | 20/20 PASS | dry-run、--force、安全快照、WAL/SHM 清理、业务继续消费 |
 | `tests/backup_queue_test.py` | 20/20 PASS | 在线备份、指标 textfile、完整性、保留策略、活跃库备份 |
 
@@ -265,8 +288,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 完整回归共 18 个测试脚本、**303/303 PASS**，摘要为
-`.tmp/regression-20261120-154310/summary.json`。单独运行备份测试且没有活跃
+2026-11-20 完整回归共 19 个测试脚本、**313/313 PASS**，摘要为
+`.tmp/regression-20261120-161215/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 ## 9. 当前边界与后续规划
@@ -283,7 +306,7 @@ Phase 2C 新增专项：
 - 异地/加密/不可变备份，以及备份恢复的定期自动化演练。
 - MES 真实鉴权、TLS、限流和接收端幂等契约的现场验证。
 - 真实交换机断链、防火墙切换、长时断网、断电和磁盘满场景证据。
-- MES 请求延迟直方图、结构化日志集中采集和完整的 Alertmanager 值班流程。
+- MES 请求延迟直方图、日志轮转、结构化日志集中采集和完整的 Alertmanager 值班流程。
 
 ### 9.3 推荐下一步
 

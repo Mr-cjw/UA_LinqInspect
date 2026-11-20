@@ -46,6 +46,8 @@ def main() -> int:
         repo_root / "server" / "qc_server.py",
         repo_root / ".venv" / "bin" / "python",
         repo_root / ".node-red" / "node_modules" / ".bin" / "node-red",
+        repo_root / "nodered" / "settings.secure.js",
+        repo_root / "scripts" / "setup_node_red_security.py",
         repo_root / "scripts" / "backup_queue.py",
     )
     missing = [str(path) for path in required if not path.exists()]

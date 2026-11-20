@@ -19,6 +19,7 @@ from ua_test_client import create_secure_client
 
 NS_URI = "urn:fde:linqinspect:qc"
 NR_BASE = os.getenv("NODERED_BASE", "http://127.0.0.1:1880").rstrip("/")
+NODERED_HTTP_AUTH = os.getenv("NODERED_HTTP_AUTH", "").strip()
 STATE_PATH = Path(os.getenv("OUTAGE_STATE", "")).resolve() if os.getenv("OUTAGE_STATE") else None
 UA_SERVER_PID = int(os.getenv("UA_SERVER_PID", "0") or 0)
 
@@ -31,13 +32,19 @@ def check(name, cond, detail=""):
 
 
 def http_request(method, path, timeout=5):
-    req = urllib.request.Request(NR_BASE + path, method=method)
+    headers = {"Authorization": NODERED_HTTP_AUTH} if NODERED_HTTP_AUTH else {}
+    req = urllib.request.Request(NR_BASE + path, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.status, response.read().decode("utf-8", errors="replace")
 
 
 def inject(node_id):
-    status, _ = http_request("POST", f"/inject/{node_id}")
+    if node_id == "inj_stale_event":
+        path = "/lab/stale-event"
+    else:
+        mode = {"inj_to": "timeout"}.get(node_id, node_id.removeprefix("inj_"))
+        path = f"/lab/mode/{mode}"
+    status, _ = http_request("POST", path)
     return 200 <= status < 300
 
 

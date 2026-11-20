@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "AI质检-MES闭环(基础骨架)",
     "disabled": false,
-    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信和运行指标存于 SQLite（WAL），可经 GET /qc/status、GET /metrics 与 GET /healthz 查询。",
+    "info": "M2 边缘流：OpcUa-Event 订阅 QCStation.Events -> 解析/陈旧过滤 -> 去重入队 -> 单飞行发送泵 -> POST 模拟MES -> 按类型写回 LastNgMesOrderNo / LastCompletionReceiptNo，并同步 LastMesOrderNo 镜像。队列/去重/死信和运行指标存于 SQLite（WAL），可经 GET /qc/status 与 GET /metrics 查询。",
     "env": []
   },
   {
@@ -1115,6 +1115,105 @@
     "wires": []
   },
   {
+    "id": "httpin_lab_mode",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "实验模式切换(受HTTP认证保护)",
+    "url": "/lab/mode/:mode",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 190,
+    "y": 1640,
+    "wires": [
+      [
+        "fn_lab_mode"
+      ]
+    ]
+  },
+  {
+    "id": "fn_lab_mode",
+    "type": "function",
+    "z": "qcflow",
+    "name": "设置实验MES模式",
+    "func": "const mode = String((msg.req && msg.req.params && msg.req.params.mode) || '').toLowerCase();\nconst allowed = ['ok', '5xx', 'timeout', '4xx', '429', 'invalid2xx'];\nif (!allowed.includes(mode)) {\n    msg.statusCode = 400;\n    msg.payload = { ok: false, error: 'unsupported mode', allowed };\n    return msg;\n}\nflow.set('mesMode', mode);\nflow.set('timeoutUntil', mode === 'timeout' ? Date.now() + 10000 : 0);\nmsg.statusCode = 200;\nmsg.payload = { ok: true, mode };\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 520,
+    "y": 1640,
+    "wires": [
+      [
+        "httpres_lab_mode"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_lab_mode",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 820,
+    "y": 1640,
+    "wires": []
+  },
+  {
+    "id": "httpin_lab_stale",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "实验陈旧事件注入(受HTTP认证保护)",
+    "url": "/lab/stale-event",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 190,
+    "y": 1720,
+    "wires": [
+      [
+        "fn_lab_stale"
+      ]
+    ]
+  },
+  {
+    "id": "fn_lab_stale",
+    "type": "function",
+    "z": "qcflow",
+    "name": "构造陈旧事件并响应",
+    "func": "const event = {\n  '2:NgDetectedEventType': true,\n  '2:WorkOrderId': 'WO-STALE-FILTER',\n  '2:SerialNumber': 'SN-STALE-FILTER',\n  '2:DefectType': 'SCRATCH',\n  '2:Confidence': 0.99,\n  '2:ImageId': 'IMG-STALE-FILTER',\n  'sourceTimestamp': '2000-01-01T00:00:00Z'\n};\nmsg.payload = event;\nconst response = RED.util.cloneMessage(msg);\nresponse.statusCode = 202;\nresponse.payload = { ok: true, injected: 'stale-event' };\nreturn [msg, response];",
+    "outputs": 2,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 510,
+    "y": 1720,
+    "wires": [
+      [
+        "fn_parse"
+      ],
+      [
+        "httpres_lab_stale"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_lab_stale",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 840,
+    "y": 1760,
+    "wires": []
+  },
+  {
     "id": "httpin_health",
     "type": "http in",
     "z": "qcflow",
@@ -1124,7 +1223,7 @@
     "upload": false,
     "swaggerDoc": "",
     "x": 160,
-    "y": 1700,
+    "y": 1840,
     "wires": [
       [
         "fn_health"
@@ -1144,7 +1243,7 @@
     "finalize": "",
     "libs": [],
     "x": 400,
-    "y": 1700,
+    "y": 1840,
     "wires": [
       [
         "httpres_health"
@@ -1159,7 +1258,7 @@
     "statusCode": "",
     "headers": {},
     "x": 640,
-    "y": 1700,
+    "y": 1840,
     "wires": []
   }
 ]

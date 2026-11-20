@@ -12,6 +12,7 @@ from ua_test_client import create_secure_client
 NS_URI = "urn:fde:linqinspect:qc"
 WO = "WO-NRED-" + datetime.now().strftime("%Y%m%d%H%M%S")
 NODERED_BASE = os.getenv("NODERED_BASE", "http://127.0.0.1:1880").rstrip("/")
+NODERED_HTTP_AUTH = os.getenv("NODERED_HTTP_AUTH", "").strip()
 
 
 def ok(name, cond, detail=""):
@@ -42,7 +43,9 @@ async def read_val(node):
 
 
 def edge_status():
-    with urllib.request.urlopen(NODERED_BASE + "/qc/status", timeout=3) as response:
+    headers = {"Authorization": NODERED_HTTP_AUTH} if NODERED_HTTP_AUTH else {}
+    request = urllib.request.Request(NODERED_BASE + "/qc/status", headers=headers)
+    with urllib.request.urlopen(request, timeout=3) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

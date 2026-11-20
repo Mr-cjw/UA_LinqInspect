@@ -1,0 +1,654 @@
+"""SQLite-backed delivery state machine for the Edge Core Service.
+
+The store is intentionally small and dependency-free. Each operation uses its own
+short-lived SQLite connection; writes are serialized by SQLite's BEGIN IMMEDIATE
+transaction. This is a single-edge-device design, not a distributed queue.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+import threading
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+
+STATE_PENDING = "PENDING"
+STATE_SENDING = "SENDING"
+STATE_RETRY_WAIT = "RETRY_WAIT"
+STATE_ACKED = "ACKED"
+STATE_UA_WRITE_PENDING = "UA_WRITE_PENDING"
+STATE_DONE = "DONE"
+STATE_DEAD = "DEAD"
+STATE_DISCARDED = "DISCARDED"
+
+ALL_STATES = {
+    STATE_PENDING,
+    STATE_SENDING,
+    STATE_RETRY_WAIT,
+    STATE_ACKED,
+    STATE_UA_WRITE_PENDING,
+    STATE_DONE,
+    STATE_DEAD,
+    STATE_DISCARDED,
+}
+
+
+class ConflictError(RuntimeError):
+    """The business key already exists with a different payload."""
+
+
+class StateConflictError(RuntimeError):
+    """The requested transition is not legal for the current state."""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def iso_after(seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="milliseconds")
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def payload_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+class DeliveryStore:
+    """Persistent Outbox/deduplication/state-machine storage."""
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = str(Path(db_path).expanduser())
+        self._write_lock = threading.RLock()
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        return conn
+
+    def initialize(self) -> None:
+        with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = FULL")
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS deliveries (
+                    delivery_id TEXT PRIMARY KEY,
+                    business_key TEXT NOT NULL UNIQUE,
+                    source_event_id TEXT NOT NULL,
+                    station_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    correlation_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    lease_until TEXT,
+                    url TEXT NOT NULL,
+                    receipt_json TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    ua_write_confirmed INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS delivery_events (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    delivery_id TEXT NOT NULL REFERENCES deliveries(delivery_id),
+                    from_state TEXT,
+                    to_state TEXT NOT NULL,
+                    correlation_id TEXT NOT NULL,
+                    detail_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS dead_letters (
+                    delivery_id TEXT PRIMARY KEY REFERENCES deliveries(delivery_id),
+                    reason_code TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    failed_at TEXT NOT NULL,
+                    replayed_at TEXT,
+                    acknowledged_at TEXT,
+                    acknowledged_by TEXT,
+                    resolution TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_deliveries_due
+                    ON deliveries(state, next_attempt_at);
+                CREATE INDEX IF NOT EXISTS idx_deliveries_correlation
+                    ON deliveries(correlation_id);
+                """
+            )
+
+    @staticmethod
+    def business_key(event: dict[str, Any]) -> str:
+        event_type = str(event["eventType"])
+        station_id = str(event["stationId"])
+        source_event_id = str(event["sourceEventId"])
+        return f"{event_type}:{station_id}:{source_event_id}"
+
+    @staticmethod
+    def _row_to_delivery(row: sqlite3.Row) -> dict[str, Any]:
+        receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else None
+        return {
+            "deliveryId": row["delivery_id"],
+            "businessKey": row["business_key"],
+            "sourceEventId": row["source_event_id"],
+            "stationId": row["station_id"],
+            "eventType": row["event_type"],
+            "correlationId": row["correlation_id"],
+            "state": row["state"],
+            "attempts": row["attempts"],
+            "nextAttemptAt": row["next_attempt_at"],
+            "leaseUntil": row["lease_until"],
+            "lastErrorCode": row["last_error_code"],
+            "lastErrorMessage": row["last_error_message"],
+            "mesReceipt": receipt,
+            "uaWriteConfirmed": bool(row["ua_write_confirmed"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def get(self, delivery_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            return self._row_to_delivery(row) if row else None
+
+    def get_by_business_key(self, business_key: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE business_key = ?", (business_key,)
+            ).fetchone()
+            return self._row_to_delivery(row) if row else None
+
+    def enqueue(
+        self,
+        event: dict[str, Any],
+        *,
+        url: str,
+        idempotency_key: str,
+        correlation_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Create a delivery atomically. Returns (delivery, was_duplicate)."""
+        business_key = self.business_key(event)
+        digest = payload_hash(event)
+        now = utc_now()
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM deliveries WHERE business_key = ? OR delivery_id = ?",
+                (business_key, idempotency_key),
+            ).fetchone()
+            if existing:
+                if existing["payload_hash"] != digest:
+                    raise ConflictError(
+                        f"business key {business_key!r} already exists with a different payload"
+                    )
+                if existing["business_key"] != business_key:
+                    raise ConflictError(
+                        f"idempotency key {idempotency_key!r} is already used by another business key"
+                    )
+                conn.commit()
+                return self._row_to_delivery(existing), True
+
+            delivery_id = idempotency_key
+            conn.execute(
+                """
+                INSERT INTO deliveries (
+                    delivery_id, business_key, source_event_id, station_id,
+                    event_type, correlation_id, payload_json, payload_hash,
+                    state, attempts, url, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                """,
+                (
+                    delivery_id,
+                    business_key,
+                    event["sourceEventId"],
+                    event["stationId"],
+                    event["eventType"],
+                    correlation_id,
+                    _canonical_json(event),
+                    digest,
+                    STATE_PENDING,
+                    url,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO delivery_events
+                    (delivery_id, from_state, to_state, correlation_id, detail_json, created_at)
+                VALUES (?, NULL, ?, ?, ?, ?)
+                """,
+                (delivery_id, STATE_PENDING, correlation_id, _canonical_json({"eventType": event["eventType"]}), now),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone()
+            return self._row_to_delivery(row), False
+
+    def recover_expired(self, *, max_attempts: int, retry_delay_seconds: float = 1.0) -> int:
+        now = utc_now()
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT * FROM deliveries WHERE state = ? AND lease_until IS NOT NULL AND lease_until < ?",
+                (STATE_SENDING, now),
+            ).fetchall()
+            for row in rows:
+                if row["attempts"] >= max_attempts:
+                    self._dead_in_conn(conn, row, "LEASE_EXPIRED", "SENDING lease expired after retry budget")
+                else:
+                    self._transition_in_conn(
+                        conn, row, STATE_RETRY_WAIT, "LEASE_EXPIRED",
+                        next_attempt_at=iso_after(retry_delay_seconds),
+                    )
+            conn.commit()
+            return len(rows)
+
+    def claim_due(self, *, lease_seconds: float = 30.0) -> dict[str, Any] | None:
+        now = utc_now()
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT * FROM deliveries
+                WHERE state IN (?, ?)
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (STATE_PENDING, STATE_RETRY_WAIT, now),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            updated = conn.execute(
+                """
+                UPDATE deliveries
+                SET state = ?, attempts = attempts + 1, lease_until = ?, updated_at = ?
+                WHERE delivery_id = ? AND state = ?
+                """,
+                (STATE_SENDING, iso_after(lease_seconds), now, row["delivery_id"], row["state"]),
+            )
+            if updated.rowcount != 1:
+                conn.rollback()
+                return None
+            conn.execute(
+                """
+                INSERT INTO delivery_events
+                    (delivery_id, from_state, to_state, correlation_id, detail_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (row["delivery_id"], row["state"], STATE_SENDING, row["correlation_id"], None, now),
+            )
+            conn.commit()
+            claimed = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (row["delivery_id"],)
+            ).fetchone()
+            return self._row_to_delivery(claimed)
+
+    def get_payload(self, delivery_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            return json.loads(row["payload_json"]) if row else None
+
+    def get_url(self, delivery_id: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT url FROM deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone()
+            return row["url"] if row else None
+
+    def _transition_in_conn(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        to_state: str,
+        detail: str | None = None,
+        *,
+        next_attempt_at: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        receipt: dict[str, Any] | None = None,
+        clear_lease: bool = True,
+    ) -> None:
+        now = utc_now()
+        receipt_json = _canonical_json(receipt) if receipt is not None else row["receipt_json"]
+        conn.execute(
+            """
+            UPDATE deliveries
+            SET state = ?, next_attempt_at = ?, lease_until = CASE WHEN ? THEN NULL ELSE lease_until END,
+                receipt_json = ?, last_error_code = ?, last_error_message = ?, updated_at = ?
+            WHERE delivery_id = ?
+            """,
+            (
+                to_state,
+                next_attempt_at,
+                clear_lease,
+                receipt_json,
+                error_code,
+                error_message,
+                now,
+                row["delivery_id"],
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO delivery_events
+                (delivery_id, from_state, to_state, correlation_id, detail_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["delivery_id"],
+                row["state"],
+                to_state,
+                row["correlation_id"],
+                _canonical_json({"detail": detail}) if detail else None,
+                now,
+            ),
+        )
+
+    def _dead_in_conn(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        reason_code: str,
+        reason: str,
+    ) -> None:
+        self._transition_in_conn(
+            conn,
+            row,
+            STATE_DEAD,
+            reason,
+            error_code=reason_code,
+            error_message=reason,
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO dead_letters
+                (delivery_id, reason_code, reason, failed_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (row["delivery_id"], reason_code, reason, utc_now()),
+        )
+
+    def mark_acked(self, delivery_id: str, receipt: dict[str, Any]) -> dict[str, Any]:
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(delivery_id)
+            if row["state"] not in (STATE_SENDING, STATE_ACKED):
+                raise StateConflictError(f"cannot ACK delivery in state {row['state']}")
+            self._transition_in_conn(conn, row, STATE_UA_WRITE_PENDING, receipt=receipt)
+            conn.commit()
+            return self.get(delivery_id)  # type: ignore[return-value]
+
+    def mark_retry(
+        self,
+        delivery_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        delay_seconds: float,
+        max_attempts: int,
+    ) -> dict[str, Any]:
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(delivery_id)
+            if row["state"] != STATE_SENDING:
+                raise StateConflictError(f"cannot retry delivery in state {row['state']}")
+            if row["attempts"] >= max_attempts:
+                self._dead_in_conn(conn, row, error_code, error_message)
+            else:
+                self._transition_in_conn(
+                    conn,
+                    row,
+                    STATE_RETRY_WAIT,
+                    error_message,
+                    next_attempt_at=iso_after(delay_seconds),
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+            conn.commit()
+            return self.get(delivery_id)  # type: ignore[return-value]
+
+    def mark_dead(self, delivery_id: str, *, error_code: str, error_message: str) -> dict[str, Any]:
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(delivery_id)
+            if row["state"] in (STATE_DONE, STATE_DEAD, STATE_DISCARDED):
+                raise StateConflictError(f"cannot move terminal delivery {row['state']}")
+            self._dead_in_conn(conn, row, error_code, error_message)
+            conn.commit()
+            return self.get(delivery_id)  # type: ignore[return-value]
+
+    def mark_ua_write_result(
+        self,
+        delivery_id: str,
+        *,
+        success: bool,
+        correlation_id: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(delivery_id)
+            if row["correlation_id"] != correlation_id:
+                raise StateConflictError("correlationId does not match the delivery")
+            if row["state"] not in (STATE_UA_WRITE_PENDING, STATE_ACKED):
+                raise StateConflictError(f"cannot write UA result in state {row['state']}")
+            if success:
+                self._transition_in_conn(conn, row, STATE_DONE)
+                conn.execute(
+                    "UPDATE deliveries SET ua_write_confirmed = 1 WHERE delivery_id = ?",
+                    (delivery_id,),
+                )
+            else:
+                self._transition_in_conn(
+                    conn,
+                    row,
+                    STATE_UA_WRITE_PENDING,
+                    "UA write failed; retry required",
+                    error_code=error_code or "UA_WRITE_FAILED",
+                    error_message=error_message or "OPC UA write failed",
+                )
+            conn.commit()
+            return self.get(delivery_id)  # type: ignore[return-value]
+
+    def list_deliveries(self, *, state: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        if state and state not in ALL_STATES:
+            raise ValueError(f"unknown state: {state}")
+        with self._connect() as conn:
+            if state:
+                rows = conn.execute(
+                    "SELECT * FROM deliveries WHERE state = ? ORDER BY created_at ASC LIMIT ?",
+                    (state, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM deliveries ORDER BY created_at ASC LIMIT ?", (limit,)
+                ).fetchall()
+            return [self._row_to_delivery(row) for row in rows]
+
+    def list_dead_letters(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.*, x.reason_code AS dead_reason_code, x.reason AS dead_reason,
+                       x.failed_at AS dead_failed_at, x.replayed_at, x.acknowledged_at,
+                       x.acknowledged_by, x.resolution
+                FROM dead_letters x JOIN deliveries d USING (delivery_id)
+                ORDER BY x.failed_at ASC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                {
+                    **self._row_to_delivery(row),
+                    "reasonCode": row["dead_reason_code"],
+                    "reason": row["dead_reason"],
+                    "failedAt": row["dead_failed_at"],
+                    "replayedAt": row["replayed_at"],
+                    "acknowledgedAt": row["acknowledged_at"],
+                    "acknowledgedBy": row["acknowledged_by"],
+                    "resolution": row["resolution"],
+                }
+                for row in rows
+            ]
+
+    def replay_dead(self, delivery_id: str, *, actor: str, reason: str) -> dict[str, Any]:
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(delivery_id)
+            if row["state"] != STATE_DEAD:
+                raise StateConflictError(f"cannot replay delivery in state {row['state']}")
+            self._transition_in_conn(conn, row, STATE_PENDING)
+            conn.execute(
+                """
+                UPDATE dead_letters
+                SET replayed_at = ?, acknowledged_at = NULL, acknowledged_by = NULL, resolution = NULL
+                WHERE delivery_id = ?
+                """,
+                (utc_now(), delivery_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO delivery_events
+                    (delivery_id, from_state, to_state, correlation_id, detail_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (delivery_id, STATE_DEAD, STATE_PENDING, row["correlation_id"],
+                 _canonical_json({"actor": actor, "reason": reason}), utc_now()),
+            )
+            conn.commit()
+            return self.get(delivery_id)  # type: ignore[return-value]
+
+    def acknowledge_dead(self, delivery_id: str, *, actor: str, resolution: str) -> dict[str, Any]:
+        with self._write_lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(delivery_id)
+            if row["state"] != STATE_DEAD:
+                raise StateConflictError(f"cannot acknowledge delivery in state {row['state']}")
+            conn.execute(
+                """
+                UPDATE dead_letters
+                SET acknowledged_at = ?, acknowledged_by = ?, resolution = ?
+                WHERE delivery_id = ?
+                """,
+                (utc_now(), actor, resolution, delivery_id),
+            )
+            conn.commit()
+            dead = self.list_dead_letters(limit=1000)
+            return next(item for item in dead if item["deliveryId"] == delivery_id)
+
+    def counts(self) -> dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT state, COUNT(*) AS count FROM deliveries GROUP BY state"
+            ).fetchall()
+            counts = {state: 0 for state in ALL_STATES}
+            for row in rows:
+                counts[row["state"]] = row["count"]
+            return counts
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+
+        def age_seconds(value: str | None) -> float:
+            if not value:
+                return 0.0
+            try:
+                parsed = datetime.fromisoformat(value)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, round((now - parsed).total_seconds(), 3))
+            except ValueError:
+                return 0.0
+
+        with self._connect() as conn:
+            state_rows = conn.execute(
+                "SELECT state, COUNT(*) AS count FROM deliveries GROUP BY state"
+            ).fetchall()
+            counts = {state: 0 for state in ALL_STATES}
+            for row in state_rows:
+                counts[row["state"]] = row["count"]
+            oldest = conn.execute(
+                """
+                SELECT MIN(created_at) AS value FROM deliveries
+                WHERE state IN ('PENDING', 'SENDING', 'RETRY_WAIT')
+                """
+            ).fetchone()["value"]
+            dead = conn.execute(
+                "SELECT COUNT(*) AS count, MIN(failed_at) AS oldest FROM dead_letters"
+            ).fetchone()
+            last_success = conn.execute(
+                "SELECT MAX(updated_at) AS value FROM deliveries WHERE state = 'DONE'"
+            ).fetchone()["value"]
+            last_failure = conn.execute(
+                "SELECT MAX(failed_at) AS value FROM dead_letters"
+            ).fetchone()["value"]
+            ua_success = conn.execute(
+                "SELECT COUNT(*) AS count, MAX(updated_at) AS last FROM deliveries WHERE state = 'DONE' AND ua_write_confirmed = 1"
+            ).fetchone()
+            ua_failure = conn.execute(
+                "SELECT COUNT(*) AS count FROM deliveries WHERE state = 'UA_WRITE_PENDING' AND last_error_code LIKE 'UA_%'"
+            ).fetchone()["count"]
+            done_total = conn.execute(
+                "SELECT COUNT(*) AS count FROM deliveries WHERE state = 'DONE'"
+            ).fetchone()["count"]
+            dead_total = int(dead["count"])
+        return {
+            "counts": counts,
+            "queueTotal": counts["PENDING"] + counts["SENDING"] + counts["RETRY_WAIT"],
+            "oldestQueueAgeSeconds": age_seconds(oldest),
+            "deadTotal": dead_total,
+            "oldestDeadAgeSeconds": age_seconds(dead["oldest"]),
+            "mesSuccessTotal": int(done_total),
+            "mesFailureTotal": dead_total,
+            "lastMesSuccessAt": last_success,
+            "lastMesFailureAt": last_failure,
+            "uaWriteSuccessTotal": int(ua_success["count"]),
+            "uaWriteFailureTotal": int(ua_failure),
+            "lastUaWriteSuccessAt": ua_success["last"],
+        }

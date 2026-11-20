@@ -38,6 +38,14 @@ REQUIRED_ENV = {
     "QC_BACKUP_KEEP",
     "QC_BACKUP_METRICS_FILE",
     "NODE_RED_PORT",
+    "NODERED_ADMIN_USER",
+    "NODERED_ADMIN_PASSWORD",
+    "NODERED_CREDENTIAL_SECRET",
+    "NODERED_HTTP_USER",
+    "NODERED_HTTP_PASS",
+    "NODERED_OPCUA_USER",
+    "NODERED_OPCUA_PASSWORD",
+    "QC_REPO_ROOT",
 }
 
 results: list[tuple[str, bool]] = []
@@ -127,6 +135,8 @@ def main() -> int:
               ".node-red/node_modules/.bin/node-red" in nodered_unit and
               "Restart=on-failure" in server_unit and
               "Restart=on-failure" in nodered_unit)
+        check("Node-RED unit loads deployment credentials",
+              "EnvironmentFile=-/etc/ua-linqinspect/ua-linqinspect.env" in nodered_unit)
 
         alerts_path = output_dir / "prometheus" / "ua-linqinspect-alerts.yml"
         alerts_text = alerts_path.read_text(encoding="utf-8") if alerts_path.is_file() else ""
@@ -147,7 +157,11 @@ def main() -> int:
         check("environment template covers required deployment settings",
               REQUIRED_ENV <= env_keys, f"(missing={sorted(REQUIRED_ENV - env_keys)})")
         check("environment template requires secret replacement",
-              "UA_ADMIN_PASS=CHANGE_ME" in env_text)
+              "UA_ADMIN_PASS=CHANGE_ME" in env_text and
+              "NODERED_ADMIN_PASSWORD=CHANGE_ME" in env_text and
+              "NODERED_CREDENTIAL_SECRET=CHANGE_ME" in env_text and
+              "NODERED_HTTP_PASS=CHANGE_ME" in env_text and
+              "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text)
         check("render summary points at generated artifacts",
               Path(str(summary.get("prometheusRules") or "")).is_file() and
               Path(str(summary.get("envExample") or "")).is_file())

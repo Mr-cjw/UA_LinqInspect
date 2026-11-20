@@ -41,7 +41,12 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r server/requirements.txt
 .venv/bin/python scripts/setup_pki.py
 npm install --prefix .node-red --no-audit --no-fund
+.venv/bin/python scripts/setup_node_red_security.py
 ```
+
+安全脚本会生成 `.node-red/settings.js`、`.node-red/.secure-env`（权限 600）和加密的
+`.node-red/flows_cred.json`。这些文件均不得提交。启动 Node-RED 前必须先
+`source .node-red/.secure-env`。
 
 然后按 [第 2 节](#2-生成本地-ca-证书首次运行或轮换时) 把 CA 证书和 CRL 同步到
 Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会报
@@ -51,16 +56,15 @@ Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会�
 
 1. **终端 1 启动 OPC UA Server**：配置证书、私钥、信任目录和管理员账号，看到
    `OPC UA Server listening` 即成功。
-2. **终端 2 启动 Node-RED**：执行 `.node-red/node_modules/.bin/node-red --userDir "$PWD/.node-red" --port 1880 --no-telemetry`，
-   浏览器打开 `http://127.0.0.1:1880`。
+2. **终端 2 启动 Node-RED**：先 `source .node-red/.secure-env`，再执行
+   `.node-red/node_modules/.bin/node-red --userDir "$PWD/.node-red" --port 1880 --no-telemetry`。
+   浏览器打开 `http://127.0.0.1:1880`，使用 `NODERED_ADMIN_USER` / `NODERED_ADMIN_PASSWORD` 登录。
 3. **终端 3 运行验证**：先跑 `tests/smoke_test.py` 验证 UA 模型，再跑
    `tests/nodered_e2e.py` 验证完整链路，最后跑 `tests/fault_scenarios.py` 验证重试与死信。
 
 Node-RED 默认把事务队列写到 `data/qc-queue.sqlite`；可用 `QC_DB_PATH` 指定其他位置。
-运行指标可访问 `GET /metrics`，就绪探针可访问 `GET /healthz`；SQLite 热备可执行
+运行指标可访问 `GET /metrics`；SQLite 热备可执行
 `.venv/bin/python scripts/backup_queue.py`，默认保留最近 7 份并做完整性校验。
-systemd 部署、Prometheus 告警和离线恢复流程见 `deploy/README.md` 与
-[Phase 2C 运维文档](docs/12_Phase2C部署运维与恢复演练.md)。
 
 Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目录缺失/无效时
 会直接拒绝启动，不会回退到 `NoSecurity`。匿名客户端只能读；只有
@@ -84,7 +88,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [Ubuntu 迁移与验证报告](docs/07_Ubuntu迁移与验证报告.md)
 - [Phase 2A：SQLite 事务队列与崩溃恢复](docs/10_Phase2A_SQLite事务队列与崩溃恢复.md)
 - [Phase 2B：可观测性与 SQLite 在线备份](docs/11_Phase2B可观测性与SQLite备份.md)
-- [Phase 2C：部署运维与恢复演练](docs/12_Phase2C部署运维与恢复演练.md)
+- [Phase 2C：部署运维与恢复演练](docs/15_Phase2C部署运维与恢复演练.md)
 
 ## 项目结构
 
@@ -105,8 +109,10 @@ UA_LinqInspect/
 │   ├── backup_queue.py        # SQLite 在线备份、完整性校验与保留策略
 │   ├── restore_queue.py       # 离线恢复、恢复前快照与原子替换
 │   ├── render_deploy.py       # 渲染 systemd/环境文件部署模板
+│   ├── setup_node_red_security.py  # 安装 Node-RED 认证、加密凭据和本地 secrets
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── deploy/                    # systemd、Prometheus 告警与环境变量模板
+├── edge_core/                  # 外部 Edge Core 控制面/OpenAPI 垂直切片
 ├── hardware/                  # 可选硬件扩展：树莓派 open62541 Server、STM32 客户端方案
 ├── docs/
 │   ├── README.md              # 文档导航与学习路径
@@ -122,19 +128,26 @@ UA_LinqInspect/
 │   ├── 09_Phase1关联追踪与MES错误分类.md
 │   ├── 10_Phase2A_SQLite事务队列与崩溃恢复.md
 │   ├── 11_Phase2B可观测性与SQLite备份.md
-│   ├── 12_Phase2C部署运维与恢复演练.md
+│   ├── 10_内部经营宪章.md
+│   ├── 11_Edge_Core_接口与状态机.md
+│   ├── 12_连接器SOW与验收模板.md
+│   ├── 13_视觉增值包SOW与验收模板.md
+│   ├── 14_投资人BP叙事.md
+│   ├── 15_Phase2C部署运维与恢复演练.md
+│   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
     ├── ua_test_client.py      # 安全 OPC UA 客户端测试夹具
-    ├── security_test.py       # 传输安全与读写/Method 权限回归（6 项断言）
+    ├── security_test.py       # UA 权限与 Node-RED HTTP 认证回归（8 项断言）
+    ├── edge_core_test.py      # Edge Core 契约、幂等、死信重放与 UA 确认（7 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
     ├── metrics_test.py        # Prometheus 指标、计数增量与状态一致性（43 项断言）
     ├── health_test.js         # /healthz ready/degraded/unavailable（10 项断言）
     ├── backup_queue_test.py   # WAL 在线备份、完整性与保留策略（20 项断言）
     ├── restore_queue_test.py  # dry-run、强制恢复、安全快照与继续消费（20 项断言）
-    ├── deploy_templates_test.py # 模板渲染、systemd verify 与告警规则（15 项断言）
+    ├── deploy_templates_test.py # 模板渲染、systemd verify 与告警规则（16 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
     ├── sqlite_queue_test.js   # SQLite 事务、指标、看门狗与迁移单测（14 项断言）
     ├── restart_recovery.py    # Node-RED 非空队列重启恢复（seed/verify，18 项断言）
@@ -159,8 +172,8 @@ UA_LinqInspect/
 - **重启恢复**：一键回归会保留非空队列，停止/重启 Node-RED 或 `SIGKILL` 进程，验证 SQLite 续传与回执续写
 - **可观测性**：`GET /metrics` 暴露队列深度、死信、去重、入队/投递结果和看门狗计数；计数与队列状态同事务持久化
 - **在线备份**：`scripts/backup_queue.py` 使用 SQLite backup API，先校验再原子落盘，避免 WAL 模式下直接复制主文件
-- **部署与恢复**：systemd unit/timer、Prometheus 告警和 `restore_queue.py` 形成可重复的运维路径；恢复前必须停止 Node-RED
 - **健康探针**：`GET /healthz` 在 SQLite 不可用时返回 503 `unavailable`，连续 UA 心跳失败达到 3 次时返回 503 `degraded`
+- **部署与恢复**：systemd unit/timer、Prometheus 告警和 `restore_queue.py` 形成可重复的运维路径；恢复前必须停止 Node-RED
 
 ## 快速开始（Ubuntu / Linux）
 
@@ -232,12 +245,13 @@ Server 启动时会检查自身证书有效期：剩余 30 天以内或已经过
 
 ```bash
 cd ~/UA_LinqInspect
+source .node-red/.secure-env
 UA_ENDPOINT_PORT=4840 \
 UA_SERVER_CERT="$PWD/certs/server/server_cert.der" \
 UA_SERVER_PRIVATE_KEY="$PWD/certs/server/server_key.pem" \
 UA_TRUSTED_CLIENT_CERTS_DIR="$PWD/certs/trusted_clients" \
-UA_ADMIN_USER=admin \
-UA_ADMIN_PASS='replace-with-a-strong-password' \
+UA_ADMIN_USER="$NODERED_OPCUA_USER" \
+UA_ADMIN_PASS="$NODERED_OPCUA_PASSWORD" \
 QC_AUTO_INSPECT=1 \
 QC_NG_PROBABILITY=0.5 \
 QC_INSPECT_INTERVAL=1.0 \
@@ -262,9 +276,12 @@ npm install --prefix .node-red --no-audit --no-fund
 
 ```bash
 cd ~/UA_LinqInspect
+source .node-red/.secure-env
 .node-red/node_modules/.bin/node-red \
     --userDir "$PWD/.node-red" --port 1880 --no-telemetry
 ```
+
+Node-RED 管理端和 HTTP 节点均要求认证，默认只监听 `127.0.0.1`。
 
 ### 5. 运行验证
 
@@ -283,7 +300,8 @@ cd ~/UA_LinqInspect
 
 ```bash
 cd ~/UA_LinqInspect
-export UA_ENDPOINT_PORT=4840 UA_ADMIN_USER=admin UA_ADMIN_PASS='your-local-password'
+source .node-red/.secure-env
+export UA_ENDPOINT_PORT=4840
 .venv/bin/python tests/security_test.py
 .venv/bin/python tests/smoke_test.py
 .venv/bin/python tests/nodered_e2e.py
@@ -293,12 +311,35 @@ export UA_ENDPOINT_PORT=4840 UA_ADMIN_USER=admin UA_ADMIN_PASS='your-local-passw
 MES 故障注入入口：
 
 ```bash
-curl -X POST http://127.0.0.1:1880/inject/inj_ok
-curl -X POST http://127.0.0.1:1880/inject/inj_5xx
-curl -X POST http://127.0.0.1:1880/inject/inj_to
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/ok
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/5xx
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/timeout
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/4xx
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/429
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/invalid2xx
 ```
 
+### 6. 运行 Edge Core 垂直切片
+
+`edge_core/` 是面向外部连接器/控制面的 SQLite Outbox 与状态机垂直切片。Node-RED 在线链路已有独立 SQLite WAL 队列；两者接口和职责仍需收敛。
+
+```bash
+export EDGE_API_TOKEN='replace-with-strong-token'
+export EDGE_DB_PATH="$PWD/data/edge_core.sqlite3"
+export MES_BASE_URL='http://127.0.0.1:1880'
+.venv/bin/python -m edge_core.main
+```
+
+完整契约见 [docs/11_Edge_Core_接口与状态机.md](docs/11_Edge_Core_接口与状态机.md) 和 [docs/api/edge-core.openapi.yaml](docs/api/edge-core.openapi.yaml)。
+
 ## 快速开始（Windows PowerShell）
+
 
 ### 1. 创建隔离 Python 环境
 
@@ -410,7 +451,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 - 缓冲队列、去重集合、死信队列和运行计数使用 SQLite 事务存储（WAL + `synchronous=FULL`）；去重与入队在同一事务提交，发送泵用原子 `claimNext` 保持单飞行。当前是“至少一次投递 + 接收端幂等”，仍不能宣称 exactly-once。
 - `GET /metrics` 提供 Prometheus 文本指标；`GET /qc/status` 保持原有 JSON 契约。运维接口当前依赖网络边界保护，生产部署应在反向代理/防火墙限制来源。
 - 在线备份使用 `.venv/bin/python scripts/backup_queue.py`。WAL 模式下不要只复制主 `.sqlite` 文件；脚本会校验 `integrity_check`、`foreign_key_check` 和关键表行数。
-- systemd 模板通过 `scripts/render_deploy.py` 渲染；恢复时先停 Node-RED，再使用 `scripts/restore_queue.py --dry-run` 验证备份，最后以 `--force` 替换。完整步骤见 [Phase 2C 运维文档](docs/12_Phase2C部署运维与恢复演练.md)。
+- 就绪探针使用 `GET /healthz`；systemd 模板通过 `scripts/render_deploy.py` 渲染；恢复时先停 Node-RED，再用 `scripts/restore_queue.py --dry-run` 验证备份、以 `--force` 替换。完整步骤见 [Phase 2C 运维文档](docs/15_Phase2C部署运维与恢复演练.md)。
 
 ## 里程碑
 
@@ -418,11 +459,12 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 |---|---|---|
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
-| M2 | Node-RED 订阅/报警流 + 模拟 MES + 持久化 context + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（一键回归 158/158 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（一键回归 194/194 PASS） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（一键回归 255/255 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 303/303 PASS） |
+| M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 313/313 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 313/313 PASS） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 313/313 PASS） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 313/313 PASS） |
+| Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 短断网、陈旧过滤、Server 重启订阅重建已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 

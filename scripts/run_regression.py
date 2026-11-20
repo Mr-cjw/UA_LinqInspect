@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import secrets
@@ -30,6 +31,7 @@ NODE_TESTS = (
 )
 
 TESTS = (
+    ("edge_core", "tests/edge_core_test.py", 60),
     ("security", "tests/security_test.py", 60),
     ("smoke", "tests/smoke_test.py", 90),
     ("nodered_e2e", "tests/nodered_e2e.py", 120),
@@ -74,11 +76,12 @@ def wait_for_log(path: Path, needle: str, timeout: float) -> None:
     raise RuntimeError(f"Timed out waiting for {needle!r} in {path}\n{text[-4000:]}")
 
 
-def wait_for_http(url: str, timeout: float) -> None:
+def wait_for_http(url: str, timeout: float, headers: dict[str, str] | None = None) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=2) as response:
+            request = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(request, timeout=2) as response:
                 if 200 <= response.status < 300:
                     return
         except Exception:
@@ -101,23 +104,73 @@ def rewrite_flow(source: Path, destination: Path, endpoint: str, node_red_base: 
     destination.write_text(json.dumps(nodes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def bcrypt_hash(password: str) -> str:
+    bcrypt_module = NODE_RED_ROOT / "node_modules" / "bcryptjs"
+    if not bcrypt_module.exists():
+        raise RuntimeError(f"Missing bcryptjs module: {bcrypt_module}")
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            "const b=require(process.argv[1]); process.stdout.write(b.hashSync(process.argv[2], 8));",
+            str(bcrypt_module),
+            password,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return completed.stdout.strip()
+
+
 def prepare_node_red(
     work_dir: Path,
     endpoint: str,
     node_red_base: str,
     username: str,
     password: str,
-) -> Path:
+) -> tuple[Path, Path]:
     user_dir = work_dir / "node-red"
     user_dir.mkdir(parents=True)
-    shutil.copy2(SETTINGS_SOURCE, user_dir / "settings.js")
+    settings = SETTINGS_SOURCE.read_text(encoding="utf-8")
+    password_hash = bcrypt_hash(password)
+    auth_fragment = {
+        "uiHost": "127.0.0.1",
+        "adminAuth": {
+            "type": "credentials",
+            "users": [{"username": username, "password": password_hash, "permissions": "*"}],
+        },
+        "httpNodeAuth": {"user": username, "pass": password_hash},
+    }
+    rendered = ",\n".join(
+        f"    {key}: {json.dumps(value, ensure_ascii=False)}" for key, value in auth_fragment.items()
+    )
+    settings = settings.replace("module.exports = {", "module.exports = {\n" + rendered + ",", 1)
+    if os.getenv("QC_REGRESSION_VERBOSE") == "1":
+        settings = settings.replace("  flowFile: 'flows.json',", "  flowFile: 'flows.json',\n  verbose: true,", 1)
+        settings = settings.replace("level: 'info'", "level: 'debug'", 1)
+    (user_dir / "settings.js").write_text(settings, encoding="utf-8")
     rewrite_flow(FLOW_SOURCE, user_dir / "flows.json", endpoint, node_red_base)
     credentials = {"ep1": {"user": username, "password": password}}
     (user_dir / "flows_cred.json").write_text(
         json.dumps(credentials, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     os.symlink(NODE_RED_ROOT / "node_modules", user_dir / "node_modules", target_is_directory=True)
-    return user_dir
+
+    xdg_dir = work_dir / "xdg"
+    opcua_pki = xdg_dir / "node-red-opcua-nodejs" / "PKI"
+    for path in (
+        opcua_pki / "trusted" / "certs",
+        opcua_pki / "trusted" / "crl",
+        opcua_pki / "issuers" / "certs",
+        opcua_pki / "issuers" / "crl",
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    for destination in (opcua_pki / "trusted" / "certs", opcua_pki / "issuers" / "certs"):
+        shutil.copy2(CERT_DIR / "server" / "ca_cert.pem", destination / "ua-linqinspect-root-ca.pem")
+    for destination in (opcua_pki / "trusted" / "crl", opcua_pki / "issuers" / "crl"):
+        shutil.copy2(CERT_DIR / "server" / "ca_crl.pem", destination / "ua-linqinspect-root-ca-crl.pem")
+    return user_dir, xdg_dir
 
 
 def run_test(
@@ -148,7 +201,10 @@ def run_test(
         output = completed.stdout
         return_code = completed.returncode
     except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + f"\nTIMEOUT after {timeout}s\n"
+        raw_output = exc.stdout or ""
+        if isinstance(raw_output, bytes):
+            raw_output = raw_output.decode("utf-8", errors="replace")
+        output = raw_output + f"\nTIMEOUT after {timeout}s\n"
         return_code = 124
     elapsed = round(time.monotonic() - started, 2)
     log_path.write_text(output, encoding="utf-8")
@@ -205,23 +261,30 @@ def main() -> int:
     admin_password = secrets.token_urlsafe(24)
     endpoint = f"opc.tcp://127.0.0.1:{ua_port}"
     node_red_base = f"http://127.0.0.1:{nr_port}"
-    node_red_user_dir = prepare_node_red(
+    node_red_user_dir, node_red_xdg_dir = prepare_node_red(
         artifact_dir, endpoint, node_red_base, admin_user, admin_password
     )
 
+    basic_auth = "Basic " + base64.b64encode(f"{admin_user}:{admin_password}".encode()).decode()
     base_env = os.environ.copy()
     base_env.update(
         {
             "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": str(REPO_ROOT),
+            "XDG_CONFIG_HOME": str(node_red_xdg_dir),
             "UA_ENDPOINT": endpoint,
             "UA_ENDPOINT_PORT": str(ua_port),
             "UA_ADMIN_USER": admin_user,
             "UA_ADMIN_PASS": admin_password,
             "NODERED_BASE": node_red_base,
+            "NODERED_HTTP_USER": admin_user,
+            "NODERED_HTTP_PASS": admin_password,
+            "NODERED_HTTP_AUTH": basic_auth,
             "QC_REPO_ROOT": str(REPO_ROOT),
             "QC_DB_PATH": str(artifact_dir / "qc-queue.sqlite"),
         }
     )
+    http_auth_headers = {"authorization": basic_auth}
     server_env = base_env | {
         "UA_BIND_ADDRESS": "127.0.0.1",
         "UA_SERVER_CERT": str(CERT_DIR / "server" / "server_cert.der"),
@@ -279,7 +342,7 @@ def main() -> int:
                 text=True,
             )
         wait_for_log(nr_log, "Started flows", 35)
-        wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
+        wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20, http_auth_headers)
         print(f"Node-RED ready: {base_env['NODERED_BASE']}")
         time.sleep(6)
 
@@ -327,7 +390,7 @@ def main() -> int:
                         text=True,
                     )
                 wait_for_log(node_red_restart_log, "Started flows", 35)
-                wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
+                wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20, http_auth_headers)
                 verify_name, verify_path, verify_arg, verify_timeout = RECOVERY_TESTS[1]
                 print(f"\n===== RUN {verify_name} =====")
                 verify_result = run_test(
@@ -366,7 +429,7 @@ def main() -> int:
                         text=True,
                     )
                 wait_for_log(node_red_restart_log, "Started flows", 35)
-                wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
+                wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20, http_auth_headers)
                 verify_name, verify_path, verify_arg, verify_timeout = CRASH_TESTS[1]
                 print(f"\n===== RUN {verify_name} =====")
                 crash_verify = run_test(
@@ -412,7 +475,9 @@ def main() -> int:
                     )
                 wait_for_log(restart_log, "OPC UA Server listening", 25)
                 wait_for_log(node_red_restart_log, "[UA重连]", 45)
-                time.sleep(3)
+                # Re-subscription is asynchronous; allow the DONE subscription to be
+                # recreated before issuing CompleteWorkOrder after the server restart.
+                time.sleep(35)
                 verify_name, verify_path, verify_arg, verify_timeout = OUTAGE_TESTS[3]
                 print(f"\n===== RUN {verify_name} =====")
                 verify_result = run_test(

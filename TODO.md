@@ -1,17 +1,17 @@
 # UA_LinqInspect 代码审计 TODO
 
 > 扫描日期：2026-11-11 ｜ 范围：`server/`、`nodered/flows.json`、`.node-red/`、`tests/`、启动配置与依赖。  
-> 本文件只记录问题与修复规划，**本轮不修改任何业务代码**。
+> 2026-11-20 状态更新：安全通道、Phase 1 关联追踪/MES 错误分类、Node-RED 管理/HTTP 认证基线和 Edge Core SQLite 垂直切片已完成。未勾选项仍为真实缺口；在线 Node-RED 已使用 SQLite WAL 队列，但仍需与外部 Edge Core 控制面收敛。
 
 ## High
 
-□ [High] `server/qc_server.py:283-285`：使用 `NoSecurity`、默认 permissive user manager，并监听 `0.0.0.0`；任何能访问 4840 的客户端都可匿名读写/调用。应改为最小权限 user manager、证书信任、匿名只读，并默认只绑定回环或受控网卡。
-□ [High] `.node-red/settings.js:80,129,157`：Node-RED 未启用 `adminAuth`、`httpNodeAuth` 和 `https`，`uiHost` 仍为默认全网卡监听；编辑器/Admin API 与 `/inject/*` 可被远端利用，等同于未授权流程部署与命令注入。应启用鉴权、限制管理面无网络暴露，并关闭生产环境的调试注入入口。
-□ [High] `server/qc_server.py:91-98,151-199`：`DeviceStatus`、`CurrentWorkOrderId`、`CurrentPartSN`、三个回执变量都可直接写，但 Method 状态机使用另一份内部字段。已动态确认：外部把 `DeviceStatus` 写为 `2(Fault)` 后仍可成功执行 `StartInspection`；把变量写为 `Idle` 后仍可完成内部 Running 工单。应消除双源状态，把工单/设备状态改为 Method 独占，或对直接写入做统一校验与同步。
+✅ [High] ~~`server/qc_server.py:283-285`：使用 `NoSecurity`、默认 permissive user manager，并监听 `0.0.0.0`~~：已改为本地 CA、`Basic256Sha256_SignAndEncrypt`、默认 `127.0.0.1`、匿名只读和管理员写/Method，并有安全回归。
+□ [High] Node-RED 已有 `adminAuth`、`httpNodeAuth`、`127.0.0.1` 基线、加密凭据和受保护的实验模式 HTTP 路由；HTTPS、反向代理、网络分区、企业密钥托管和按角色授权仍未完成。
+□ [High] 匿名写已拒绝，但管理员仍可直接写 `DeviceStatus`、`CurrentWorkOrderId`、`CurrentPartSN` 和三个回执变量，而 Method 状态机使用另一份内部字段。仍需消除双源状态，把控制/回执变量改为外部只读或统一写入校验。
 □ [High] `server/qc_server.py:151-199,220-257`：`StartInspection`、`CompleteWorkOrder`、`record_inspection` 没有并发锁；完工与正在进行的检测可交错，出现晚到检测事件、工单已清空、计数快照与事件不一致。应增加单一状态锁与一致性快照，并明确“检测中是否允许完工”。
 □ [High] `server/qc_server.py:142-148,185-199,220-257`：状态、计数、UA 写入、事件发布没有事务或 outbox；`_fire()` 抛异常会让虚拟检测循环直接退出，或出现变量已更新但事件丢失、事件已发出但状态写回失败。应将状态变更、事件发布和持久化纳入可恢复的事务/outbox 流程。
-□ [High] `nodered/flows.json` 节点 `fn_resp`：HTTP 2xx 后先 `q.splice()` 删除任务，再校验 `mesOrderNo/receiptNo`；回执缺失、UA 写回失败、Node-RED 崩溃都会造成“MES 已受理但 UA 无回执”。应引入 `RECEIPT_PENDING/WRITING` 状态、持久化 outbox 和写回重试，收到有效回执并成功写 UA 后才完成。
-□ [High] `nodered/flows.json` 节点 `fn_resp`：`accepted=false` 的 2xx 响应被直接出队，4xx 则按通用失败重试；没有死信、人工重放或业务错误码分类。应按 `4xx` 不重试、`429` 遵循 `Retry-After`、`5xx/timeout` 退避、业务拒绝进入死信，并提供重放入口。
+□ [High] 在线 Node-RED 已使用 SQLite 队列，但仍有“MES 回执成功后先完成任务、UA 写回失败缺少最终确认”的语义缺口；需把在线队列收敛到 `UA_WRITE_PENDING → DONE` 并复核死信/重放。
+✅ [High] ~~MES 2xx/4xx/429/5xx/timeout 未分类~~：Phase 1 已实现回执 schema、关联 ID、错误码、4xx 终态死信、429 `Retry-After`、5xx/timeout 退避和非法 2xx 拒绝；Edge Core 另有事务化死信重放接口。
 □ [High] `nodered/flows.json` 节点 `fn_dedup_ng`、`fn_dedup_done`、`fn_enq_ng`、`fn_enq_done`：先去重并置位，再入队；入队异常、进程崩溃或队列溢出后，同一事件会永久被当作重复丢弃。应先去重与入队原子化，或让去重状态随任务成功/死信状态回滚，并提供重放。
 □ [High] `nodered/flows.json` 节点 `fn_enq_ng`、`fn_enq_done`：队列达到 100 时直接丢弃最旧 PENDING 任务且不写死信；高 NG 率或 MES 慢时会静默丢业务。应转入死信并记录丢弃原因，同时提供背压/告警。
 □ [High] `server/qc_server.py:260-276` 与 `nodered/flows.json` 的持久化去重：虚拟 SN 使用进程内 `seq=0` 重置，而 Node-RED `snSeen` 跨重启保留；同日重启后会重新生成 `SN-yyyyMMdd-000001`，合法 NG 被误判为重复。应使用持久化全局序列、UUID 或工单+设备+时间组合键。
@@ -47,7 +47,7 @@
 □ [Medium] `server/qc_server.py:220-238`：`record_inspection` 未校验 confidence 范围、缺陷码枚举、OK/NG 与缺陷字段一致性；空 SN 时仍更新结果但不更新 `CurrentPartSN`，会留下陈旧追溯号。应做输入不变量校验并拒绝不一致数据。
 □ [Medium] `server/qc_server.py:215-218`：统计变量逐个写入，消费者可能观察到 `InspectCount` 已增加而 `OkCount/NgCount` 未更新的中间态；应提供原子快照或统一状态版本号。
 □ [Medium] `server/qc_server.py:91-98`：三个 MES 回执变量允许客户端直接写，任何匿名客户端都能伪造回执。应改为 Method/MES 网关独占写入，或对写入值做签名/关联校验。
-□ [Medium] `nodered/flows.json` 节点 `fn_ua_result`、`fn_status`：没有 `correlationId`，无法把 UA 事件、队列项、MES 请求、回执和 UA 写回逐笔关联。应生成并透传 `corrId`，日志和状态接口统一输出。
+✅ [Medium] ~~没有 `correlationId`~~：UA 事件、Node-RED 请求/回执、死信和 Edge Core API 已透传并校验关联 ID。
 □ [Medium] `nodered/flows.json` 节点 `fn_status`：只返回死信最后一条，没有完整死信列表、重放、删除/确认接口，现场只能看日志。应提供受鉴权的 dead-letter 查询与人工重放 API。
 □ [Medium] `nodered/flows.json` 节点 `fn_status`、`fn_resp`：状态接口只暴露队列/死信计数，没有成功率、重试数、MES 延迟、事件丢弃数、订阅健康等指标。应增加 Prometheus/结构化指标。
 □ [Medium] `server/qc_server.py:229-238`：每次检测顺序执行 9 个 UA 变量写和 1~2 个事件发布，未提供批量写入或写入缓存；高频场景下延迟线性累积。应在压测后批处理/合并统计写入。
@@ -59,7 +59,7 @@
 □ [Medium] `tests/_perm_probe.py:24`：把结果写到 `D:/UA_LinqInspect/_perm_probe.txt`，在 Ubuntu 直接失败；探针还会写入真实业务变量。应改为参数化输出路径/临时目录并只读检查。
 □ [Medium] `.install_deps.py:4-6`：硬编码 Windows 用户路径并手工复制 site-packages，不可复现且可能引入来源不明的包。应删除该脚本，改为标准 `requirements.txt`/锁文件安装。
 □ [Medium] `nodered/flows.json` 节点 `fn_alarm`：只在有下一条 NG 时输出被抑制数量；如果生产在 10 秒窗内停止，末尾抑制数永远不告警，且红色状态不会自动恢复。应使用定时汇总和明确的告警恢复事件。
-□ [Medium] 运维缺口：没有服务级健康/就绪探针、systemd/Docker 进程守护、日志轮转、指标端点和备份恢复步骤；试点现场只能靠人工查看 Node-RED。应补齐部署与运维基线。
+□ [Medium] 运维缺口：健康/就绪探针、systemd 进程守护、Prometheus 指标与 SQLite 在线备份/离线恢复已完成；仍缺日志轮转、异地/加密备份、备份过期与磁盘/WAL 增长告警、Alertmanager 值班路由以及试点主机实测 RTO。
 
 ## Low
 

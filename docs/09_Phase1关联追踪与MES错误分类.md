@@ -3,7 +3,7 @@
 > 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
 > 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A/2B/2C 完成后，
-> 当前一键回归为 303/303，见 [12_Phase2C部署运维与恢复演练.md](12_Phase2C部署运维与恢复演练.md)。
+> 当前一键回归为 313/313，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -52,7 +52,8 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 | 测试 | 结果 | 新增覆盖 |
 |---|---:|---|
-| 安全回归 | 6/6 PASS | 无回归 |
+| Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
+| 安全回归 | 8/8 PASS | UA 权限 + Node-RED HTTP 未认证 401/认证 200 |
 | UA 冒烟 | 36/36 PASS | 三类事件均携带 `CorrelationId` |
 | Node-RED E2E | 15/15 PASS | UA 事件关联 ID 传到 MES，回执关联 ID 回显，请求 schemaVersion=1.0 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、Method 拒绝 |
@@ -102,6 +103,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列与 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，当前 303 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在试点主机验证 MES 接收端幂等契约和端到端 RTO。
+> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列与 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，当前 313 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在试点主机验证 MES 接收端幂等契约和端到端 RTO。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

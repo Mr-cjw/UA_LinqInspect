@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-145650/summary.json` ｜ 当前结果：255/255 PASS
+> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ Phase 2C 后当前合并回归：313/313，证据：`.tmp/regression-20261120-161215/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -61,7 +61,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 
 ### 2.3 安全边界
 
-`/metrics` 与 `/qc/status` 一样需要由现场网络边界保护。当前 Node-RED 示例没有为运维接口增加独立认证；生产试点应在反向代理、防火墙或网关层限制来源，不要直接暴露到公网。
+`/metrics` 与 `/qc/status` 在安全基线中由 Node-RED `httpNodeAuth` 保护，并只监听回环地址。生产试点仍应在反向代理、防火墙或网关层限制来源，不要直接暴露到公网。
 
 ## 3. SQLite 在线备份
 
@@ -122,23 +122,27 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 实测 **255/255 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core 与 Phase 2C 运维测试后当前合并回归为 **313/313 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
 | SQLite 队列单测 | 14/14 |
-| 安全 | 6/6 |
+| 健康探针 | 10/10 |
+| Edge Core | 7/7 |
+| 安全 | 8/8 |
 | UA 冒烟 | 36/36 |
 | Node-RED E2E | 15/15 |
 | Prometheus 指标 | 43/43 |
-| SQLite 备份 | 17/17 |
+| SQLite 备份 | 20/20 |
+| 离线恢复 | 20/20 |
+| 部署模板 | 16/16 |
 | 故障场景 | 52/52 |
 | 正常重启 | 18/18 |
 | SIGKILL 崩溃恢复 | 23/23 |
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **255/255** |
+| **合计** | **313/313** |
 
 ## 5. 下一阶段
 
