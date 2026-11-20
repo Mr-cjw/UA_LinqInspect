@@ -19,9 +19,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NODE_RED_ROOT = REPO_ROOT / ".node-red"
 NODE_RED_BIN = NODE_RED_ROOT / "node_modules" / ".bin" / "node-red"
+NODE_BIN = shutil.which("node") or "node"
 FLOW_SOURCE = REPO_ROOT / "nodered" / "flows.json"
-SETTINGS_SOURCE = NODE_RED_ROOT / "settings.js"
+SETTINGS_SOURCE = REPO_ROOT / "nodered" / "settings.js"
 CERT_DIR = REPO_ROOT / "certs"
+
+NODE_TESTS = (
+    ("sqlite_queue", "tests/sqlite_queue_test.js", 30),
+)
 
 TESTS = (
     ("security", "tests/security_test.py", 60),
@@ -112,8 +117,9 @@ def run_test(
     env: dict[str, str],
     log_dir: Path,
     argument: str | None = None,
+    command_prefix: list[str] | None = None,
 ) -> dict:
-    command = [sys.executable, str(REPO_ROOT / relative_path)]
+    command = list(command_prefix or [sys.executable]) + [str(REPO_ROOT / relative_path)]
     if argument:
         command.append(argument)
     log_path = log_dir / f"{name}.log"
@@ -195,6 +201,8 @@ def main() -> int:
             "UA_ADMIN_USER": admin_user,
             "UA_ADMIN_PASS": admin_password,
             "NODERED_BASE": node_red_base,
+            "QC_REPO_ROOT": str(REPO_ROOT),
+            "QC_DB_PATH": str(artifact_dir / "qc-queue.sqlite"),
         }
     )
     server_env = base_env | {
@@ -256,6 +264,15 @@ def main() -> int:
         wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20)
         print(f"Node-RED ready: {base_env['NODERED_BASE']}")
         time.sleep(6)
+
+        for name, path, timeout in NODE_TESTS:
+            print(f"\n===== RUN {name} =====")
+            result = run_test(
+                name, path, timeout, base_env, artifact_dir, command_prefix=[NODE_BIN]
+            )
+            results.append(result)
+            if not result["passed"] and not args.keep_going:
+                raise RuntimeError(f"Node test failed: {name}")
 
         for name, path, timeout in TESTS:
             print(f"\n===== RUN {name} =====")
@@ -352,7 +369,7 @@ def main() -> int:
         stop_process(nr_process)
         stop_process(ua_process)
 
-    expected_results = len(TESTS) + len(RECOVERY_TESTS) + len(OUTAGE_TESTS)
+    expected_results = len(NODE_TESTS) + len(TESTS) + len(RECOVERY_TESTS) + len(OUTAGE_TESTS)
     passed = failure is None and all(result["passed"] for result in results) and len(results) == expected_results
     summary.update(
         {
