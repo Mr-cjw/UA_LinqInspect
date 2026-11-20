@@ -426,6 +426,11 @@ function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec) {
   lines.push(`qc_heartbeat_failures ${prometheusValue(heartbeatFailures)}`);
   family('qc_uptime_seconds', 'Seconds since this Node-RED flow was first observed.', 'gauge');
   lines.push(`qc_uptime_seconds ${prometheusValue(uptimeSec)}`);
+  const storage = state.storage || {};
+  family('qc_database_bytes', 'SQLite database, WAL and shared-memory file sizes in bytes.', 'gauge');
+  lines.push(`qc_database_bytes{kind="main"} ${prometheusValue(storage.mainBytes)}`);
+  lines.push(`qc_database_bytes{kind="wal"} ${prometheusValue(storage.walBytes)}`);
+  lines.push(`qc_database_bytes{kind="shm"} ${prometheusValue(storage.shmBytes)}`);
 
   family('qc_enqueue_total', 'Enqueue attempts by event type and outcome.', 'counter');
   for (const type of ['ng', 'complete']) {
@@ -549,6 +554,7 @@ function status(msg, flow, store) {
     lastRequestByType: flow.get('lastRequestByType') || {},
     lastResponse: flow.get('lastResponse') || null,
     dedup: snapshot.dedup,
+    storage: snapshot.storage,
   };
   msg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
   return msg;

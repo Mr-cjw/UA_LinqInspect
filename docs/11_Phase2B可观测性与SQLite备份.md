@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：378/378，证据：`.tmp/regression-20261120-171127/summary.json`
+> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：388/388，证据：`.tmp/regression-20261120-171815/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -44,6 +44,7 @@ name, type, outcome, error_code, value, updated_at
 | `qc_dedup_keys{kind}` | gauge | 三类去重键数量 |
 | `qc_heartbeat_failures` | gauge | 连续 UA 心跳失败数（0-3） |
 | `qc_uptime_seconds` | gauge | 本流程首次被状态接口观察到后的秒数 |
+| `qc_database_bytes{kind}` | gauge | SQLite 主库、WAL、SHM 文件体积 |
 | `qc_enqueue_total{type,outcome}` | counter | 入队成功/重复次数 |
 | `qc_delivery_total{type,outcome}` | counter | 成功、退避、死信次数 |
 | `qc_delivery_errors_total{type,error_code}` | counter | 按稳定错误码聚合的投递失败 |
@@ -109,7 +110,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 
 新增：
 
-- `tests/metrics_test.py`：43 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
+- `tests/metrics_test.py`：49 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、SQLite/WAL/SHM 体积、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
 - `tests/backup_queue_test.py`：17 项断言，验证活跃 WAL 库在线备份、完整性检查、关键行数一致、保留策略、缺失源文件错误，以及运行中的 Node-RED 数据库备份。
 
 扩展：
@@ -122,7 +123,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维与 M3 测试后当前合并回归为 **378/378 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3 与存储告警测试后当前合并回归为 **388/388 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
@@ -134,10 +135,10 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 安全 | 14/14 |
 | UA 冒烟 | 36/36 |
 | Node-RED E2E | 15/15 |
-| Prometheus 指标 | 43/43 |
+| Prometheus 指标 | 49/49 |
 | SQLite 备份 | 20/20 |
 | 离线恢复 | 20/20 |
-| 部署模板 | 16/16 |
+| 部署模板 | 20/20 |
 | 故障场景 | 52/52 |
 | MES 长断网 | 24/24 |
 | 周期 soak | 20/20 |
@@ -146,7 +147,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **378/378** |
+| **合计** | **388/388** |
 
 ## 5. 下一阶段
 

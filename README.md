@@ -148,11 +148,11 @@ UA_LinqInspect/
     ├── edge_core_test.py      # Edge Core 契约、幂等、死信重放与 UA 确认（7 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
-    ├── metrics_test.py        # Prometheus 指标、计数增量与状态一致性（43 项断言）
+    ├── metrics_test.py        # Prometheus 指标、体积、计数增量与状态一致性（49 项断言）
     ├── health_test.js         # /healthz ready/degraded/unavailable（10 项断言）
     ├── backup_queue_test.py   # WAL 在线备份、完整性与保留策略（20 项断言）
     ├── restore_queue_test.py  # dry-run、强制恢复、安全快照与继续消费（20 项断言）
-    ├── deploy_templates_test.py # 模板渲染、systemd verify 与告警规则（16 项断言）
+    ├── deploy_templates_test.py # 模板渲染、systemd/Alertmanager/logrotate 与告警（20 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
     ├── long_outage_recovery.py # MES 长断网、死信重放与实测 RTO（24 项断言）
     ├── soak_test.py           # 周期工单 soak、回执唯一性与资源漂移（20 项断言）
@@ -457,6 +457,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
   重建旧 Session 上的事件订阅；仅靠读写心跳恢复不足以证明 Event Subscription 已恢复。
 - 缓冲队列、去重集合、死信队列和运行计数使用 SQLite 事务存储（WAL + `synchronous=FULL`）；去重与入队在同一事务提交，发送泵用原子 `claimNext` 保持单飞行。当前是“至少一次投递 + 接收端幂等”，仍不能宣称 exactly-once。
 - `GET /metrics` 提供 Prometheus 文本指标；`GET /qc/status` 保持原有 JSON 契约。运维接口当前依赖网络边界保护，生产部署应在反向代理/防火墙限制来源。
+- `/metrics` 额外暴露 `qc_database_bytes{kind="main|wal|shm"}`；Prometheus 模板包含 WAL 超过 256 MiB 与文件系统剩余空间低于 10% 的告警。
 - 在线备份使用 `.venv/bin/python scripts/backup_queue.py`。WAL 模式下不要只复制主 `.sqlite` 文件；脚本会校验 `integrity_check`、`foreign_key_check` 和关键表行数。
 - 死信可通过受 HTTP Basic Auth 保护的 `POST /qc/dead-letters/replay` 重放：请求体传 `{"id":"..."}` 精确重放，或传 `{"all":true}` 批量重放；重放复用原队列 ID 和去重键。
 - 就绪探针使用 `GET /healthz`；systemd 模板通过 `scripts/render_deploy.py` 渲染；恢复时先停 Node-RED，再用 `scripts/restore_queue.py --dry-run` 验证备份、以 `--force` 替换。完整步骤见 [Phase 2C 运维文档](docs/15_Phase2C部署运维与恢复演练.md)。
@@ -468,11 +469,11 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 378/378 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 378/378 PASS） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 378/378 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 378/378 PASS） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 378/378 PASS；与投递队列尚未同事务） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 388/388 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 388/388 PASS） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 388/388 PASS） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 388/388 PASS） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 388/388 PASS；与投递队列尚未同事务） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 长断网、死信重放、soak、短断网和 Server 重启已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |

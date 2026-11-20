@@ -152,12 +152,14 @@ async def main() -> int:
         "qc_delivery_total",
         "qc_delivery_errors_total",
         "qc_watchdog_total",
+        "qc_database_bytes",
     ):
         check(f"{family} has HELP", family in helps)
         check(f"{family} has TYPE", family in metric_types)
     check("queue depth is a gauge", metric_types.get("qc_queue_depth") == "gauge")
     check("enqueue total is a counter", metric_types.get("qc_enqueue_total") == "counter")
     check("delivery total is a counter", metric_types.get("qc_delivery_total") == "counter")
+    check("database bytes is a gauge", metric_types.get("qc_database_bytes") == "gauge")
 
     initial_state = edge_status()
     check("queue pending gauge matches /qc/status",
@@ -172,6 +174,15 @@ async def main() -> int:
     check("dedup gauge matches /qc/status",
           metric_value(samples, "qc_dedup_keys", kind="ng_fingerprint") ==
           float(initial_state["dedup"]["ngFingerprints"]))
+    check("main database size is positive",
+          metric_value(samples, "qc_database_bytes", kind="main") > 0,
+          f"(bytes={metric_value(samples, 'qc_database_bytes', kind='main')})")
+    check("database size gauge matches /qc/status",
+          metric_value(samples, "qc_database_bytes", kind="main") ==
+          float(initial_state["storage"]["mainBytes"]))
+    check("WAL and SHM sizes are exposed",
+          metric_value(samples, "qc_database_bytes", kind="wal") >= 0 and
+          metric_value(samples, "qc_database_bytes", kind="shm") >= 0)
 
     check("restore MES ok mode", inject("inj_ok") and edge_status()["mesMode"] == "ok")
     client = await create_secure_client()

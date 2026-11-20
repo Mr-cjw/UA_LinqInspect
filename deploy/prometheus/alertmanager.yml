@@ -1,0 +1,31 @@
+route:
+  receiver: ua-linqinspect-ops
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: ua-linqinspect-critical
+      repeat_interval: 30m
+    - matchers: ['severity="warning"']
+      receiver: ua-linqinspect-warning
+      repeat_interval: 4h
+
+inhibit_rules:
+  - source_matchers: ['alertname="QcEdgeDown"']
+    target_matchers: ['alertname=~"QcQueueBacklogHigh|QcOldestQueueItemTooOld|QcDeadLettersGrowing"']
+
+receivers:
+  - name: ua-linqinspect-ops
+    webhook_configs:
+      - url: http://127.0.0.1:9095/webhook
+        send_resolved: true
+  - name: ua-linqinspect-critical
+    webhook_configs:
+      - url: http://127.0.0.1:9095/webhook
+        send_resolved: true
+  - name: ua-linqinspect-warning
+    webhook_configs:
+      - url: http://127.0.0.1:9095/webhook
+        send_resolved: true

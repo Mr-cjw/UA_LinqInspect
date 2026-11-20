@@ -59,7 +59,7 @@
 □ [Medium] `tests/_perm_probe.py:24`：把结果写到 `D:/UA_LinqInspect/_perm_probe.txt`，在 Ubuntu 直接失败；探针还会写入真实业务变量。应改为参数化输出路径/临时目录并只读检查。
 □ [Medium] `.install_deps.py:4-6`：硬编码 Windows 用户路径并手工复制 site-packages，不可复现且可能引入来源不明的包。应删除该脚本，改为标准 `requirements.txt`/锁文件安装。
 □ [Medium] `nodered/flows.json` 节点 `fn_alarm`：只在有下一条 NG 时输出被抑制数量；如果生产在 10 秒窗内停止，末尾抑制数永远不告警，且红色状态不会自动恢复。应使用定时汇总和明确的告警恢复事件。
-□ [Medium] 运维缺口：健康/就绪探针、systemd 进程守护、Prometheus 指标与 SQLite 在线备份/离线恢复已完成；仍缺日志轮转、异地/加密备份、备份过期与磁盘/WAL 增长告警、Alertmanager 值班路由以及试点主机实测 RTO。
+□ [Medium] 运维缺口：健康/就绪探针、systemd 守护、WAL/磁盘告警、Alertmanager 路由模板、logrotate 与 SQLite 备份恢复已完成；仍缺异地/加密备份、真实值班渠道联调、进程重启告警以及试点主机实测 RTO。
 
 ## Low
 
