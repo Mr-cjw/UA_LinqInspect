@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：448/448，证据：`.tmp/regression-20261120-180813/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：494/494，证据：`.tmp/regression-20261120-182355/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -43,6 +43,12 @@ name, type, outcome, error_code, value, updated_at
 | `qc_dead_letters` | gauge | 当前保留的死信数 |
 | `qc_dedup_keys{kind}` | gauge | 三类去重键数量 |
 | `qc_heartbeat_failures` | gauge | 连续 UA 心跳失败数（0-3） |
+| `qc_event_outbox_pending` | gauge | 等待 Node-RED ACK 的 NG/完工事件数 |
+| `qc_event_outbox_oldest_age_seconds` | gauge | 最老未确认事件年龄 |
+| `qc_event_outbox_capacity` | gauge | outbox 硬上限 |
+| `qc_event_outbox_high_watermark` | gauge | outbox 背压阈值 |
+| `qc_event_outbox_backpressure` | gauge | 达到高水位时为 1 |
+| `qc_event_outbox_status_age_seconds` | gauge | 最近一次成功读取 OutboxStatus 的年龄；-1 表示从未读取 |
 | `qc_uptime_seconds` | gauge | 本流程首次被状态接口观察到后的秒数 |
 | `qc_database_bytes{kind}` | gauge | SQLite 主库、WAL、SHM 文件体积 |
 | `qc_enqueue_total{type,outcome}` | counter | 入队成功/重复次数 |
@@ -61,7 +67,7 @@ name, type, outcome, error_code, value, updated_at
 curl -s http://127.0.0.1:1880/metrics | head -40
 ```
 
-`/qc/status` 的 `queue`、`deadLetters.last`、`dedup`、`lastRequest*` 等结构保持不变；新增 `uaWriteback.pending/sending` 反映 UA 写回阶段。MES 成功回执只把任务推进到写回阶段，两个目标变量都确认后才删除队列项。
+`/qc/status` 的 `queue`、`deadLetters.last`、`dedup`、`lastRequest*` 等结构保持兼容；新增 `uaWriteback.pending/sending` 反映 UA 写回阶段，新增 `outbox` 对象反映 UA 事件积压、容量、高水位和最近一次心跳读取的新鲜度。MES 成功回执只把任务推进到写回阶段，两个目标变量都确认后才删除队列项。
 
 ### 2.3 安全边界
 
@@ -113,8 +119,8 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 
 新增：
 
-- `tests/metrics_test.py`：60 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、UA 写回计数、SQLite/WAL/SHM 体积、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
-- `tests/backup_queue_test.py`：17 项断言，验证活跃 WAL 库在线备份、完整性检查、关键行数一致、保留策略、缺失源文件错误，以及运行中的 Node-RED 数据库备份。
+- `tests/metrics_test.py`：80 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、UA 写回计数、outbox 积压指标、SQLite/WAL/SHM 体积、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
+- `tests/backup_queue_test.py`：20 项断言，验证活跃 WAL 库在线备份、完整性检查、关键行数一致、保留策略、缺失源文件错误，以及运行中的 Node-RED 数据库备份。
 
 扩展：
 
@@ -126,24 +132,26 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复与事件 outbox 测试后当前合并回归为 **448/448 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复与事件 outbox 容量测试后当前合并回归为 **494/494 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
 | SQLite 队列单测 | 19/19 |
 | 状态工具单测 | 5/5 |
 | 事件 outbox 单测 | 3/3 |
+| outbox 容量/导出单测 | 9/9 |
+| outbox 状态接口 | 8/8 |
 | 工位状态重启 | 11/11 |
-| 事件 outbox 崩溃恢复 | 13/13 |
+| 事件 outbox 崩溃恢复 | 18/18 |
 | 健康探针 | 10/10 |
 | Edge Core | 7/7 |
-| 安全 | 14/14 |
+| 安全 | 16/16 |
 | UA 冒烟 | 36/36 |
 | Node-RED E2E | 15/15 |
-| Prometheus 指标 | 60/60 |
+| Prometheus 指标 | 80/80 |
 | SQLite 备份 | 20/20 |
 | 离线恢复 | 20/20 |
-| 部署模板 | 20/20 |
+| 部署模板 | 22/22 |
 | 故障场景 | 52/52 |
 | MES 长断网 | 24/24 |
 | 周期 soak | 20/20 |
@@ -153,7 +161,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **448/448** |
+| **合计** | **494/494** |
 
 ## 5. 下一阶段
 

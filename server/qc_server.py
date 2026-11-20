@@ -23,8 +23,12 @@
   QC_NG_PROBABILITY   虚拟 NG 概率（默认 0.3）
   QC_NG_WINDOW        NgRate 滑动窗口大小（默认 20）
   QC_OUTBOX_REPLAY_INTERVAL 未确认事件重发间隔秒（默认 2.0）
+  QC_OUTBOX_MAX_PENDING     NG/完工 outbox 硬上限（默认 1000）
+  QC_OUTBOX_HIGH_WATERMARK  outbox 背压告警/拒绝新开检阈值（默认硬上限的 80%）
+  QC_OUTBOX_EXPORT_LIMIT    ExportPendingEvents 单次最大返回条数（默认 500）
 """
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -84,6 +88,12 @@ INSPECT_INTERVAL = float(os.getenv("QC_INSPECT_INTERVAL", "2.0"))
 NG_PROBABILITY = float(os.getenv("QC_NG_PROBABILITY", "0.3"))
 WINDOW_SIZE = int(os.getenv("QC_NG_WINDOW", "20"))
 OUTBOX_REPLAY_INTERVAL = max(0.1, float(os.getenv("QC_OUTBOX_REPLAY_INTERVAL", "2.0")))
+OUTBOX_MAX_PENDING = max(1, int(os.getenv("QC_OUTBOX_MAX_PENDING", "1000")))
+OUTBOX_HIGH_WATERMARK = int(
+    os.getenv("QC_OUTBOX_HIGH_WATERMARK", str(max(1, int(OUTBOX_MAX_PENDING * 0.8))))
+)
+OUTBOX_HIGH_WATERMARK = min(OUTBOX_MAX_PENDING, max(1, OUTBOX_HIGH_WATERMARK))
+OUTBOX_EXPORT_LIMIT = max(1, int(os.getenv("QC_OUTBOX_EXPORT_LIMIT", "500")))
 CERT_EXPIRY_WARNING_DAYS = 30
 
 # DeviceStatus 数字枚举含义: 0=Idle, 1=Running, 2=Fault
@@ -160,6 +170,10 @@ def _install_audited_session_factory(server: Server) -> None:
 
 class SecurityConfigError(RuntimeError):
     """证书、私钥或客户端信任列表缺失/无效，服务必须拒绝启动。"""
+
+
+class OutboxCapacityError(RuntimeError):
+    """The durable outbox is full; callers must preserve the event instead of dropping it."""
 
 
 def _require_config_file(env_name: str, raw_value: str) -> Path:
@@ -372,6 +386,10 @@ class QCStation:
         self.last_image_id = snapshot.last_image_id
         self.last_timestamp = last_timestamp_or_default(snapshot.last_timestamp)
         self.outbox: list[QCOutboxEvent] = list(snapshot.outbox)
+        self.outbox_last_ack_at = ""
+        self.outbox_purged_total = 0
+        self.outbox_rejected_total = 0
+        self._outbox_capacity_warned = False
         self._outbox_wakeup = asyncio.Event()
         if self.outbox:
             self._outbox_wakeup.set()
@@ -432,6 +450,36 @@ class QCStation:
         self.nd["cnt_ok"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.OkCount"), "2:OkCount", ua.Variant(self.ok_count, ua.VariantType.UInt32)))
         self.nd["cnt_ng"] = await _ro(await stats.add_variable(nid("QCStation.Statistics.NgCount"), "2:NgCount", ua.Variant(self.ng_count, ua.VariantType.UInt32)))
 
+        outbox_state = self._outbox_metrics()
+        self.nd["outbox_status"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.OutboxStatus"), "2:OutboxStatus",
+            json.dumps(outbox_state, ensure_ascii=False, sort_keys=True),
+        ))
+        self.nd["outbox_pending"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.PendingEventCount"), "2:PendingEventCount",
+            ua.Variant(outbox_state["pendingCount"], ua.VariantType.UInt32),
+        ))
+        self.nd["outbox_oldest_age"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.OldestPendingEventAge"), "2:OldestPendingEventAge",
+            ua.Variant(outbox_state["oldestAgeSeconds"], ua.VariantType.Double),
+        ))
+        self.nd["outbox_oldest_at"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.OldestPendingEventAt"), "2:OldestPendingEventAt",
+            outbox_state["oldestPendingAt"],
+        ))
+        self.nd["outbox_capacity"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.OutboxCapacity"), "2:OutboxCapacity",
+            ua.Variant(OUTBOX_MAX_PENDING, ua.VariantType.UInt32),
+        ))
+        self.nd["outbox_high_watermark"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.OutboxHighWatermark"), "2:OutboxHighWatermark",
+            ua.Variant(OUTBOX_HIGH_WATERMARK, ua.VariantType.UInt32),
+        ))
+        self.nd["outbox_backpressure"] = await _ro(await events.add_variable(
+            nid("QCStation.Events.OutboxBackpressure"), "2:OutboxBackpressure",
+            ua.Variant(outbox_state["backpressure"], ua.VariantType.Boolean),
+        ))
+
         # ---------- 自定义 EventType（必须继承 BaseEventType，Phase0 §2.6-1） ----------
         base = sv.nodes.base_event_type
         et_insp = await base.add_object_type(nid("InspectionFinishedEventType"), "2:InspectionFinishedEventType")
@@ -464,10 +512,17 @@ class QCStation:
         await root.add_method(nid("QCStation.AcknowledgeEvent"), "2:AcknowledgeEvent", self._acknowledge_event,
                               [ua.VariantType.String],
                               [ua.VariantType.Boolean, ua.VariantType.String])
+        await root.add_method(nid("QCStation.ExportPendingEvents"), "2:ExportPendingEvents", self._export_pending_events,
+                              [ua.VariantType.UInt32, ua.VariantType.UInt32],
+                              [ua.VariantType.Boolean, ua.VariantType.String])
+        await root.add_method(nid("QCStation.PurgeOutbox"), "2:PurgeOutbox", self._purge_outbox,
+                              [ua.VariantType.String],
+                              [ua.VariantType.Boolean, ua.VariantType.String])
         await root.add_method(nid("QCStation.ResetCounters"), "2:ResetCounters", self._reset_counters, [], [])
 
         _log.info("AddressSpace built: ns=%d uri=%s", idx, NS_URI)
         await self._persist()
+        await self._sync_outbox_status()
 
     def _snapshot(self) -> QCStationSnapshot:
         return QCStationSnapshot(
@@ -521,10 +576,84 @@ class QCStation:
         )
 
     def _append_outbox(self, event: QCOutboxEvent) -> None:
+        if len(self.outbox) >= OUTBOX_MAX_PENDING:
+            self.outbox_rejected_total += 1
+            raise OutboxCapacityError(
+                f"outbox capacity reached: pending={len(self.outbox)} capacity={OUTBOX_MAX_PENDING}"
+            )
         self.outbox.append(event)
 
     def _wake_outbox(self) -> None:
         self._outbox_wakeup.set()
+
+    def _outbox_metrics(self) -> dict:
+        pending = len(self.outbox)
+        oldest = min(
+            self.outbox,
+            key=lambda event: last_timestamp_or_default(event.created_at),
+            default=None,
+        )
+        now = datetime.now(timezone.utc)
+        oldest_age = 0.0
+        if oldest is not None:
+            created = last_timestamp_or_default(oldest.created_at)
+            oldest_age = max(0.0, (now - created).total_seconds())
+        return {
+            "pendingCount": pending,
+            "oldestPendingAt": oldest.created_at if oldest is not None else "",
+            "oldestAgeSeconds": round(oldest_age, 3),
+            "capacity": OUTBOX_MAX_PENDING,
+            "highWatermark": OUTBOX_HIGH_WATERMARK,
+            "backpressure": pending >= OUTBOX_HIGH_WATERMARK,
+            "lastAckAt": self.outbox_last_ack_at,
+            "purgedTotal": self.outbox_purged_total,
+            "rejectedTotal": self.outbox_rejected_total,
+            "updatedAt": now.isoformat(timespec="milliseconds"),
+        }
+
+    async def _sync_outbox_status(self) -> None:
+        if not self.nd.get("outbox_status"):
+            return
+        state = self._outbox_metrics()
+        try:
+            await self.nd["outbox_status"].write_value(
+                json.dumps(state, ensure_ascii=False, sort_keys=True)
+            )
+            await self.nd["outbox_pending"].write_value(
+                ua.Variant(state["pendingCount"], ua.VariantType.UInt32)
+            )
+            await self.nd["outbox_oldest_age"].write_value(
+                ua.Variant(state["oldestAgeSeconds"], ua.VariantType.Double)
+            )
+            await self.nd["outbox_oldest_at"].write_value(state["oldestPendingAt"])
+            await self.nd["outbox_capacity"].write_value(
+                ua.Variant(state["capacity"], ua.VariantType.UInt32)
+            )
+            await self.nd["outbox_high_watermark"].write_value(
+                ua.Variant(state["highWatermark"], ua.VariantType.UInt32)
+            )
+            await self.nd["outbox_backpressure"].write_value(
+                ua.Variant(state["backpressure"], ua.VariantType.Boolean)
+            )
+        except Exception:
+            _log.exception("Outbox state persisted but UA status variables could not be synchronized")
+
+    def _outbox_rejection_reason(self, operation: str) -> str:
+        self.outbox_rejected_total += 1
+        pending = len(self.outbox)
+        return (
+            f"rejected: event outbox backpressure during {operation} "
+            f"(pending={pending} highWatermark={OUTBOX_HIGH_WATERMARK} capacity={OUTBOX_MAX_PENDING}); "
+            "acknowledge or purge pending events first"
+        )
+
+    def _outbox_purge_token(self) -> str:
+        if not self.outbox:
+            return "purge-0-empty"
+        digest = hashlib.sha256(
+            "\n".join(event.event_id for event in self.outbox).encode("utf-8")
+        ).hexdigest()
+        return f"purge-{len(self.outbox)}-{digest[:32]}"
 
     async def _publish_event(self, event: QCOutboxEvent) -> None:
         etype_key = event.event_type
@@ -569,6 +698,10 @@ class QCStation:
                 raise
             except Exception:
                 _log.exception("Unexpected outbox dispatcher error; pending events retained")
+            if self.outbox:
+                # Refresh derived age fields even when no state-changing event arrives;
+                # otherwise the UA status can freeze at the previous replay timestamp.
+                await self._sync_outbox_status()
 
     # ---------- Method 实现 ----------
     async def _start_inspection(self, parent, work_order_id, target_count):
@@ -598,6 +731,10 @@ class QCStation:
             return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: DeviceStatus=Fault", ua.VariantType.String)]
         if not tc or int(tc) <= 0:
             return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: targetCount must be > 0", ua.VariantType.String)]
+        if len(self.outbox) >= OUTBOX_HIGH_WATERMARK:
+            reason = self._outbox_rejection_reason("StartInspection")
+            _log.error("StartInspection blocked: %s", reason)
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant(reason, ua.VariantType.String)]
         self.status = ST_RUNNING
         self.work_order_id = str(wo)
         self.target_count = int(tc)
@@ -613,6 +750,7 @@ class QCStation:
                 result = await self._complete_work_order_impl(work_order_id)
                 if result and bool(_val(result[0])):
                     await self._persist()
+                    await self._sync_outbox_status()
                     self._wake_outbox()
                     try:
                         await self.nd["status"].write_value(ua.Variant(ST_IDLE, ua.VariantType.Int32))
@@ -634,6 +772,10 @@ class QCStation:
             return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant(f"rejected: workOrderId mismatch, expected {self.work_order_id}", ua.VariantType.String)]
         if self.status != ST_RUNNING:
             return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant(f"rejected: DeviceStatus={self.status} is not Running", ua.VariantType.String)]
+        if len(self.outbox) >= OUTBOX_MAX_PENDING:
+            reason = self._outbox_rejection_reason("CompleteWorkOrder")
+            _log.error("CompleteWorkOrder blocked: %s", reason)
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant(reason, ua.VariantType.String)]
         # 汇总 + 事件
         ng_rate = self._ng_rate()
         summary = (f"workOrder={self.work_order_id} inspect={self.inspect_count} "
@@ -661,6 +803,7 @@ class QCStation:
                 result, changed = self._acknowledge_event_impl(event_id)
                 if changed:
                     await self._persist()
+                    await self._sync_outbox_status()
                     self._wake_outbox()
         except Exception as exc:
             _audit_method_call("AcknowledgeEvent", audit_args, f"error: {type(exc).__name__}: {exc}")
@@ -679,8 +822,101 @@ class QCStation:
         if len(remaining) == len(self.outbox):
             return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(f"already acknowledged {eid}", ua.VariantType.String)], False
         self.outbox = remaining
+        self.outbox_last_ack_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         _log.info("AcknowledgeEvent: %s pending=%d", eid, len(self.outbox))
         return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(f"acknowledged {eid}", ua.VariantType.String)], True
+
+    async def _export_pending_events(self, parent, offset, limit):
+        audit_args = {"offset": _val(offset), "limit": _val(limit)}
+        try:
+            async with self._lock:
+                result, summary = self._export_pending_events_impl(offset, limit)
+        except Exception as exc:
+            _audit_method_call("ExportPendingEvents", audit_args, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("ExportPendingEvents", audit_args, summary)
+        return result
+
+    def _export_pending_events_impl(self, offset, limit):
+        try:
+            offset_value = max(0, int(_val(offset) or 0))
+        except (TypeError, ValueError, OverflowError):
+            offset_value = 0
+        try:
+            limit_value = int(_val(limit) or 0)
+        except (TypeError, ValueError, OverflowError):
+            limit_value = 0
+        if limit_value <= 0:
+            limit_value = 100
+        limit_value = min(limit_value, OUTBOX_EXPORT_LIMIT)
+        page = self.outbox[offset_value:offset_value + limit_value]
+        document = {
+            "schemaVersion": 1,
+            "exportedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "pendingCount": len(self.outbox),
+            "offset": offset_value,
+            "limit": limit_value,
+            "returned": len(page),
+            "hasMore": offset_value + len(page) < len(self.outbox),
+            "purgeToken": self._outbox_purge_token(),
+            "events": [
+                {
+                    "eventVersion": event.event_version,
+                    "eventId": event.event_id,
+                    "eventType": event.event_type,
+                    "fields": event.fields,
+                    "severity": event.severity,
+                    "message": event.message,
+                    "createdAt": event.created_at,
+                }
+                for event in page
+            ],
+        }
+        payload = json.dumps(document, ensure_ascii=False, sort_keys=True)
+        summary = f"accepted: exported {len(page)} of {len(self.outbox)} pending event(s) at offset {offset_value}"
+        return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(payload, ua.VariantType.String)], summary
+
+    async def _purge_outbox(self, parent, confirm_token):
+        audit_args = {"confirmToken": _val(confirm_token)}
+        try:
+            async with self._lock:
+                result, changed, summary = self._purge_outbox_impl(confirm_token)
+                if changed:
+                    await self._persist()
+                    await self._sync_outbox_status()
+                    self._wake_outbox()
+        except Exception as exc:
+            _audit_method_call("PurgeOutbox", audit_args, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("PurgeOutbox", audit_args, summary)
+        return result
+
+    def _purge_outbox_impl(self, confirm_token):
+        token = str(_val(confirm_token) or "").strip()
+        if not self.outbox:
+            result = [
+                ua.Variant(True, ua.VariantType.Boolean),
+                ua.Variant("already empty", ua.VariantType.String),
+            ]
+            return result, False, "accepted: outbox already empty"
+        expected = self._outbox_purge_token()
+        if not token or not hmac.compare_digest(token, expected):
+            self.outbox_rejected_total += 1
+            result = [
+                ua.Variant(False, ua.VariantType.Boolean),
+                ua.Variant("rejected: invalid or stale purge token; export pending events again", ua.VariantType.String),
+            ]
+            return result, False, "rejected: invalid or stale purge token"
+        purged = len(self.outbox)
+        self.outbox = []
+        self.outbox_purged_total += purged
+        self.outbox_last_ack_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        _log.warning("PurgeOutbox: manually purged %d pending event(s); token=%s", purged, token)
+        result = [
+            ua.Variant(True, ua.VariantType.Boolean),
+            ua.Variant(f"purged {purged} pending event(s)", ua.VariantType.String),
+        ]
+        return result, True, f"accepted: purged {purged} pending event(s)"
 
     async def _reset_counters(self, parent):
         try:
@@ -720,6 +956,14 @@ class QCStation:
             # being attached to an already-completed work order.
             if self.status != ST_RUNNING or not self.work_order_id:
                 _log.warning("Inspection ignored: station is not running")
+                return False
+            if len(self.outbox) >= OUTBOX_MAX_PENDING:
+                self.outbox_rejected_total += 1
+                _log.error(
+                    "Inspection rejected: event outbox capacity reached (pending=%d capacity=%d); "
+                    "acknowledge or purge pending events first",
+                    len(self.outbox), OUTBOX_MAX_PENDING,
+                )
                 return False
             if is_ok and defect_type:
                 _log.warning("OK result carried defect=%s; normalizing defect to empty", defect_type)
@@ -765,6 +1009,7 @@ class QCStation:
                 _log.info("Target count reached (%d); wait for CompleteWorkOrder call", self.target_count)
                 self.target_count = 0  # advisory marker: only log once
             await self._persist()
+            await self._sync_outbox_status()
             self._wake_outbox()
             await self.nd["last_result"].write_value(is_ok)
             await self.nd["last_defect"].write_value(defect_type)
@@ -792,6 +1037,17 @@ class QCStation:
         async with self._lock:
             if self.status != ST_RUNNING or not self.work_order_id:
                 return None
+            if len(self.outbox) >= OUTBOX_MAX_PENDING:
+                if not self._outbox_capacity_warned:
+                    _log.error(
+                        "Virtual inspection paused: outbox capacity reached (pending=%d capacity=%d)",
+                        len(self.outbox), OUTBOX_MAX_PENDING,
+                    )
+                    self._outbox_capacity_warned = True
+                return None
+            if self._outbox_capacity_warned:
+                _log.info("Virtual inspection resumed: outbox has capacity again")
+                self._outbox_capacity_warned = False
             day = datetime.now(timezone.utc).strftime("%Y%m%d")
             if self.sn_day != day:
                 self.sn_day = day

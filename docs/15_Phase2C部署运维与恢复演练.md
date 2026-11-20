@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261120-180813/summary.json` ｜ 当前结果：448/448 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261120-182355/summary.json` ｜ 当前结果：494/494 PASS
 
 ## 1. 阶段目标
 
@@ -165,6 +165,10 @@ node_exporter 只应读取备份指标文件，不应直接采集 SQLite。启�
 |---|---|---|
 | `QcEdgeDown` | `up == 0` 持续 2 分钟 | Node-RED 指标端点不可达 |
 | `QcQueueBacklogHigh` | pending 大于 20 持续 5 分钟 | MES 处理速度不足或不可达 |
+| `QcEventOutboxBackpressure` | outbox 背压标志为 1 持续 2 分钟 | UA 事件积压达到高水位，新开检会被拒绝 |
+| `QcEventOutboxBacklogHigh` | 积压数不低于高水位持续 2 分钟 | Node-RED 未订阅、未入队或未 ACK |
+| `QcEventOutboxOldestTooOld` | 最老未确认事件超过 120 秒持续 5 分钟 | outbox 长时间不排空 |
+| `QcEventOutboxStatusStale` | 最近状态读取年龄大于 30 秒或从未读取 | 心跳读取 `OutboxStatus` 失败 |
 | `QcOldestQueueItemTooOld` | 最老队列项超过 60 秒持续 2 分钟 | 队列不排空 |
 | `QcDeadLettersGrowing` | 15 分钟死信增量大于 0 持续 2 分钟 | 新增需人工处置的失败 |
 | `QcDeliveryRetrySpike` | 10 分钟重试超过 5 次持续 5 分钟 | MES 质量或网络抖动 |
@@ -284,12 +288,15 @@ Phase 2C 新增专项：
 | 测试 | 结果 | 覆盖 |
 |---|---:|---|
 | `tests/health_test.js` | 10/10 PASS | ready/degraded/unavailable、边界、响应头、flow 接线 |
-| `tests/deploy_templates_test.py` | 20/20 PASS | 渲染、systemd verify、Prometheus/Alertmanager、logrotate、环境变量、Node-RED 认证配置 |
+| `tests/outbox_status_test.js` | 8/8 PASS | OutboxStatus 解析、背压健康降级、状态接口与指标 |
+| `tests/outbox_capacity_test.py` | 9/9 PASS | 高水位/硬上限拒绝、分页导出、令牌清空与幂等 |
+| `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
+| `tests/deploy_templates_test.py` | 22/22 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox 告警、logrotate、环境变量、认证配置 |
 | `tests/restore_queue_test.py` | 20/20 PASS | dry-run、--force、安全快照、WAL/SHM 清理、业务继续消费 |
 | `tests/backup_queue_test.py` | 20/20 PASS | 在线备份、指标 textfile、完整性、保留策略、活跃库备份 |
 | `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
 | `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
-| `tests/state_persistence_test.py` | 3/3 PASS | 状态快照往返、非法 Running 回退、损坏 JSON 回退 |
+| `tests/state_persistence_test.py` | 5/5 PASS | 状态快照往返、非法 Running 回退、损坏 JSON 回退、outbox 往返与坏事件隔离 |
 | `tests/qc_state_restart_test.py` | 11/11 PASS | SIGKILL 后工单、计数、SN 序列恢复并继续完工 |
 | `tests/ua_write_crash_recovery.py` | 27/27 PASS | UA 冻结时注入 NG/完工、MES 成功后 SIGKILL、重启后完成 UA 写回 |
 
@@ -299,8 +306,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 27 个测试模块、**448/448 PASS**，摘要为
-`.tmp/regression-20261120-180813/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 综合回归共 29 个测试模块、**494/494 PASS**，摘要为
+`.tmp/regression-20261120-182355/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
@@ -320,6 +327,7 @@ curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
 
 - systemd 部署模板、健康探针、Prometheus 告警规则和备份 timer。
 - SQLite 主库/WAL/SHM 体积指标、WAL 与磁盘空间告警、Alertmanager 路由模板和 logrotate 模板。
+- UA outbox 积压/年龄/容量指标、背压健康降级和 Prometheus 告警；管理员可分页导出并用令牌清空积压。
 - SQLite 在线备份、离线恢复、恢复前安全快照和完整性校验。
 - 进程重启、SIGKILL、短断网和 UA Server 重启后的队列恢复。
 - MES 长断网后的积压排空、死信保留与受鉴权重放；6 工单 soak 无漂移。

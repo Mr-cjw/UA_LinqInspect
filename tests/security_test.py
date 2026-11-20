@@ -54,6 +54,16 @@ async def main() -> int:
         except Exception as exc:
             check("anonymous Method call is rejected", True, f"({type(exc).__name__})")
 
+        for method, arguments in (
+            ("ExportPendingEvents", (0, 1)),
+            ("PurgeOutbox", ("not-a-valid-token",)),
+        ):
+            try:
+                await root.call_method(f"{idx}:{method}", *arguments)
+                check(f"anonymous {method} is rejected", False, "(unexpected success)")
+            except Exception as exc:
+                check(f"anonymous {method} is rejected", True, f"({type(exc).__name__})")
+
     admin = await create_secure_client(admin=True)
     async with admin:
         idx, root = await station_nodes(admin)

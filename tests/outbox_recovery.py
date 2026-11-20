@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ua_test_client import create_secure_client
@@ -105,11 +106,12 @@ async def wait_until(predicate, timeout: float = 12, interval: float = 0.1, labe
 
 
 def seed_state(path: Path, work_order: str, event_id: str, correlation_id: str) -> None:
+    created_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(timespec="milliseconds")
     state = {
         "schemaVersion": 1,
-        "status": 1,
-        "workOrderId": work_order,
-        "targetCount": 5,
+        "status": 0,
+        "workOrderId": "",
+        "targetCount": 0,
         "inspectCount": 1,
         "okCount": 0,
         "ngCount": 1,
@@ -138,7 +140,7 @@ def seed_state(path: Path, work_order: str, event_id: str, correlation_id: str) 
             },
             "severity": 3,
             "message": "seeded NG pending event",
-            "createdAt": "2026-11-21T00:00:00.000+00:00",
+            "createdAt": created_at,
         }],
     }
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -180,6 +182,8 @@ async def main() -> int:
             "QC_STATE_PATH": str(state_path),
             "QC_AUTO_INSPECT": "0",
             "QC_OUTBOX_REPLAY_INTERVAL": "0.2",
+            "QC_OUTBOX_MAX_PENDING": "2",
+            "QC_OUTBOX_HIGH_WATERMARK": "1",
         })
         os.environ.update({"UA_ENDPOINT": env["UA_ENDPOINT"], "UA_ADMIN_USER": admin_user, "UA_ADMIN_PASS": admin_pass})
 
@@ -204,6 +208,29 @@ async def main() -> int:
                 idx = await client.get_namespace_index(NS_URI)
                 root_node = await client.nodes.objects.get_child([f"{idx}:QCStation"])
                 events_node = await root_node.get_child([f"{idx}:Events"])
+                pending_node = await events_node.get_child([f"{idx}:PendingEventCount"])
+                oldest_age_node = await events_node.get_child([f"{idx}:OldestPendingEventAge"])
+                outbox_status_node = await events_node.get_child([f"{idx}:OutboxStatus"])
+
+                pending_before = int(await pending_node.read_value())
+                check("PendingEventCount survives SIGKILL", pending_before == 1,
+                      f"(pending={pending_before})")
+                outbox_status = json.loads(await outbox_status_node.read_value())
+                oldest_age_before = float(await oldest_age_node.read_value())
+                await asyncio.sleep(0.6)
+                oldest_age_after = float(await oldest_age_node.read_value())
+                check("OutboxStatus reports restored backpressure",
+                      outbox_status.get("pendingCount") == 1 and
+                      outbox_status.get("capacity") == 2 and
+                      outbox_status.get("highWatermark") == 1 and
+                      outbox_status.get("backpressure") is True and
+                      oldest_age_after > oldest_age_before,
+                      f"({outbox_status}, age={oldest_age_before}->{oldest_age_after})")
+                blocked = await root_node.call_method(f"{idx}:StartInspection", "WO-OUTBOX-BLOCKED", 5)
+                check("StartInspection is rejected while outbox is under backpressure",
+                      bool(blocked and blocked[0] is False and "backpressure" in str(blocked[1])),
+                      f"({blocked[1] if blocked and len(blocked) > 1 else ''})")
+
                 ng_type = None
                 for node in await client.nodes.base_event_type.get_children():
                     browse_name = await node.read_browse_name()
@@ -243,8 +270,20 @@ async def main() -> int:
 
                 check("ACK durably removes pending event", await wait_until(acked_from_disk, timeout=8,
                                                                          label="ACK persisted"))
+                async def pending_count_is_zero():
+                    return int(await pending_node.read_value()) == 0
+
+                check("PendingEventCount drops after ACK", await wait_until(
+                    pending_count_is_zero,
+                    timeout=8,
+                    label="outbox pending count after ACK",
+                ))
                 ack_again = await root_node.call_method(f"{idx}:AcknowledgeEvent", event_id)
                 check("duplicate ACK is idempotent", bool(ack_again and ack_again[0] is True))
+                started = await root_node.call_method(f"{idx}:StartInspection", "WO-OUTBOX-AFTER-ACK", 5)
+                check("StartInspection resumes after ACK drains backpressure",
+                      bool(started and started[0] is True),
+                      f"({started[1] if started and len(started) > 1 else ''})")
                 await asyncio.sleep(0.4)
                 collector.events.clear()
                 await asyncio.sleep(0.8)

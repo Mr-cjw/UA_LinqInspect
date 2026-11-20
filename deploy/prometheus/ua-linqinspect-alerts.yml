@@ -19,6 +19,42 @@ groups:
           summary: "UA LinqInspect pending queue is growing"
           description: "Pending queue depth has remained above 20 for 5 minutes."
 
+      - alert: QcEventOutboxBackpressure
+        expr: qc_event_outbox_backpressure > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "UA event outbox has reached its backpressure threshold"
+          description: "New inspections and completions can be rejected until Node-RED acknowledges or an operator safely exports/purges pending NG/completion events."
+
+      - alert: QcEventOutboxBacklogHigh
+        expr: qc_event_outbox_pending >= qc_event_outbox_high_watermark and qc_event_outbox_pending > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UA event outbox backlog is above its high-water mark"
+          description: "NG/completion events are awaiting acknowledgement; verify Node-RED is running, subscribed and draining its SQLite queue."
+
+      - alert: QcEventOutboxOldestTooOld
+        expr: qc_event_outbox_oldest_age_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest unacknowledged UA event is older than 2 minutes"
+          description: "The OPC UA event outbox has not drained for more than two minutes; inspect /qc/status and the Node-RED event subscription."
+
+      - alert: QcEventOutboxStatusStale
+        expr: qc_event_outbox_status_age_seconds < 0 or qc_event_outbox_status_age_seconds > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node-RED has not observed UA outbox status recently"
+          description: "The OutboxStatus heartbeat read has failed or is stale; outbox metrics may not reflect server state."
+
       - alert: QcOldestQueueItemTooOld
         expr: qc_queue_oldest_age_seconds > 60
         for: 2m

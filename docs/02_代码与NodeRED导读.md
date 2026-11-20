@@ -25,13 +25,13 @@
 
 - `NS_URI` 固定为 `urn:fde:linqinspect:qc`。
 - `DEFECT_CODES` 是虚拟缺陷源。
-- 端口、自动检测、间隔、NG 概率、窗口大小和 `QC_STATE_PATH` 全部来自环境变量。
+- 端口、自动检测、间隔、NG 概率、窗口大小、`QC_STATE_PATH` 和 `QC_OUTBOX_*` 容量/重发参数全部来自环境变量。
 - `QCStation` 保存设备状态、工单、计数、滑动窗口和节点字典 `self.nd`；启动时从 `QCStateStore` 恢复快照。
 - `_persist()` 把快照写入工作线程，避免文件 `fsync` 阻塞 OPC UA 事件循环。
 
 ### 2.2 建立地址空间
 
-阅读：`server/qc_server.py:63-139`
+阅读：`server/qc_server.py` 的 `QCStation.build()`。
 
 执行顺序：
 
@@ -41,14 +41,15 @@
 4. 创建 3 个根层只读控制变量和 3 个 MES 回执 ReadWrite 变量。
 5. 创建 6 个 Inspection 只读变量。
 6. 创建 3 个 Statistics 只读变量。
-7. 创建 3 个继承 `BaseEventType` 的 EventType。
-8. 创建 4 个 Method（含事件 ACK）。
+7. 在 `Events` 下创建 7 个 outbox 只读状态变量。
+8. 创建 3 个继承 `BaseEventType` 的 EventType。
+9. 创建 6 个 Method（控制、ACK、导出、清空）。
 
 理解点：`_ro(node)` 和 `_rw(node)` 不是装饰，它们直接影响客户端能否写入。Node-RED 写三个 MES 回执变量失败时，应先检查 AccessLevel。
 
 ### 2.3 事件触发
 
-阅读：`server/qc_server.py:141-148`
+阅读：`server/qc_server.py` 的 `_publish_event()`。
 
 `_fire()` 做三件事：
 
@@ -58,13 +59,16 @@
 
 ### 2.4 Method 校验
 
-阅读：`server/qc_server.py` 的四个 Method 包装与实现。
+阅读：`server/qc_server.py` 的六个 Method 包装与实现。
 
 必须记住：
 
-- 四个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工、ACK 与迟到检测交错。
+- 六个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工、ACK、清空与迟到检测交错。
 - `StartInspection` 先判断空工单、Running、Fault、目标数，最后才改状态。
 - `CompleteWorkOrder` 先判断无活动工单、工单不一致、状态不对，最后才发事件并回 Idle。
+- `AcknowledgeEvent` 只在 Node-RED 已成功持久化事件后删除对应 outbox 项；未知或重复 ID 幂等接受。
+- `ExportPendingEvents` 分页导出待确认事件并返回当前快照令牌；`PurgeOutbox` 必须携带匹配令牌才能人工清空。
+- outbox 达到高水位时拒绝新开检，达到硬上限时拒绝 NG 检测和完工，不会静默删除业务事件。
 - `ResetCounters` 清累计统计和窗口，`NgRate` 回到 `-1.0`。
 - 成功状态变更后持久化；拒绝调用不得修改业务状态。
 
@@ -86,7 +90,7 @@
 
 ### 2.6 虚拟质检与启动
 
-阅读：`server/qc_server.py:258-305`
+阅读：`server/qc_server.py` 的虚拟检测循环与 `main()`。
 
 - 只有 `DeviceStatus=Running` 时才生成样本。
 - 样本 SN 格式为 `SN-<UTC日期>-<六位序号>`。

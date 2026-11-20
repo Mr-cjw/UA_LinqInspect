@@ -22,6 +22,10 @@ EXPECTED_UNITS = {
 EXPECTED_ALERTS = {
     "QcEdgeDown",
     "QcQueueBacklogHigh",
+    "QcEventOutboxBackpressure",
+    "QcEventOutboxBacklogHigh",
+    "QcEventOutboxOldestTooOld",
+    "QcEventOutboxStatusStale",
     "QcOldestQueueItemTooOld",
     "QcDeadLettersGrowing",
     "QcDeliveryRetrySpike",
@@ -39,6 +43,9 @@ REQUIRED_ENV = {
     "QC_BACKUP_DIR",
     "QC_BACKUP_KEEP",
     "QC_BACKUP_METRICS_FILE",
+    "QC_OUTBOX_MAX_PENDING",
+    "QC_OUTBOX_HIGH_WATERMARK",
+    "QC_OUTBOX_EXPORT_LIMIT",
     "NODE_RED_PORT",
     "NODERED_ADMIN_USER",
     "NODERED_ADMIN_PASSWORD",
@@ -156,6 +163,11 @@ def main() -> int:
         check("heartbeat and backup alerts encode operational thresholds",
               "max_over_time(qc_heartbeat_failures[5m]) >= 3" in alerts_text and
               "129600" in alerts_text)
+        check("outbox alerts cover backpressure, backlog, age and stale status",
+              "qc_event_outbox_backpressure > 0" in alerts_text and
+              "qc_event_outbox_pending >= qc_event_outbox_high_watermark" in alerts_text and
+              "qc_event_outbox_oldest_age_seconds > 120" in alerts_text and
+              "qc_event_outbox_status_age_seconds > 30" in alerts_text)
 
         alertmanager_text = (output_dir / "prometheus" / "alertmanager.yml").read_text(encoding="utf-8")
         check("Alertmanager config routes critical and warning alerts",
@@ -196,6 +208,10 @@ def main() -> int:
               "NODERED_CREDENTIAL_SECRET=CHANGE_ME" in env_text and
               "NODERED_HTTP_PASS=CHANGE_ME" in env_text and
               "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text)
+        check("environment template exposes outbox capacity controls",
+              "QC_OUTBOX_MAX_PENDING=1000" in env_text and
+              "QC_OUTBOX_HIGH_WATERMARK=800" in env_text and
+              "QC_OUTBOX_EXPORT_LIMIT=500" in env_text)
         check("render summary points at generated artifacts",
               Path(str(summary.get("prometheusRules") or "")).is_file() and
               Path(str(summary.get("alertmanagerConfig") or "")).is_file() and

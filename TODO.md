@@ -10,7 +10,7 @@
 □ [High] 匿名写已拒绝，但管理员仍可直接写 `DeviceStatus`、`CurrentWorkOrderId`、`CurrentPartSN` 和三个回执变量，而 Method 状态机使用另一份内部字段。仍需消除双源状态，把控制/回执变量改为外部只读或统一写入校验。
 □ [High] `server/qc_server.py:151-199,220-257`：`StartInspection`、`CompleteWorkOrder`、`record_inspection` 没有并发锁；完工与正在进行的检测可交错，出现晚到检测事件、工单已清空、计数快照与事件不一致。应增加单一状态锁与一致性快照，并明确“检测中是否允许完工”。
 ✅ [High] ~~`server/qc_server.py:142-148,185-199,220-257`：状态、计数、UA 写入、事件发布没有事务或 outbox；`_fire()` 抛异常会让虚拟检测循环直接退出，或出现变量已更新但事件丢失、事件已发出但状态写回失败~~：已把 NG/完工事件与工位状态写入同一 JSON 快照 outbox；Node-RED 成功入队后调用 `AcknowledgeEvent`，未确认事件周期重发，稳定 `SourceEventId`/`CorrelationId` 支持消费端幂等，检测循环也不会因单次发布异常退出。
-□ [Medium] `server/qc_server.py` 的 outbox 当前没有容量上限、压缩和人工清理接口；Node-RED 长时间不可用时会持续增大状态快照。应增加积压上限/告警、事件合并策略和受认证的清空/导出操作，并验证状态文件接近磁盘上限时的降级行为。
+✅ [Medium] ~~`server/qc_server.py` 的 outbox 当前没有容量上限、压缩和人工清理接口；Node-RED 长时间不可用时会持续增大状态快照~~：已增加 `QC_OUTBOX_MAX_PENDING`/`QC_OUTBOX_HIGH_WATERMARK`，高水位拒绝新开检、硬上限拒绝检测与完工且不静默丢事件；Node-RED 暴露 `qc_event_outbox_*` 指标和告警；新增管理员 `ExportPendingEvents` 分页导出与令牌校验的 `PurgeOutbox`，并有匿名拒绝、背压恢复和清空幂等测试。仍缺事件合并/压缩策略和真实磁盘满降级演练。
 ✅ [High] ~~在线 Node-RED 已使用 SQLite 队列，但仍有“MES 回执成功后先完成任务、UA 写回失败缺少最终确认”的语义缺口~~：已用持久化 `ua_writebacks`/`ua_write_targets` 把 MES 成功与 UA 写回确认分离；两个目标全部确认后才删除任务，失败按退避重试并进入死信。
 ✅ [High] ~~MES 2xx/4xx/429/5xx/timeout 未分类~~：Phase 1 已实现回执 schema、关联 ID、错误码、4xx 终态死信、429 `Retry-After`、5xx/timeout 退避和非法 2xx 拒绝；Edge Core 另有事务化死信重放接口。
 □ [High] `nodered/flows.json` 节点 `fn_dedup_ng`、`fn_dedup_done`、`fn_enq_ng`、`fn_enq_done`：先去重并置位，再入队；入队异常、进程崩溃或队列溢出后，同一事件会永久被当作重复丢弃。应先去重与入队原子化，或让去重状态随任务成功/死信状态回滚，并提供重放。

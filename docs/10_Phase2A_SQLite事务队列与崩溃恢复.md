@@ -2,7 +2,7 @@
 
 > 日期：2026-11-20 ｜ Phase 2A 证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当时结果：194/194 PASS
 >
-> Phase 2B/2C、M3、运维加固、UA 写回确认、写回前崩溃恢复与事件 outbox 完成后当前合并回归为 448/448（含 Node-RED 认证、Edge Core、部署、长断网、死信重放与恢复测试），见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
+> Phase 2B/2C、M3、运维加固、UA 写回确认、写回前崩溃恢复、事件 outbox 与容量处置完成后当前合并回归为 494/494（含 Node-RED 认证、Edge Core、部署、长断网、死信重放与恢复测试），见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 

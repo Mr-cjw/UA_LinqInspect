@@ -153,6 +153,12 @@ async def main() -> int:
         "qc_delivery_errors_total",
         "qc_watchdog_total",
         "qc_database_bytes",
+        "qc_event_outbox_pending",
+        "qc_event_outbox_oldest_age_seconds",
+        "qc_event_outbox_capacity",
+        "qc_event_outbox_high_watermark",
+        "qc_event_outbox_backpressure",
+        "qc_event_outbox_status_age_seconds",
         "qc_ua_write_pending",
         "qc_ua_write_total",
         "qc_ua_write_errors_total",
@@ -163,6 +169,9 @@ async def main() -> int:
     check("enqueue total is a counter", metric_types.get("qc_enqueue_total") == "counter")
     check("delivery total is a counter", metric_types.get("qc_delivery_total") == "counter")
     check("database bytes is a gauge", metric_types.get("qc_database_bytes") == "gauge")
+    check("event outbox pending is a gauge", metric_types.get("qc_event_outbox_pending") == "gauge")
+    check("event outbox backpressure is a gauge",
+          metric_types.get("qc_event_outbox_backpressure") == "gauge")
     check("UA write-back pending is a gauge", metric_types.get("qc_ua_write_pending") == "gauge")
     check("UA write-back total is a counter", metric_types.get("qc_ua_write_total") == "counter")
 
@@ -191,6 +200,25 @@ async def main() -> int:
     check("UA write-back pending gauge matches /qc/status",
           metric_value(samples, "qc_ua_write_pending") ==
           float(initial_state["uaWriteback"]["pending"] + initial_state["uaWriteback"]["sending"]))
+    outbox_state = initial_state["outbox"]
+    check("event outbox pending gauge matches /qc/status",
+          metric_value(samples, "qc_event_outbox_pending") ==
+          float(outbox_state["pendingCount"]))
+    check("event outbox oldest-age gauge matches /qc/status",
+          metric_value(samples, "qc_event_outbox_oldest_age_seconds") ==
+          float(outbox_state["oldestAgeSec"]))
+    check("event outbox capacity gauge matches /qc/status",
+          metric_value(samples, "qc_event_outbox_capacity") ==
+          float(outbox_state["capacity"]))
+    check("event outbox high-water gauge matches /qc/status",
+          metric_value(samples, "qc_event_outbox_high_watermark") ==
+          float(outbox_state["highWatermark"]))
+    check("event outbox backpressure gauge matches /qc/status",
+          metric_value(samples, "qc_event_outbox_backpressure") ==
+          (1.0 if outbox_state["backpressure"] else 0.0))
+    check("event outbox status was observed by Node-RED",
+          outbox_state["statusFresh"] is True and outbox_state["statusAgeSec"] >= 0,
+          f"(age={outbox_state['statusAgeSec']}s)")
 
     check("restore MES ok mode", inject("inj_ok") and edge_status()["mesMode"] == "ok")
     client = await create_secure_client()

@@ -142,17 +142,21 @@ UA_LinqInspect/
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
     ├── ua_test_client.py      # 安全 OPC UA 客户端测试夹具
-    ├── state_persistence_test.py # 状态快照校验与恢复单测（3 项）
+    ├── state_persistence_test.py # 状态快照校验与恢复单测（5 项）
+    ├── outbox_test.py         # 持久化 outbox、重发与 ACK 单测（3 项）
+    ├── outbox_capacity_test.py # 背压、分页导出与清空令牌单测（9 项）
+    ├── outbox_recovery.py     # outbox SIGKILL 恢复与容量降级（18 项）
     ├── qc_state_restart_test.py  # 工位状态 SIGKILL 重启恢复（11 项）
-    ├── security_test.py       # UA 权限、控制变量只读、HTTP 认证与死信重放鉴权（14 项断言）
+    ├── security_test.py       # UA 权限、控制变量只读、HTTP 认证与运维接口鉴权（16 项断言）
     ├── edge_core_test.py      # Edge Core 契约、幂等、死信重放与 UA 确认（7 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
-    ├── metrics_test.py        # Prometheus 指标、UA 写回、体积与状态一致性（60 项断言）
+    ├── metrics_test.py        # Prometheus 指标、outbox、UA 写回与状态一致性（80 项断言）
     ├── health_test.js         # /healthz ready/degraded/unavailable（10 项断言）
+    ├── outbox_status_test.js  # OutboxStatus 解析、健康降级与 Prometheus 指标（8 项断言）
     ├── backup_queue_test.py   # WAL 在线备份、完整性与保留策略（20 项断言）
     ├── restore_queue_test.py  # dry-run、强制恢复、安全快照与继续消费（20 项断言）
-    ├── deploy_templates_test.py # 模板渲染、systemd/Alertmanager/logrotate 与告警（20 项断言）
+    ├── deploy_templates_test.py # 模板渲染、systemd/Alertmanager/logrotate 与告警（22 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
     ├── long_outage_recovery.py # MES 长断网、死信重放与实测 RTO（24 项断言）
     ├── soak_test.py           # 周期工单 soak、回执唯一性与资源漂移（20 项断言）
@@ -166,7 +170,7 @@ UA_LinqInspect/
 
 - **命名空间**：`ns=2`，NamespaceUri `urn:fde:linqinspect:qc`
 - **NodeId 风格**：全部 `ns=2;s=<可读名>`（如 `ns=2;s=QCStation.Inspection.NgRate`）
-- **模型骨架**：QCStation（工位）→ Inspection / Statistics / Events；15 变量（含 **CurrentPartSN 单件追溯** 和拆分后的 MES 回执变量）、3 Method（StartInspection / CompleteWorkOrder / ResetCounters）、3 Event（均携带 SerialNumber）
+- **模型骨架**：QCStation（工位）→ Inspection / Statistics / Events；22 变量（含 **CurrentPartSN 单件追溯**、拆分后的 MES 回执变量和 outbox 积压状态）、6 Method（StartInspection / CompleteWorkOrder / AcknowledgeEvent / ExportPendingEvents / PurgeOutbox / ResetCounters）、3 Event（均携带 SerialNumber）
 - **可选扩展**（Phase0 §6）：M4 计划将 DeviceStatus 升级为 `QCDeviceStatus` 真枚举（Part 3 §8.42）；进阶讨论 OPC UA for Control + MQTT for Streaming 协同
 - **编码硬约束**（详见 Phase0 文档 §2.6）：
   - 自定义 Event 必须继承 `BaseEventType`
@@ -178,9 +182,10 @@ UA_LinqInspect/
 - **失败分类**：4xx 立即死信、429 按 `Retry-After` 退避、5xx/timeout 指数退避、非法 2xx 拒绝写回
 - **写回确认**：MES 成功回执不会立即删除队列项；任务进入 UA 写回阶段，只有两个目标变量都写成功才完成，写回失败按退避重试并最终进入死信
 - **重启恢复**：一键回归会保留非空队列，停止/重启 Node-RED 或 `SIGKILL` 进程，验证 SQLite 续传、UA 写回确认与回执续写；UA Server 的工单、计数和 SN 序号也会从快照恢复
-- **可观测性**：`GET /metrics` 暴露队列深度、死信、去重、入队/投递、UA 写回和看门狗计数；计数与队列状态同事务持久化
+- **可观测性**：`GET /metrics` 暴露队列深度、死信、去重、入队/投递、UA 写回、看门狗和 UA outbox 积压；计数与队列状态同事务持久化
+- **outbox 容量保护**：NG/完工事件积压达到高水位时拒绝新开检，达到硬上限时拒绝新检测与完工，不静默丢弃业务事件；管理员可分页导出并用一次性令牌清空
 - **在线备份**：`scripts/backup_queue.py` 使用 SQLite backup API，先校验再原子落盘，避免 WAL 模式下直接复制主文件
-- **健康探针**：`GET /healthz` 在 SQLite 不可用时返回 503 `unavailable`，连续 UA 心跳失败达到 3 次时返回 503 `degraded`
+- **健康探针**：`GET /healthz` 在 SQLite 不可用时返回 503 `unavailable`；连续 UA 心跳失败达到 3 次或 outbox 进入背压时返回 503 `degraded`
 - **部署与恢复**：systemd unit/timer、Prometheus 告警和 `restore_queue.py` 形成可重复的运维路径；恢复前必须停止 Node-RED
 
 ## 快速开始（Ubuntu / Linux）
@@ -465,6 +470,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 - 心跳每 5 秒同时读取 `DeviceStatus` 和标准 `ServerStatus.StartTime`（`ns=0;i=2257`）。
   UA Server 重启后 StartTime 变化，流会主动向三个客户端广播 `action=reconnect`，
   重建旧 Session 上的事件订阅；仅靠读写心跳恢复不足以证明 Event Subscription 已恢复。
+- 心跳同时读取 `Events.OutboxStatus`；有积压时 UA Server 每个重发周期刷新最老事件年龄，Node-RED 据此暴露 `/qc/status`、`/healthz` 和 Prometheus 背压指标。
 - 缓冲队列、去重集合、死信队列和运行计数使用 SQLite 事务存储（WAL + `synchronous=FULL`）；去重与入队在同一事务提交，发送泵用原子 `claimNext` 保持单飞行。当前是“至少一次投递 + 接收端幂等”，仍不能宣称 exactly-once。
 - `GET /metrics` 提供 Prometheus 文本指标；`GET /qc/status` 保持原有 JSON 契约。运维接口当前依赖网络边界保护，生产部署应在反向代理/防火墙限制来源。
 - `/metrics` 额外暴露 `qc_database_bytes{kind="main|wal|shm"}`；Prometheus 模板包含 WAL 超过 256 MiB 与文件系统剩余空间低于 10% 的告警。
@@ -480,12 +486,13 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 448/448 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 448/448 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 448/448 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 448/448 PASS） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 448/448 PASS；与投递队列尚未同事务） |
-| 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 13/13；仍为 at-least-once） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 494/494 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 494/494 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 494/494 PASS） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 494/494 PASS） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 494/494 PASS；与投递队列尚未同事务） |
+| 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
+| outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 8/8、积压恢复 18/18） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 长断网、死信重放、soak、短断网和 Server 重启已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |

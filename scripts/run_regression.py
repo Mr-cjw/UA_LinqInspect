@@ -28,11 +28,13 @@ CERT_DIR = REPO_ROOT / "certs"
 NODE_TESTS = (
     ("sqlite_queue", "tests/sqlite_queue_test.js", 30),
     ("health", "tests/health_test.js", 30),
+    ("outbox_status", "tests/outbox_status_test.js", 30),
 )
 
 TESTS = (
     ("state_persistence", "tests/state_persistence_test.py", 30),
     ("event_outbox", "tests/outbox_test.py", 30),
+    ("outbox_capacity", "tests/outbox_capacity_test.py", 30),
     ("qc_state_restart", "tests/qc_state_restart_test.py", 60),
     ("outbox_recovery", "tests/outbox_recovery.py", 90),
     ("edge_core", "tests/edge_core_test.py", 60),

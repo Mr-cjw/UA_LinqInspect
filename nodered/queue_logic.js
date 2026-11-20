@@ -107,6 +107,87 @@ function eventAckMessage(msg, node) {
   };
 }
 
+function asNonNegativeNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function unwrapUaValue(value) {
+  let current = value;
+  let guard = 0;
+  while (current && typeof current === 'object' && current.value !== undefined && guard < 8) {
+    current = current.value;
+    guard += 1;
+  }
+  return current;
+}
+
+function outboxSnapshot(flow) {
+  const pendingCount = asNonNegativeNumber(flow.get('outboxPendingCount'), 0);
+  const capacity = asNonNegativeNumber(flow.get('outboxCapacity'), 0);
+  const highWatermark = asNonNegativeNumber(flow.get('outboxHighWatermark'), 0);
+  const oldestAgeSec = asNonNegativeNumber(flow.get('outboxOldestAgeSec'), 0);
+  const receivedAt = asNonNegativeNumber(flow.get('outboxStatusReceivedAt'), 0);
+  const statusAgeSec = receivedAt > 0
+    ? Math.max(0, Math.round((Date.now() - receivedAt) / 1000))
+    : -1;
+  const configuredBackpressure = flow.get('outboxBackpressure') === true;
+  const backpressure = configuredBackpressure ||
+    (highWatermark > 0 && pendingCount >= highWatermark);
+  return {
+    pendingCount,
+    oldestAgeSec,
+    oldestPendingAt: String(flow.get('outboxOldestPendingAt') || ''),
+    capacity,
+    highWatermark,
+    backpressure,
+    lastAckAt: String(flow.get('outboxLastAckAt') || ''),
+    purgedTotal: asNonNegativeNumber(flow.get('outboxPurgedTotal'), 0),
+    rejectedTotal: asNonNegativeNumber(flow.get('outboxRejectedTotal'), 0),
+    statusAgeSec,
+    statusFresh: receivedAt > 0 && statusAgeSec <= 30,
+  };
+}
+
+function recordOutboxStatus(msg, flow, node) {
+  let raw = unwrapUaValue(msg.payload);
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch (error) {
+      node.warn('[Outbox状态解析失败] ' + error.message);
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    node.warn('[Outbox状态解析失败] payload 不是对象: ' + JSON.stringify(raw));
+    return null;
+  }
+  const pendingCount = Number(raw.pendingCount);
+  if (!Number.isFinite(pendingCount) || pendingCount < 0) {
+    node.warn('[Outbox状态校验失败] pendingCount 非法: ' + JSON.stringify(raw.pendingCount));
+    return null;
+  }
+  const capacity = asNonNegativeNumber(raw.capacity, 0);
+  const highWatermark = asNonNegativeNumber(raw.highWatermark, 0);
+  flow.set('outboxPendingCount', Math.trunc(pendingCount));
+  flow.set('outboxOldestAgeSec', asNonNegativeNumber(raw.oldestAgeSeconds, 0));
+  flow.set('outboxOldestPendingAt', String(raw.oldestPendingAt || ''));
+  flow.set('outboxCapacity', Math.trunc(capacity));
+  flow.set('outboxHighWatermark', Math.trunc(highWatermark));
+  flow.set('outboxBackpressure', raw.backpressure === true);
+  flow.set('outboxLastAckAt', String(raw.lastAckAt || ''));
+  flow.set('outboxPurgedTotal', Math.trunc(asNonNegativeNumber(raw.purgedTotal, 0)));
+  flow.set('outboxRejectedTotal', Math.trunc(asNonNegativeNumber(raw.rejectedTotal, 0)));
+  flow.set('outboxStatusReceivedAt', Date.now());
+  node.status({
+    fill: raw.backpressure === true ? 'red' : 'grey',
+    shape: 'dot',
+    text: 'Outbox=' + Math.trunc(pendingCount) + '/' + Math.trunc(highWatermark),
+  });
+  return null;
+}
+
 function enqueueNg(msg, flow, node, store) {
   const serialNumber = String(msg.serialNumber || '').trim();
   if (!serialNumber) {
@@ -573,7 +654,7 @@ function metricKey(name, type = '', outcome = '', errorCode = '') {
   return [name, type, outcome, errorCode].join('\u0000');
 }
 
-function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec) {
+function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec, outbox = {}) {
   const values = new Map();
   for (const item of snapshot) {
     values.set(metricKey(item.name, item.type, item.outcome, item.errorCode), item.value);
@@ -599,6 +680,18 @@ function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec) {
   lines.push(`qc_dedup_keys{kind="work_order"} ${prometheusValue(state.dedup.completedWorkOrders)}`);
   family('qc_heartbeat_failures', 'Consecutive OPC UA heartbeat failures (0-3).', 'gauge');
   lines.push(`qc_heartbeat_failures ${prometheusValue(heartbeatFailures)}`);
+  family('qc_event_outbox_pending', 'NG/completion events awaiting Node-RED acknowledgement in the UA outbox.', 'gauge');
+  lines.push(`qc_event_outbox_pending ${prometheusValue(outbox.pendingCount)}`);
+  family('qc_event_outbox_oldest_age_seconds', 'Age in seconds of the oldest unacknowledged UA outbox event.', 'gauge');
+  lines.push(`qc_event_outbox_oldest_age_seconds ${prometheusValue(outbox.oldestAgeSec)}`);
+  family('qc_event_outbox_capacity', 'Configured hard capacity of the UA event outbox.', 'gauge');
+  lines.push(`qc_event_outbox_capacity ${prometheusValue(outbox.capacity)}`);
+  family('qc_event_outbox_high_watermark', 'Configured backpressure threshold of the UA event outbox.', 'gauge');
+  lines.push(`qc_event_outbox_high_watermark ${prometheusValue(outbox.highWatermark)}`);
+  family('qc_event_outbox_backpressure', '1 when the UA outbox has reached its backpressure threshold.', 'gauge');
+  lines.push(`qc_event_outbox_backpressure ${outbox.backpressure ? 1 : 0}`);
+  family('qc_event_outbox_status_age_seconds', 'Age of the last successful OutboxStatus read; -1 means never observed.', 'gauge');
+  lines.push(`qc_event_outbox_status_age_seconds ${prometheusValue(outbox.statusAgeSec)}`);
   family('qc_uptime_seconds', 'Seconds since this Node-RED flow was first observed.', 'gauge');
   lines.push(`qc_uptime_seconds ${prometheusValue(uptimeSec)}`);
   const storage = state.storage || {};
@@ -681,7 +774,8 @@ function metrics(msg, flow, store) {
     snapshot,
     state,
     flow.get('hbFails') || 0,
-    uptimeSec
+    uptimeSec,
+    outboxSnapshot(flow)
   );
   msg.headers = {
     'content-type': 'text/plain; version=0.0.4; charset=utf-8',
@@ -696,18 +790,23 @@ function health(msg, flow, store) {
   if (!flow.get('edgeStartedAt')) flow.set('edgeStartedAt', startedAt);
   const uptimeSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
   const heartbeatFailures = Number(flow.get('hbFails') || 0);
+  const outbox = outboxSnapshot(flow);
   try {
     const snapshot = store.status();
-    const ok = heartbeatFailures < 3;
+    const ok = heartbeatFailures < 3 && !outbox.backpressure;
     msg.statusCode = ok ? 200 : 503;
     msg.payload = {
       ok,
       service: 'ua-linqinspect-edge',
       status: ok ? 'ready' : 'degraded',
+      reasonCode: outbox.backpressure
+        ? 'OUTBOX_BACKPRESSURE'
+        : (heartbeatFailures >= 3 ? 'UA_HEARTBEAT_FAILURES' : ''),
       uptimeSec,
       heartbeatFailures,
       queue: snapshot.queue,
       deadLetters: snapshot.deadLetters.total,
+      outbox,
       at: timestamp(),
     };
   } catch (_) {
@@ -735,6 +834,7 @@ function status(msg, flow, store) {
     uptimeSec: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
     mesMode: flow.get('mesMode') || 'ok',
     heartbeatFailures: flow.get('hbFails') || 0,
+    outbox: outboxSnapshot(flow),
     queue: snapshot.queue,
     deadLetters: {
       total: snapshot.deadLetters.total,
@@ -822,5 +922,7 @@ module.exports = {
   status,
   metrics,
   health,
+  outboxSnapshot,
+  recordOutboxStatus,
   replayDeadLetters,
 };

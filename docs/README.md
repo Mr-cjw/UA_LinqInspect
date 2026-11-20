@@ -19,7 +19,7 @@
 | 文档 | 解决的问题 | 适合什么时候读 |
 |---|---|---|
 | [00_项目全景与架构.md](00_项目全景与架构.md) | 项目为什么存在、组件如何协作、完整时序是什么 | 第一次接触项目 |
-| [01_信息模型与业务规则速查.md](01_信息模型与业务规则速查.md) | 15 个变量、4 个 Method、3 个事件、状态机、NgRate、MES 契约 | 写代码或答辩前 |
+| [01_信息模型与业务规则速查.md](01_信息模型与业务规则速查.md) | 22 个变量、6 个 Method、3 个事件、outbox 容量、状态机、NgRate、MES 契约 | 写代码或答辩前 |
 | [02_代码与NodeRED导读.md](02_代码与NodeRED导读.md) | Python 代码怎么读、Node-RED 节点怎么串、关键函数在哪里 | 要改代码或排查问题 |
 | [03_运行验证与排障手册.md](03_运行验证与排障手册.md) | 怎么启动、怎么复跑测试、四种场景怎么做、常见错误怎么修 | 每次运行项目 |
 | [04_掌握检查与答辩问答.md](04_掌握检查与答辩问答.md) | 自测是否真的掌握、常见追问、练习任务、60 秒项目介绍 | 学习结束或面试前 |
@@ -87,21 +87,23 @@
 
 2026-11-21 完成安全环境、Phase 1 关联追踪、Phase 2A SQLite 事务队列、Phase 2B 可观测性/在线备份、Phase 2C 部署/告警/恢复演练和工位状态持久化，并通过一键隔离回归：
 
-- Python：`.venv`，Python 3.14.4，`asyncua 2.1.0`
-- Node.js：26.13.0；Node-RED：5.0.9；`node-red-contrib-opcua`：0.2.355
+- Python：`.venv`，Python 3.12.3，`asyncua 2.1.0`
+- Node.js：26.13.1；Node-RED：5.0.9；`node-red-contrib-opcua`：0.2.355
 - 状态工具单测：5/5 PASS
 - 事件 outbox 单测：3/3 PASS
+- outbox 容量/导出单测：9/9 PASS
+- outbox 状态接口：8/8 PASS
 - 工位状态 SIGKILL 重启：11/11 PASS
-- 事件 outbox SIGKILL 恢复：13/13 PASS（稳定事件 ID、ACK 幂等、停止重发）
+- 事件 outbox SIGKILL 恢复：18/18 PASS（稳定事件 ID、ACK 幂等、积压状态与背压恢复）
 - Edge Core API/状态机：7/7 PASS
-- 安全回归：14/14 PASS（含控制变量直接写拒绝、Node-RED HTTP 认证与死信重放鉴权）
+- 安全回归：16/16 PASS（含控制变量直接写拒绝、匿名 outbox 导出/清空拒绝、Node-RED HTTP 认证）
 - M1 冒烟测试：36/36 PASS
 - M2 正常链路端到端测试：15/15 PASS
-- Prometheus 指标：60/60 PASS（含 UA 写回与 SQLite/WAL/SHM 体积）
+- Prometheus 指标：80/80 PASS（含 UA 写回、outbox 积压与 SQLite/WAL/SHM 体积）
 - 健康探针：10/10 PASS
 - SQLite 在线备份：20/20 PASS
 - 离线恢复：20/20 PASS
-- 部署模板、Alertmanager 与 logrotate：20/20 PASS
+- 部署模板、Alertmanager 与 logrotate：22/22 PASS（含 outbox 告警）
 - M2 故障场景测试：52/52 PASS（5xx、timeout、4xx、429、非法 2xx、Method 拒绝）
 - M3 长断网与死信重放：24/24 PASS（实测排空 RTO 17.95s）
 - 周期 soak：20/20 PASS（6 个工单、回执唯一、无队列/死信漂移）
@@ -112,7 +114,7 @@
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：448/448 PASS（27 个测试模块）
+- 一键隔离回归合计：494/494 PASS（29 个测试模块）
 
 一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。工位状态单写者与恢复边界见 [16_状态源重构与持久化恢复.md](16_状态源重构与持久化恢复.md)；Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 
