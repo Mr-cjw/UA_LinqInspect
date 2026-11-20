@@ -1,0 +1,689 @@
+openapi: 3.1.0
+info:
+  title: Edge QC Gateway - Edge Core API
+  version: 0.1.0
+  description: |
+    质检-MES 可靠边缘连接器的控制面契约草案。
+
+    设计原则：
+    - 质检结果先持久化到 SQLite Outbox，再异步投递 MES；
+    - 输入幂等键必须稳定，重复请求不得重复生成业务效果；
+    - MES 回执只有经过校验并完成 UA 写回后才推进到 DONE；
+    - API 只表达产品边界，不承诺 exactly-once。
+servers:
+  - url: http://127.0.0.1:8770
+    description: 本地边缘设备
+security:
+  - bearerAuth: []
+tags:
+  - name: Inspection
+  - name: Deliveries
+  - name: DeadLetters
+  - name: Operations
+
+paths:
+  /v1/inspection-events:
+    post:
+      tags: [Inspection]
+      operationId: ingestInspectionEvent
+      summary: 接收标准化质检结果并事务化写入 Outbox
+      description: |
+        来源可以是人工录入、第三方视觉或自研视觉。调用方必须提供稳定的
+        Idempotency-Key 和 sourceEventId。相同幂等键、相同载荷返回已有记录；
+        相同幂等键、不同载荷返回 409 PAYLOAD_CONFLICT。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InspectionResultRequest'
+      responses:
+        '202':
+          description: 已持久化，等待发送 MES
+          headers:
+            Idempotent-Replay:
+              description: true 表示重复请求命中了已有记录
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/deliveries:
+    get:
+      tags: [Deliveries]
+      operationId: listDeliveries
+      summary: 查询投递任务
+      parameters:
+        - name: state
+          in: query
+          schema:
+            $ref: '#/components/schemas/DeliveryState'
+        - name: stationId
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 投递任务分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/deliveries/{deliveryId}:
+    get:
+      tags: [Deliveries]
+      operationId: getDelivery
+      summary: 查询单个投递任务
+      parameters:
+        - $ref: '#/components/parameters/DeliveryId'
+      responses:
+        '200':
+          description: 投递任务详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/deliveries/{deliveryId}/ua-write-result:
+    post:
+      tags: [Deliveries]
+      operationId: reportUaWriteResult
+      summary: 回报 MES 回执写回 OPC UA 的结果
+      description: |
+        只有 MES 回执校验通过的任务才允许调用。成功后将任务推进到 DONE；
+        失败时保留 ACKED 状态并进入 UA 写回重试，不得删除任务。
+      parameters:
+        - $ref: '#/components/parameters/DeliveryId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UaWriteResultRequest'
+      responses:
+        '200':
+          description: 写回结果已持久化
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/dead-letters:
+    get:
+      tags: [DeadLetters]
+      operationId: listDeadLetters
+      summary: 查询死信
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 死信分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadLetterPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/dead-letters/{deliveryId}/replay:
+    post:
+      tags: [DeadLetters]
+      operationId: replayDeadLetter
+      summary: 人工重放死信
+      description: 重放必须复用原业务幂等键，不能生成新的业务标识。
+      parameters:
+        - $ref: '#/components/parameters/DeliveryId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayRequest'
+      responses:
+        '202':
+          description: 已重新进入 PENDING
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/dead-letters/{deliveryId}/acknowledge:
+    post:
+      tags: [DeadLetters]
+      operationId: acknowledgeDeadLetter
+      summary: 确认死信已完成人工处置
+      parameters:
+        - $ref: '#/components/parameters/DeliveryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcknowledgeRequest'
+      responses:
+        '200':
+          description: 已确认
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadLetter'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/health:
+    get:
+      tags: [Operations]
+      operationId: getHealth
+      summary: 存活检查
+      security: []
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/status:
+    get:
+      tags: [Operations]
+      operationId: getStatus
+      summary: 运行状态与轻量指标
+      responses:
+        '200':
+          description: 当前状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-token
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 稳定业务幂等键。建议使用 stationId + sourceEventId 的规范化形式。
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: true
+      description: 全链路关联 ID，必须与请求体 correlationId 一致；未提供时由网关生成并必须可追踪。
+      schema:
+        type: string
+        pattern: '^corr-[A-Za-z0-9._:-]{8,180}$'
+    DeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: 请求格式或字段校验失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: 未认证
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: 幂等键冲突或状态迁移不合法
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: 本地存储或关键依赖不可用
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    InspectionResultRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - sourceEventId
+        - stationId
+        - eventType
+        - occurredAt
+        - correlationId
+      properties:
+        schemaVersion:
+          type: string
+          const: '1.0'
+        sourceEventId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 来源系统内稳定、唯一的事件标识。
+        stationId:
+          type: string
+          minLength: 1
+          maxLength: 100
+        occurredAt:
+          type: string
+          format: date-time
+          description: 质检事件发生时间，必须为带时区的 ISO 8601。
+        eventType:
+          type: string
+          enum: [NG_ORDER, COMPLETION_REPORT]
+          description: NG_ORDER 产生 MES 开单；COMPLETION_REPORT 产生完工报工。
+        result:
+          type: string
+          enum: [OK, NG]
+          description: NG_ORDER 必填；COMPLETION_REPORT 可省略。
+        serialNumber:
+          type: [string, 'null']
+          maxLength: 200
+        workOrderId:
+          type: [string, 'null']
+          maxLength: 200
+        defectType:
+          type: [string, 'null']
+          maxLength: 100
+        confidence:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+        imageId:
+          type: [string, 'null']
+          maxLength: 500
+        inspectCount:
+          type: [integer, 'null']
+          minimum: 0
+        okCount:
+          type: [integer, 'null']
+          minimum: 0
+        ngCount:
+          type: [integer, 'null']
+          minimum: 0
+        ngRate:
+          type: [number, 'null']
+          minimum: -1
+          maximum: 1
+        correlationId:
+          type: string
+          pattern: '^corr-[A-Za-z0-9._:-]{8,180}$'
+        metadata:
+          type: object
+          additionalProperties: true
+      allOf:
+        - if:
+            properties:
+              eventType:
+                const: NG_ORDER
+            required: [eventType]
+          then:
+            required: [result, workOrderId, serialNumber, defectType]
+            properties:
+              result:
+                const: NG
+              defectType:
+                type: string
+                minLength: 1
+        - if:
+            properties:
+              eventType:
+                const: COMPLETION_REPORT
+            required: [eventType]
+          then:
+            required: [workOrderId, inspectCount, okCount, ngCount, ngRate]
+      examples:
+        - schemaVersion: '1.0'
+          sourceEventId: station-01-20261120-000001
+          stationId: STATION-01
+          occurredAt: '2026-11-20T12:34:56.789Z'
+          eventType: NG_ORDER
+          result: NG
+          serialNumber: SN-20261120-000001
+          workOrderId: WO-20261120-001
+          defectType: SCRATCH
+          confidence: 0.93
+          imageId: IMG-20261120-000001
+          correlationId: corr-7d35b5d0-6811-4d66-b7db-42242543b9b1
+          metadata:
+            source: third-party-vision
+
+    DeliveryState:
+      type: string
+      enum:
+        - PENDING
+        - SENDING
+        - RETRY_WAIT
+        - ACKED
+        - UA_WRITE_PENDING
+        - DONE
+        - DEAD
+        - DISCARDED
+
+    Delivery:
+      type: object
+      required:
+        - deliveryId
+        - state
+        - businessKey
+        - correlationId
+        - attempts
+        - createdAt
+        - updatedAt
+      properties:
+        deliveryId:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/DeliveryState'
+        businessKey:
+          type: string
+        sourceEventId:
+          type: string
+        stationId:
+          type: string
+        eventType:
+          type: string
+          enum: [NG_ORDER, COMPLETION_REPORT]
+        correlationId:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+        nextAttemptAt:
+          type: [string, 'null']
+          format: date-time
+        leaseUntil:
+          type: [string, 'null']
+          format: date-time
+        lastErrorCode:
+          type: [string, 'null']
+        lastErrorMessage:
+          type: [string, 'null']
+        mesReceipt:
+          oneOf:
+            - $ref: '#/components/schemas/MesReceipt'
+            - type: 'null'
+        uaWriteConfirmed:
+          type: boolean
+          default: false
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    MesReceipt:
+      type: object
+      required: [accepted, receiptNo, correlationId, receivedAt]
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        receiptNo:
+          type: string
+          minLength: 1
+        correlationId:
+          type: string
+        duplicated:
+          type: boolean
+        receivedAt:
+          type: string
+          format: date-time
+
+    DeliveryPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Delivery'
+        nextCursor:
+          type: [string, 'null']
+
+    UaWriteResultRequest:
+      type: object
+      additionalProperties: false
+      required: [success, correlationId]
+      properties:
+        success:
+          type: boolean
+        correlationId:
+          type: string
+        writeTarget:
+          type: string
+          description: 例如 ns=2;s=QCStation.LastNgMesOrderNo。
+        errorCode:
+          type: [string, 'null']
+        errorMessage:
+          type: [string, 'null']
+
+    DeadLetter:
+      type: object
+      required: [deliveryId, reasonCode, failedAt, attempts]
+      properties:
+        deliveryId:
+          type: string
+          format: uuid
+        businessKey:
+          type: string
+        correlationId:
+          type: string
+        reasonCode:
+          type: string
+        reason:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+        failedAt:
+          type: string
+          format: date-time
+        replayedAt:
+          type: [string, 'null']
+          format: date-time
+        acknowledgedAt:
+          type: [string, 'null']
+          format: date-time
+        acknowledgedBy:
+          type: [string, 'null']
+
+    DeadLetterPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeadLetter'
+        nextCursor:
+          type: [string, 'null']
+
+    ReplayRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, actor]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 500
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    AcknowledgeRequest:
+      type: object
+      additionalProperties: false
+      required: [actor, resolution]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 100
+        resolution:
+          type: string
+          minLength: 3
+          maxLength: 1000
+
+    Error:
+      type: object
+      required: [code, message, correlationId, retryable]
+      properties:
+        code:
+          type: string
+          examples: [INVALID_REQUEST, PAYLOAD_CONFLICT, STATE_CONFLICT, STORAGE_UNAVAILABLE]
+        message:
+          type: string
+        correlationId:
+          type: string
+        retryable:
+          type: boolean
+        details:
+          type: object
+          additionalProperties: true
+
+    Health:
+      type: object
+      required: [status, database]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, failed]
+        database:
+          type: string
+          enum: [ok, unavailable]
+        version:
+          type: string
+        uptimeSeconds:
+          type: integer
+          minimum: 0
+
+    Status:
+      type: object
+      required: [health, queue, deadLetters, mes, ua]
+      properties:
+        health:
+          $ref: '#/components/schemas/Health'
+        queue:
+          type: object
+          required: [total, pending, sending, retryWait, oldestAgeSeconds]
+          properties:
+            total:
+              type: integer
+            pending:
+              type: integer
+            sending:
+              type: integer
+            retryWait:
+              type: integer
+            oldestAgeSeconds:
+              type: number
+        deadLetters:
+          type: object
+          required: [total]
+          properties:
+            total:
+              type: integer
+            oldestAgeSeconds:
+              type: number
+        mes:
+          type: object
+          properties:
+            successTotal:
+              type: integer
+            failureTotal:
+              type: integer
+            lastSuccessAt:
+              type: [string, 'null']
+              format: date-time
+            lastFailureAt:
+              type: [string, 'null']
+              format: date-time
+        ua:
+          type: object
+          properties:
+            writeSuccessTotal:
+              type: integer
+            writeFailureTotal:
+              type: integer
+            lastWriteSuccessAt:
+              type: [string, 'null']
+              format: date-time

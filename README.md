@@ -41,7 +41,12 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r server/requirements.txt
 .venv/bin/python scripts/setup_pki.py
 npm install --prefix .node-red --no-audit --no-fund
+.venv/bin/python scripts/setup_node_red_security.py
 ```
+
+安全脚本会生成 `.node-red/settings.js`、`.node-red/.secure-env`（权限 600）和加密的
+`.node-red/flows_cred.json`。这些文件均不得提交。启动 Node-RED 前必须先
+`source .node-red/.secure-env`。
 
 然后按 [第 2 节](#2-生成本地-ca-证书首次运行或轮换时) 把 CA 证书和 CRL 同步到
 Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会报
@@ -51,8 +56,9 @@ Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会�
 
 1. **终端 1 启动 OPC UA Server**：配置证书、私钥、信任目录和管理员账号，看到
    `OPC UA Server listening` 即成功。
-2. **终端 2 启动 Node-RED**：执行 `.node-red/node_modules/.bin/node-red --userDir "$PWD/.node-red" --port 1880 --no-telemetry`，
-   浏览器打开 `http://127.0.0.1:1880`。
+2. **终端 2 启动 Node-RED**：先 `source .node-red/.secure-env`，再执行
+   `.node-red/node_modules/.bin/node-red --userDir "$PWD/.node-red" --port 1880 --no-telemetry`。
+   浏览器打开 `http://127.0.0.1:1880`，使用 `NODERED_ADMIN_USER` / `NODERED_ADMIN_PASSWORD` 登录。
 3. **终端 3 运行验证**：先跑 `tests/smoke_test.py` 验证 UA 模型，再跑
    `tests/nodered_e2e.py` 验证完整链路，最后跑 `tests/fault_scenarios.py` 验证重试与死信。
 
@@ -100,7 +106,9 @@ UA_LinqInspect/
 ├── scripts/
 │   ├── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
 │   ├── backup_queue.py        # SQLite 在线备份、完整性校验与保留策略
+│   ├── setup_node_red_security.py  # 安装 Node-RED 认证、加密凭据和本地 secrets
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
+├── edge_core/                  # 外部 Edge Core 控制面/OpenAPI 垂直切片
 ├── hardware/                  # 可选硬件扩展：树莓派 open62541 Server、STM32 客户端方案
 ├── docs/
 │   ├── README.md              # 文档导航与学习路径
@@ -116,6 +124,12 @@ UA_LinqInspect/
 │   ├── 09_Phase1关联追踪与MES错误分类.md
 │   ├── 10_Phase2A_SQLite事务队列与崩溃恢复.md
 │   ├── 11_Phase2B可观测性与SQLite备份.md
+│   ├── 10_内部经营宪章.md
+│   ├── 11_Edge_Core_接口与状态机.md
+│   ├── 12_连接器SOW与验收模板.md
+│   ├── 13_视觉增值包SOW与验收模板.md
+│   ├── 14_投资人BP叙事.md
+│   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
@@ -220,12 +234,13 @@ Server 启动时会检查自身证书有效期：剩余 30 天以内或已经过
 
 ```bash
 cd ~/UA_LinqInspect
+source .node-red/.secure-env
 UA_ENDPOINT_PORT=4840 \
 UA_SERVER_CERT="$PWD/certs/server/server_cert.der" \
 UA_SERVER_PRIVATE_KEY="$PWD/certs/server/server_key.pem" \
 UA_TRUSTED_CLIENT_CERTS_DIR="$PWD/certs/trusted_clients" \
-UA_ADMIN_USER=admin \
-UA_ADMIN_PASS='replace-with-a-strong-password' \
+UA_ADMIN_USER="$NODERED_OPCUA_USER" \
+UA_ADMIN_PASS="$NODERED_OPCUA_PASSWORD" \
 QC_AUTO_INSPECT=1 \
 QC_NG_PROBABILITY=0.5 \
 QC_INSPECT_INTERVAL=1.0 \
@@ -250,9 +265,12 @@ npm install --prefix .node-red --no-audit --no-fund
 
 ```bash
 cd ~/UA_LinqInspect
+source .node-red/.secure-env
 .node-red/node_modules/.bin/node-red \
     --userDir "$PWD/.node-red" --port 1880 --no-telemetry
 ```
+
+Node-RED 管理端和 HTTP 节点均要求认证，默认只监听 `127.0.0.1`。
 
 ### 5. 运行验证
 
@@ -271,7 +289,8 @@ cd ~/UA_LinqInspect
 
 ```bash
 cd ~/UA_LinqInspect
-export UA_ENDPOINT_PORT=4840 UA_ADMIN_USER=admin UA_ADMIN_PASS='your-local-password'
+source .node-red/.secure-env
+export UA_ENDPOINT_PORT=4840
 .venv/bin/python tests/security_test.py
 .venv/bin/python tests/smoke_test.py
 .venv/bin/python tests/nodered_e2e.py
@@ -281,12 +300,35 @@ export UA_ENDPOINT_PORT=4840 UA_ADMIN_USER=admin UA_ADMIN_PASS='your-local-passw
 MES 故障注入入口：
 
 ```bash
-curl -X POST http://127.0.0.1:1880/inject/inj_ok
-curl -X POST http://127.0.0.1:1880/inject/inj_5xx
-curl -X POST http://127.0.0.1:1880/inject/inj_to
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/ok
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/5xx
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/timeout
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/4xx
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/429
+curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
+  -X POST http://127.0.0.1:1880/lab/mode/invalid2xx
 ```
 
+### 6. 运行 Edge Core 垂直切片
+
+`edge_core/` 是面向外部连接器/控制面的 SQLite Outbox 与状态机垂直切片。Node-RED 在线链路已有独立 SQLite WAL 队列；两者接口和职责仍需收敛。
+
+```bash
+export EDGE_API_TOKEN='replace-with-strong-token'
+export EDGE_DB_PATH="$PWD/data/edge_core.sqlite3"
+export MES_BASE_URL='http://127.0.0.1:1880'
+.venv/bin/python -m edge_core.main
+```
+
+完整契约见 [docs/11_Edge_Core_接口与状态机.md](docs/11_Edge_Core_接口与状态机.md) 和 [docs/api/edge-core.openapi.yaml](docs/api/edge-core.openapi.yaml)。
+
 ## 快速开始（Windows PowerShell）
+
 
 ### 1. 创建隔离 Python 环境
 
@@ -405,10 +447,11 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 |---|---|---|
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
-| M2 | Node-RED 订阅/报警流 + 模拟 MES + 持久化 context + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（一键回归 158/158 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（一键回归 194/194 PASS） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（一键回归 255/255 PASS） |
+| M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（一键回归 264/264 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + SIGKILL 崩溃恢复 | ✅ 完成（合并回归 264/264 PASS） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（含安全/Edge Core 合并回归 264/264 PASS） |
+| Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 短断网、陈旧过滤、Server 重启订阅重建已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 

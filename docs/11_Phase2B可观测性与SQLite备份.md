@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-145650/summary.json` ｜ 当前结果：255/255 PASS
+> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：`.tmp/regression-20261120-153352/summary.json`（264/264）
 
 ## 1. 这一阶段解决了什么
 
@@ -61,7 +61,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 
 ### 2.3 安全边界
 
-`/metrics` 与 `/qc/status` 一样需要由现场网络边界保护。当前 Node-RED 示例没有为运维接口增加独立认证；生产试点应在反向代理、防火墙或网关层限制来源，不要直接暴露到公网。
+`/metrics` 与 `/qc/status` 在安全基线中由 Node-RED `httpNodeAuth` 保护，并只监听回环地址。生产试点仍应在反向代理、防火墙或网关层限制来源，不要直接暴露到公网。
 
 ## 3. SQLite 在线备份
 
@@ -122,7 +122,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 实测 **255/255 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证与 Edge Core 后当前合并回归为 **264/264 PASS**：
 
 | 测试 | 结果 |
 |---|---:|

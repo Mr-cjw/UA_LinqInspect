@@ -189,10 +189,16 @@ function pump(msg, flow, node, store) {
   flow.set('lastRequestByType', lastByType);
   msg.url = item.url;
   msg.payload = item.body;
-  msg.headers = Object.assign({}, msg.headers, {
+  const httpUser = process.env.NODERED_HTTP_USER || '';
+  const httpPass = process.env.NODERED_HTTP_PASS || '';
+  const httpHeaders = {
     'Content-Type': 'application/json',
     'X-Correlation-Id': item.correlationId || '',
-  });
+  };
+  if (httpUser && httpPass) {
+    httpHeaders.Authorization = 'Basic ' + Buffer.from(`${httpUser}:${httpPass}`, 'utf8').toString('base64');
+  }
+  msg.headers = Object.assign({}, msg.headers, httpHeaders);
   msg._qc = { id: item.id, type: item.type, correlationId: item.correlationId || '' };
   node.status({ fill: 'blue', shape: 'dot', text: '发送 ' + item.type + ' ' + item.id });
   return msg;

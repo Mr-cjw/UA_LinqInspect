@@ -13,6 +13,7 @@ from ua_test_client import create_secure_client
 
 NS_URI = "urn:fde:linqinspect:qc"
 NR_BASE = os.getenv("NODERED_BASE", "http://127.0.0.1:1880").rstrip("/")
+NODERED_HTTP_AUTH = os.getenv("NODERED_HTTP_AUTH", "").strip()
 
 results: list[tuple[str, bool]] = []
 
@@ -28,7 +29,8 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 
 def http_get(path: str) -> tuple[int, dict[str, str], str]:
-    request = urllib.request.Request(NR_BASE + path, method="GET")
+    headers = {"Authorization": NODERED_HTTP_AUTH} if NODERED_HTTP_AUTH else {}
+    request = urllib.request.Request(NR_BASE + path, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=5) as response:
         return (
             response.status,
@@ -38,7 +40,9 @@ def http_get(path: str) -> tuple[int, dict[str, str], str]:
 
 
 def inject(node_id: str) -> bool:
-    request = urllib.request.Request(NR_BASE + f"/inject/{node_id}", method="POST")
+    mode = {"inj_to": "timeout"}.get(node_id, node_id.removeprefix("inj_"))
+    headers = {"Authorization": NODERED_HTTP_AUTH} if NODERED_HTTP_AUTH else {}
+    request = urllib.request.Request(NR_BASE + f"/lab/mode/{mode}", headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=5) as response:
         return 200 <= response.status < 300
 

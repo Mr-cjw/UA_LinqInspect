@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static-and-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+      - name: Python syntax
+        run: python -m compileall -q edge_core server tests scripts
+      - name: Edge Core tests
+        run: python -m unittest tests.edge_core_test -v
+      - name: Node syntax
+        run: |
+          node --check nodered/queue_logic.js
+          node --check nodered/sqlite_store.js
+          node --check nodered/settings.secure.js
+      - name: SQLite queue tests
+        run: QC_DB_PATH="$RUNNER_TEMP/qc-queue.sqlite" node tests/sqlite_queue_test.js
+      - name: Validate Node-RED JSON
+        run: python -m json.tool nodered/flows.json > /dev/null
+      - name: Validate OpenAPI YAML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          data = yaml.safe_load(Path("docs/api/edge-core.openapi.yaml").read_text(encoding="utf-8"))
+          assert data["openapi"] == "3.1.0"
+          assert "/v1/inspection-events" in data["paths"]
+          print("OpenAPI contract parsed")
+          PY

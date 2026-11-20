@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import urllib.error
+import urllib.request
 
 from asyncua import Client
 
@@ -63,6 +66,27 @@ async def main() -> int:
 
         await root.call_method(f"{idx}:ResetCounters")
         check("admin Method call is accepted", True)
+
+    node_red_base = os.getenv("NODERED_BASE", "").rstrip("/")
+    node_red_auth = os.getenv("NODERED_HTTP_AUTH", "").strip()
+    if node_red_base:
+        try:
+            urllib.request.urlopen(node_red_base + "/qc/status", timeout=3)
+            check("Node-RED HTTP endpoint rejects unauthenticated access", False, "(unexpected success)")
+        except urllib.error.HTTPError as exc:
+            check("Node-RED HTTP endpoint rejects unauthenticated access", exc.code == 401, f"(HTTP {exc.code})")
+        except Exception as exc:
+            check("Node-RED HTTP endpoint rejects unauthenticated access", False, f"({type(exc).__name__})")
+
+        if node_red_auth:
+            request = urllib.request.Request(
+                node_red_base + "/qc/status",
+                headers={"Authorization": node_red_auth},
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                check("Node-RED HTTP endpoint accepts authenticated access", response.status == 200)
+        else:
+            check("Node-RED authenticated HTTP credential configured", False, "(missing NODERED_HTTP_AUTH)")
 
     username, _ = admin_credentials()
     print(f"INFO | admin identity used: {username}")

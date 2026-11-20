@@ -12,19 +12,20 @@ cd ~/UA_LinqInspect
 脚本会依次执行：
 
 1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、指标持久化、单飞行、退避/看门狗和旧 context 导入。
-2. `tests/security_test.py`：传输安全、匿名只读、管理员写/Method 权限。
-3. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
-4. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
-5. `tests/metrics_test.py`：验证 Prometheus Content-Type、HELP/TYPE、gauge 一致性、计数增量和 correlationId 契约。
-6. `tests/backup_queue_test.py`：验证 WAL 在线备份、完整性检查、行数一致和保留策略。
-7. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
-8. `tests/restart_recovery.py seed`：制造非空 SQLite 队列后退出。
-9. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
-10. `tests/crash_recovery.py prepare`：让一条请求处于 `SENDING` 并制造待恢复任务。
-11. `tests/crash_recovery.py verify`：`SIGKILL` 重启后验证看门狗续传、唯一性和回执续写。
-12. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
-13. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
-14. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
+2. `tests/edge_core_test.py`：Edge Core 控制面契约、幂等冲突、重试/死信和 UA 写回确认。
+3. `tests/security_test.py`：UA 传输安全、匿名只读、管理员写/Method，以及 Node-RED HTTP 认证。
+4. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
+5. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
+6. `tests/metrics_test.py`：验证 Prometheus Content-Type、HELP/TYPE、gauge 一致性、计数增量和 correlationId 契约。
+7. `tests/backup_queue_test.py`：验证 WAL 在线备份、完整性检查、行数一致和保留策略。
+8. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
+9. `tests/restart_recovery.py seed`：制造非空 SQLite 队列后退出。
+10. `tests/restart_recovery.py verify`：重启 Node-RED 后恢复 MES，验证队列排空与回执续写。
+11. `tests/crash_recovery.py prepare`：让一条请求处于 `SENDING` 并制造待恢复任务。
+12. `tests/crash_recovery.py verify`：`SIGKILL` 重启后验证看门狗续传、唯一性和回执续写。
+13. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
+14. `tests/outage_recovery.py stale`：验证超过 60 秒的陈旧事件不污染队列和回执。
+15. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -48,6 +49,8 @@ cd ~/UA_LinqInspect
 - Node-RED 使用临时 userDir 和 `QC_DB_PATH=<artifact>/qc-queue.sqlite`，不修改本地 SQLite 队列。
 - 每次生成随机管理员密码，并同步写入临时 `flows_cred.json`。
 - 临时 flow 会同时替换 UA Endpoint 和流内模拟 MES 地址。
+- 临时 Node-RED 启用 `adminAuth`、`httpNodeAuth` 和 `127.0.0.1` 绑定；安全回归验证未认证 401 与带认证 200。
+- 每次运行使用独立 `XDG_CONFIG_HOME`，将 `node-red-opcua` 的 CA/CRL 写入临时 PKI。
 - 结束后向两个进程发送 `SIGTERM`，超时再强制结束。
 - 回归产物保留在 `.tmp/` 便于排障，该目录已被 Git 忽略。
 
@@ -58,7 +61,8 @@ cd ~/UA_LinqInspect
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
 | SQLite 队列单测 | 14/14 PASS | 唯一约束、事务回滚、指标持久化、单飞行、退避、看门狗、迁移、上限 |
-| 安全回归 | 6/6 PASS | NoSecurity 拒绝、匿名只读、匿名写/Method 拒绝、管理员写/Method |
+| Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
+| 安全回归 | 8/8 PASS | UA NoSecurity/匿名权限 + Node-RED 未认证 401/认证 200 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
 | Prometheus 指标 | 43/43 PASS | 文本格式、HELP/TYPE、gauge 一致性、计数增量、响应契约 |
@@ -69,19 +73,21 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **255/255 PASS** | 一键隔离回归 |
+| **合计** | **264/264 PASS** | 一键隔离回归 |
 
-实际产物示例：`.tmp/regression-20261120-145650/summary.json`。
+实际产物示例：`.tmp/regression-20261120-153352/summary.json`。
 
 ## 4. 手工执行单个测试
 
 手工运行前必须使用与 Server 相同的管理员账号，并提供安全端点：
 
 ```bash
+source .node-red/.secure-env
 export UA_ENDPOINT_PORT=4840
-export UA_ADMIN_USER=admin
-export UA_ADMIN_PASS='your-local-password'
+export UA_ADMIN_USER="$NODERED_OPCUA_USER"
+export UA_ADMIN_PASS="$NODERED_OPCUA_PASSWORD"
 export NODERED_BASE=http://127.0.0.1:1880
+export NODERED_HTTP_AUTH="Basic $(printf '%s:%s' "$NODERED_HTTP_USER" "$NODERED_HTTP_PASS" | base64 -w0)"
 
 .venv/bin/python tests/security_test.py
 .venv/bin/python tests/smoke_test.py
@@ -111,7 +117,9 @@ Phase 0/1 与 Phase 2A 已完成：
 4. ✅ 短时断网与会话恢复测试。
 5. ✅ UA Server 重启后的订阅重建与 60 秒陈旧事件过滤测试。
 6. ✅ SQLite 事务队列、去重/入队原子性与 `SIGKILL` 崩溃恢复。
+7. ✅ Prometheus 指标与 SQLite WAL 在线备份。
+8. ✅ Node-RED 管理/HTTP 认证、回环绑定和加密凭据基线。
 
-剩余证据工作：Wireshark 抓包、真实交换机断链/防火墙切换和长时断网。
+剩余证据工作：Wireshark 抓包、真实交换机断链/防火墙切换、长时断网和现场 soak。
 
 第 1、2 项的实测与契约见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)。

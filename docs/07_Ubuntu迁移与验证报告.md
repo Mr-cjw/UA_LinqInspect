@@ -1,7 +1,7 @@
 # Ubuntu 迁移与验证报告
 
 > 验证日期：2026-11-20 ｜ 环境：Ubuntu / Linux 7.0.0-43-generic ｜ 本报告记录 Phase 1 时点的 158 项结果。
-> Phase 2A/2B 完成 SQLite 事务队列、指标与在线备份后，当前一键回归为 255/255，见
+> Phase 2A/2B 完成 SQLite 事务队列、指标与在线备份后，当前一键回归为 264/264，见
 > [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。
 
 ## 1. 环境结果

@@ -2,7 +2,7 @@
 
 > 日期：2026-11-20 ｜ Phase 2A 证据：`.tmp/regression-20261120-142021/summary.json` ｜ 当时结果：194/194 PASS
 >
-> Phase 2B 完成后当前一键回归为 255/255，见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。
+> Phase 2B 完成后当前合并回归为 264/264（加入 Node-RED 认证与 Edge Core 测试），见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)。
 
 ## 1. 本阶段解决的问题
 
