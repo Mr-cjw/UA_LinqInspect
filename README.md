@@ -89,7 +89,8 @@ UA_LinqInspect/
 ├── nodered/
 │   └── flows.json             # M2：带状态的边缘节点流（缓冲队列状态机/去重/退避/削峰/心跳）
 ├── scripts/
-│   └── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
+│   ├── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
+│   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── hardware/                  # 可选硬件扩展：树莓派 open62541 Server、STM32 客户端方案
 ├── docs/
 │   ├── README.md              # 文档导航与学习路径
@@ -101,9 +102,12 @@ UA_LinqInspect/
 │   ├── 05_工程化优化路线图.md
 │   ├── 06_作品集答辩与工厂试点落地.md
 │   ├── 07_Ubuntu迁移与验证报告.md
+│   ├── 08_Phase0回归与安全测试.md
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
+    ├── ua_test_client.py      # 安全 OPC UA 客户端测试夹具
+    ├── security_test.py       # 传输安全与读写/Method 权限回归（6 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，33 项断言）
     ├── nodered_e2e.py         # M2 正常链路端到端测试（10 项断言）
     └── fault_scenarios.py     # M2/M3 故障场景（5xx、timeout、Method 拒绝）
@@ -228,13 +232,25 @@ cd ~/UA_LinqInspect
 
 ### 5. 运行验证
 
-Server 与 Node-RED 都在运行时，另开终端执行：
+推荐直接运行隔离的一键回归；脚本会自动选择端口、生成临时凭据、清理进程并保存日志：
 
 ```bash
 cd ~/UA_LinqInspect
-UA_ENDPOINT_PORT=4840 .venv/bin/python tests/smoke_test.py
-UA_ENDPOINT_PORT=4840 .venv/bin/python tests/nodered_e2e.py
-UA_ENDPOINT_PORT=4840 .venv/bin/python tests/fault_scenarios.py
+.venv/bin/python scripts/run_regression.py
+```
+
+结果与日志位于 `.tmp/regression-<时间>/`，详细说明见
+[docs/08_Phase0回归与安全测试.md](docs/08_Phase0回归与安全测试.md)。
+
+如果 Server 与 Node-RED 已手工启动，也可以逐个执行；此时必须提供 Server 对应的管理员账号：
+
+```bash
+cd ~/UA_LinqInspect
+export UA_ENDPOINT_PORT=4840 UA_ADMIN_USER=admin UA_ADMIN_PASS='your-local-password'
+.venv/bin/python tests/security_test.py
+.venv/bin/python tests/smoke_test.py
+.venv/bin/python tests/nodered_e2e.py
+.venv/bin/python tests/fault_scenarios.py
 ```
 
 MES 故障注入入口：

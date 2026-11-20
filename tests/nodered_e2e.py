@@ -1,16 +1,17 @@
 """Node-RED 端到端验证：UA 事件 -> 队列 -> 模拟 MES -> LastMesOrderNo 写回。"""
 import asyncio
+import json
 import os
 import re
 import sys
+import urllib.request
 from datetime import datetime
 
-from asyncua import Client
+from ua_test_client import create_secure_client
 
-PORT = int(os.getenv("UA_ENDPOINT_PORT", "4840"))
-URL = f"opc.tcp://localhost:{PORT}"
 NS_URI = "urn:fde:linqinspect:qc"
 WO = "WO-NRED-" + datetime.now().strftime("%Y%m%d%H%M%S")
+NODERED_BASE = os.getenv("NODERED_BASE", "http://127.0.0.1:1880").rstrip("/")
 
 
 def ok(name, cond, detail=""):
@@ -25,9 +26,30 @@ async def read_val(node):
         return None
 
 
+def edge_status():
+    with urllib.request.urlopen(NODERED_BASE + "/qc/status", timeout=3) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def wait_for_drained_edge(timeout=30):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            status = edge_status()
+            queue = status.get("queue", {})
+            if queue.get("total", 0) == 0 and queue.get("sending", 0) == 0:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+    print("WARN | Node-RED queue did not drain before E2E baseline")
+    return False
+
+
 async def main():
     results = []
-    async with Client(URL) as client:
+    client = await create_secure_client()
+    async with client:
         idx = await client.get_namespace_index(NS_URI)
         root = await client.nodes.objects.get_child([f"{idx}:QCStation"])
         status = await root.get_child([f"{idx}:DeviceStatus"])
@@ -49,6 +71,7 @@ async def main():
                     break
                 await asyncio.sleep(0.25)
 
+        await wait_for_drained_edge()
         initial_mes = str(await read_val(last_mes) or "")
         print("INFO | initial LastMesOrderNo =", initial_mes or "(empty)")
 
@@ -58,10 +81,17 @@ async def main():
 
         mes_no = ""
         ng_before = int(await read_val(stats_ng) or 0)
+        ng_after = ng_before
         deadline = asyncio.get_running_loop().time() + 30
         while asyncio.get_running_loop().time() < deadline:
             mes_no = str(await read_val(last_mes) or "")
-            if mes_no and mes_no != initial_mes and mes_no.startswith("MES-"):
+            ng_after = int(await read_val(stats_ng) or 0)
+            if (
+                mes_no
+                and mes_no != initial_mes
+                and mes_no.startswith("MES-")
+                and ng_after > ng_before
+            ):
                 break
             await asyncio.sleep(0.5)
 
@@ -71,7 +101,6 @@ async def main():
         results.append(ok("NG order receipt also lands in LastNgMesOrderNo",
                           str(await read_val(last_ng_mes) or "") == mes_no))
         results.append(ok("CurrentWorkOrderId not clobbered", str(await read_val(cur_wo) or "") == WO))
-        ng_after = int(await read_val(stats_ng) or 0)
         all_after = int(await read_val(stats_all) or 0)
         results.append(ok("server produced NG samples", ng_after > ng_before, f"(ng={ng_after}, total={all_after})"))
 

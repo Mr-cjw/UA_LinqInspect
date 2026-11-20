@@ -12,13 +12,13 @@
   N3) 向 ReadOnly 变量写入 → BadNotWritable / BadUserAccessDenied
 """
 import asyncio
-import os
 import sys
 
-from asyncua import Client, ua
+from asyncua import ua
+
+from ua_test_client import create_secure_client
 
 NS_URI = "urn:fde:linqinspect:qc"
-PORT = int(os.getenv("UA_ENDPOINT_PORT", "4840"))
 WO = "WO-20261108-001"
 
 results = []
@@ -50,8 +50,8 @@ class EvHandler:
 
 
 async def main():
-    url = f"opc.tcp://localhost:{PORT}"
-    async with Client(url) as client:
+    client = await create_secure_client()
+    async with client:
         idx = await client.get_namespace_index(NS_URI)
         check("namespace registered", idx == 2, f"(ns={idx})")
 

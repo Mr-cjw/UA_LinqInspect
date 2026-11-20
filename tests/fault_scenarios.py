@@ -16,10 +16,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-from asyncua import Client
+from ua_test_client import create_secure_client
 
-PORT = int(os.getenv("UA_ENDPOINT_PORT", "4840"))
-UA_URL = f"opc.tcp://localhost:{PORT}"
 NR_BASE = os.getenv("NODERED_BASE", "http://127.0.0.1:1880").rstrip("/")
 NS_URI = "urn:fde:linqinspect:qc"
 
@@ -84,7 +82,8 @@ async def main():
     wo_5xx = f"WO-FAULT-5XX-{suffix}"
     wo_timeout = f"WO-FAULT-TO-{suffix}"
 
-    async with Client(UA_URL) as client:
+    client = await create_secure_client()
+    async with client:
         idx = await client.get_namespace_index(NS_URI)
         root = await client.nodes.objects.get_child([f"{idx}:QCStation"])
         status_node = await root.get_child([f"{idx}:DeviceStatus"])
