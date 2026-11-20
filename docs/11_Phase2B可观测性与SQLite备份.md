@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-20 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：403/403，证据：`.tmp/regression-20261120-171641/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：430/430，证据：`.tmp/regression-20261120-174140/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -126,7 +126,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警与 UA 写回确认测试后当前合并回归为 **403/403 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认与写回前崩溃恢复测试后当前合并回归为 **430/430 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
@@ -147,10 +147,11 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 周期 soak | 20/20 |
 | 正常重启 | 18/18 |
 | SIGKILL 崩溃恢复 | 23/23 |
+| UA 写回前崩溃恢复 | 27/27 |
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **403/403** |
+| **合计** | **430/430** |
 
 ## 5. 下一阶段
 

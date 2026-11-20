@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-20 ｜ 回归证据：`.tmp/regression-20261120-171641/summary.json` ｜ 当前结果：403/403 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261120-174140/summary.json` ｜ 当前结果：430/430 PASS
 
 ## 1. 阶段目标
 
@@ -291,6 +291,7 @@ Phase 2C 新增专项：
 | `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
 | `tests/state_persistence_test.py` | 3/3 PASS | 状态快照往返、非法 Running 回退、损坏 JSON 回退 |
 | `tests/qc_state_restart_test.py` | 11/11 PASS | SIGKILL 后工单、计数、SN 序列恢复并继续完工 |
+| `tests/ua_write_crash_recovery.py` | 27/27 PASS | UA 冻结时注入 NG/完工、MES 成功后 SIGKILL、重启后完成 UA 写回 |
 
 一键回归命令：
 
@@ -298,8 +299,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 23 个测试模块、**403/403 PASS**，摘要为
-`.tmp/regression-20261120-171641/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 综合回归共 25 个测试模块、**430/430 PASS**，摘要为
+`.tmp/regression-20261120-174140/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

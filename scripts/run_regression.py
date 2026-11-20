@@ -56,6 +56,11 @@ CRASH_TESTS = (
     ("crash_recovery_verify", "tests/crash_recovery.py", "verify", 120),
 )
 
+UA_WRITE_CRASH_TESTS = (
+    ("ua_write_crash_prepare", "tests/ua_write_crash_recovery.py", "prepare", 70),
+    ("ua_write_crash_verify", "tests/ua_write_crash_recovery.py", "verify", 120),
+)
+
 OUTAGE_TESTS = (
     ("short_outage", "tests/outage_recovery.py", "stall", 90),
     ("stale_filter", "tests/outage_recovery.py", "stale", 45),
@@ -443,6 +448,63 @@ def main() -> int:
                 results.append(crash_verify)
 
         if all(result["passed"] for result in results):
+            ua_write_crash_state = artifact_dir / "ua-write-crash-state.json"
+            ua_write_crash_env = base_env | {
+                "UA_WRITE_CRASH_STATE": str(ua_write_crash_state),
+                "UA_SERVER_PID": str(ua_process.pid if ua_process and ua_process.poll() is None else 0),
+            }
+            prepare_name, prepare_path, prepare_arg, prepare_timeout = UA_WRITE_CRASH_TESTS[0]
+            print(f"\n===== RUN {prepare_name} =====")
+            ua_write_prepare = run_test(
+                prepare_name, prepare_path, prepare_timeout, ua_write_crash_env, artifact_dir, prepare_arg
+            )
+            results.append(ua_write_prepare)
+            if ua_write_prepare["passed"]:
+                try:
+                    kill_process(nr_process)
+                    nr_process = None
+                    time.sleep(1)
+                    node_red_restart_log = artifact_dir / "node-red-ua-write-crash-restart.log"
+                    with node_red_restart_log.open("w", encoding="utf-8") as handle:
+                        nr_process = subprocess.Popen(
+                            [
+                                str(NODE_RED_BIN),
+                                "--userDir",
+                                str(node_red_user_dir),
+                                "--port",
+                                str(nr_port),
+                                "--no-telemetry",
+                            ],
+                            cwd=REPO_ROOT,
+                            env=base_env,
+                            stdout=handle,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                        )
+                    wait_for_log(node_red_restart_log, "Started flows", 35)
+                    wait_for_http(base_env["NODERED_BASE"] + "/qc/status", 20, http_auth_headers)
+                except BaseException:
+                    if ua_process and ua_process.poll() is None:
+                        try:
+                            os.kill(ua_process.pid, signal.SIGCONT)
+                        except ProcessLookupError:
+                            pass
+                    raise
+                verify_name, verify_path, verify_arg, verify_timeout = UA_WRITE_CRASH_TESTS[1]
+                print(f"\n===== RUN {verify_name} =====")
+                try:
+                    ua_write_verify = run_test(
+                        verify_name, verify_path, verify_timeout, ua_write_crash_env, artifact_dir, verify_arg
+                    )
+                finally:
+                    if ua_process and ua_process.poll() is None:
+                        try:
+                            os.kill(ua_process.pid, signal.SIGCONT)
+                        except ProcessLookupError:
+                            pass
+                results.append(ua_write_verify)
+
+        if all(result["passed"] for result in results):
             outage_state = artifact_dir / "ua-outage-state.json"
             outage_env = base_env | {
                 "OUTAGE_STATE": str(outage_state),
@@ -497,7 +559,8 @@ def main() -> int:
         stop_process(ua_process)
 
     expected_results = (
-        len(NODE_TESTS) + len(TESTS) + len(RECOVERY_TESTS) + len(CRASH_TESTS) + len(OUTAGE_TESTS)
+        len(NODE_TESTS) + len(TESTS) + len(RECOVERY_TESTS) + len(CRASH_TESTS)
+        + len(UA_WRITE_CRASH_TESTS) + len(OUTAGE_TESTS)
     )
     passed = failure is None and all(result["passed"] for result in results) and len(results) == expected_results
     summary.update(

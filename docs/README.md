@@ -106,10 +106,11 @@
 - Node-RED 非空队列重启恢复：18/18 PASS
 - SQLite 队列单测：19/19 PASS（含 UA 写回确认、重启与失败重试）
 - Node-RED SIGKILL 崩溃恢复：23/23 PASS
+- UA 写回前 SIGKILL 崩溃恢复：27/27 PASS（MES 成功后、UA 确认前）
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：403/403 PASS（23 个测试模块）
+- 一键隔离回归合计：430/430 PASS（25 个测试模块）
 
 一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。工位状态单写者与恢复边界见 [16_状态源重构与持久化恢复.md](16_状态源重构与持久化恢复.md)；Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 

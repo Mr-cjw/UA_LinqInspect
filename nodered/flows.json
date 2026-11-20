@@ -1217,6 +1217,57 @@
     "wires": []
   },
   {
+    "id": "httpin_lab_fresh",
+    "type": "http in",
+    "z": "qcflow",
+    "name": "实验新鲜事件注入(受HTTP认证保护)",
+    "url": "/lab/fresh-event/:kind",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 190,
+    "y": 1800,
+    "wires": [
+      [
+        "fn_lab_fresh"
+      ]
+    ]
+  },
+  {
+    "id": "fn_lab_fresh",
+    "type": "function",
+    "z": "qcflow",
+    "name": "构造新鲜事件并响应",
+    "func": "const kind = String((msg.req && msg.req.params && msg.req.params.kind) || '').toLowerCase();\nconst query = (msg.req && msg.req.query) || {};\nconst suffix = Date.now().toString(36).toUpperCase();\nconst workOrderId = String(query.workOrderId || ('WO-LAB-' + suffix));\nconst serialNumber = String(query.serialNumber || ('SN-LAB-' + suffix));\nconst event = {\n  '2:WorkOrderId': workOrderId,\n  'sourceTimestamp': new Date().toISOString()\n};\nif (kind === 'ng') {\n  Object.assign(event, {\n    '2:NgDetectedEventType': true,\n    '2:SerialNumber': serialNumber,\n    '2:DefectType': String(query.defectType || 'SCRATCH'),\n    '2:Confidence': 0.99,\n    '2:ImageId': 'IMG-LAB-' + suffix\n  });\n} else if (kind === 'done') {\n  Object.assign(event, {\n    '2:WorkOrderCompletedEventType': true,\n    '2:InspectCount': 1,\n    '2:OkCount': 0,\n    '2:NgCount': 1,\n    '2:NgRate': 1.0\n  });\n} else {\n  msg.statusCode = 400;\n  msg.payload = { ok: false, error: 'unsupported event kind', allowed: ['ng', 'done'] };\n  return [null, msg];\n}\nmsg.payload = event;\nconst response = RED.util.cloneMessage(msg);\nresponse.statusCode = 202;\nresponse.payload = { ok: true, injected: kind, workOrderId, serialNumber };\nreturn [msg, response];",
+    "outputs": 2,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 520,
+    "y": 1800,
+    "wires": [
+      [
+        "fn_parse"
+      ],
+      [
+        "httpres_lab_fresh"
+      ]
+    ]
+  },
+  {
+    "id": "httpres_lab_fresh",
+    "type": "http response",
+    "z": "qcflow",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 850,
+    "y": 1840,
+    "wires": []
+  },
+  {
     "id": "httpin_health",
     "type": "http in",
     "z": "qcflow",
