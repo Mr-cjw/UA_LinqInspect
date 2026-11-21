@@ -6,7 +6,7 @@
 
 | 路径 | 作用 |
 |---|---|
-| `server/qc_server.py` + `server/qc_state.py` | OPC UA Server、虚拟质检源、信息模型、工位状态快照 |
+| `server/qc_server.py` + `server/qc_sqlite_state.py` | OPC UA Server、虚拟质检源、信息模型、SQLite 状态与 Outbox |
 | `server/requirements.txt` | Python 依赖，当前为 `asyncua==2.1.0` |
 | `nodered/flows.json` | Node-RED 流导出文件 |
 | `nodered/flows.legacy.json` | 旧版流，仅作历史参考 |
@@ -19,15 +19,15 @@
 
 ### 2.1 配置与状态容器
 
-阅读：`server/qc_server.py` 的配置区与 `QCStation.__init__`，以及 `server/qc_state.py`。
+阅读：`server/qc_server.py` 的配置区与 `QCStation.__init__`，以及 `server/qc_sqlite_state.py` 和 `server/qc_state.py`。
 
 要点：
 
 - `NS_URI` 固定为 `urn:fde:linqinspect:qc`。
 - `DEFECT_CODES` 是虚拟缺陷源。
 - 端口、自动检测、间隔、NG 概率、窗口大小、`QC_STATE_PATH` 和 `QC_OUTBOX_*` 容量/重发参数全部来自环境变量。
-- `QCStation` 保存设备状态、工单、计数、滑动窗口和节点字典 `self.nd`；启动时从 `QCStateStore` 恢复快照。
-- `_persist()` 把快照写入工作线程，避免文件 `fsync` 阻塞 OPC UA 事件循环。
+- `QCStation` 保存设备状态、工单、计数、滑动窗口和节点字典 `self.nd`；启动时从 SQLite 状态行恢复快照和 Outbox。
+- `_persist()` 把状态与 Outbox 在同一 SQLite 事务中写入工作线程；事务失败时保留旧状态。
 
 ### 2.2 建立地址空间
 

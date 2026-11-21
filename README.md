@@ -63,7 +63,7 @@ Node-RED 的 `node-opcua` PKI 目录。证书不同步时，Node-RED 通常会�
    `tests/nodered_e2e.py` 验证完整链路，最后跑 `tests/fault_scenarios.py` 验证重试与死信。
 
 Node-RED 默认把事务队列写到 `data/qc-queue.sqlite`；可用 `QC_DB_PATH` 指定其他位置。
-OPC UA Server 默认把工位控制状态写到 `data/qc-state.json`；可用 `QC_STATE_PATH` 指定其他位置。
+OPC UA Server 默认把工位状态和未确认事件 Outbox 写入同一个 SQLite 数据库；可用 `QC_STATE_DB_PATH` 指定其他位置。JSON 仅保留兼容与迁移。
 运行指标可访问 `GET /metrics`；SQLite 热备可执行
 `.venv/bin/python scripts/backup_queue.py`，默认保留最近 7 份并做完整性校验。
 
@@ -99,7 +99,8 @@ UA_LinqInspect/
 ├── Phase0_需求拆解与信息模型.md  # 设计基准（NodeId/变量/Method/Event 全部以此为准）
 ├── server/                    # asyncua OPC UA Server + 虚拟 AI 质检数据源
 │   ├── qc_server.py           # M1：Server 主体（信息模型 §2 全量落地）
-│   ├── qc_state.py            # 工位控制状态快照、校验与原子持久化
+│   ├── qc_state.py            # 状态 schema、校验、JSON 兼容与 Outbox 序列化
+│   ├── qc_sqlite_state.py     # SQLite 状态 + Outbox 原子事务
 │   └── requirements.txt
 ├── nodered/
 │   ├── flows.json             # M2：Node-RED 流（薄 Function 节点 + 回执写回）
@@ -142,11 +143,11 @@ UA_LinqInspect/
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
 └── tests/
     ├── ua_test_client.py      # 安全 OPC UA 客户端测试夹具
-    ├── state_persistence_test.py # 状态快照校验、写入失败保留旧状态与恢复单测（10 项）
+    ├── state_persistence_test.py # JSON/SQLite 状态、Outbox、写入失败与恢复单测（13 项）
     ├── outbox_test.py         # 持久化 outbox、重发与 ACK 单测（3 项）
     ├── outbox_capacity_test.py # 背压、分页导出与清空令牌单测（9 项）
     ├── outbox_recovery.py     # outbox SIGKILL 恢复与容量降级（18 项）
-    ├── qc_state_restart_test.py  # 工位状态 SIGKILL 重启恢复（11 项）
+    ├── qc_state_restart_test.py  # SQLite 状态与 Outbox SIGKILL 恢复（13 项）
     ├── security_test.py       # UA 权限、控制变量只读、HTTP 认证与运维接口鉴权（16 项断言）
     ├── edge_core_test.py      # Edge Core 契约、幂等、死信重放与 UA 确认（7 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
@@ -490,11 +491,11 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 550/550 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 550/550 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 550/550 PASS，含只读源/目录演练） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 550/550 PASS，含只读恢复目标拒绝） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 550/550 PASS，含快照写入失败保留旧状态；与投递队列尚未同事务） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 555/555 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 555/555 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 555/555 PASS，含只读源/目录演练） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 555/555 PASS，含只读恢复目标拒绝） |
+| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK 与 SIGKILL 恢复 | ✅ 完成（555/555 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
 | MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
