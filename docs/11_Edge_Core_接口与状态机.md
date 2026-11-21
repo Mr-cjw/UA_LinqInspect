@@ -273,6 +273,26 @@ CREATE TABLE metrics_counters (
 - 队列满时进入背压或死信，不静默删除最旧任务；
 - 永久数据不得只存在于 Node-RED flow context。
 
+### 6.4 共享投递读模型
+
+Node-RED 和 Edge Core 的物理表仍不同，但对外读模型统一到
+[`contracts/delivery-record.schema.json`](../contracts/delivery-record.schema.json)：
+
+- `schemaVersion=1.0`
+- `deliveryId`、`businessKey`、`sourceEventId`、`stationId`、`eventType`
+- `correlationId`、`state`、`attempts`
+- `nextAttemptAt`、`leaseUntil`
+- `lastErrorCode`、`lastErrorMessage`
+- `mesReceipt`、`uaWriteConfirmed`
+- `createdAt`、`updatedAt`
+
+Edge Core 的 `/v1/deliveries*` 直接返回该结构；Node-RED
+`SqliteQueueStore.deliveryRecords()` 从 `queue`、`ua_writebacks` 和
+`dead_letters` 生成同一结构。两边测试读取同一个 JSON Schema，防止再次各自演进字段。
+
+该步骤只统一读模型和语义，不代表两个进程已经共享一张事务表。下一步仍需决定：
+Node-RED 继续作为在线执行器、Edge Core 仅做外部控制面，还是由 Edge Core 接管发送泵并迁移 Node-RED 队列。
+
 ## 7. 轻量观测
 
 `GET /v1/status` 至少提供：
@@ -326,5 +346,6 @@ CREATE TABLE metrics_counters (
 - Bearer token 保护的控制面 API；
 - 轻量队列、死信、MES 和 UA 写回指标；
 - `tests/edge_core_test.py` 12 项自动化测试，覆盖输入约束、事件类型专属回执、稳定错误码、`Idempotency-Key` 透传和 `Retry-After` 最小值夹紧。
+- Node-RED 与 Edge Core 的投递读模型共同校验 `contracts/delivery-record.schema.json`。
 
 **当前限制：** 在线 Node-RED 链路已使用另一套 SQLite WAL 队列（`nodered/sqlite_store.js`），Edge Core 仍作为外部控制面/接口垂直切片，两者尚未收敛。Edge Core 也尚未内置 OPC UA 回执写入器；MES 回执成功后任务停在 `UA_WRITE_PENDING`，需要外部 UA 写回适配器调用 `/v1/deliveries/{id}/ua-write-result`，只有写回成功才进入 `DONE`。

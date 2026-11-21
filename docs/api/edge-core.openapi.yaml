@@ -437,14 +437,27 @@ components:
     Delivery:
       type: object
       required:
+        - schemaVersion
         - deliveryId
-        - state
         - businessKey
+        - sourceEventId
+        - stationId
+        - eventType
         - correlationId
+        - state
         - attempts
+        - nextAttemptAt
+        - leaseUntil
+        - lastErrorCode
+        - lastErrorMessage
+        - mesReceipt
+        - uaWriteConfirmed
         - createdAt
         - updatedAt
       properties:
+        schemaVersion:
+          type: string
+          const: '1.0'
         deliveryId:
           type: string
           format: uuid
