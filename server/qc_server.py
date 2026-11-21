@@ -30,6 +30,7 @@
   QC_OUTBOX_EXPORT_LIMIT    ExportPendingEvents 单次最大返回条数（默认 500）
 """
 import asyncio
+import copy
 import hashlib
 import hmac
 import json
@@ -422,6 +423,9 @@ class QCStation:
         if self.outbox:
             self._outbox_wakeup.set()
         self.nd = {}
+        self._committed_snapshot = copy.deepcopy(self._snapshot())
+        self._committed_outbox_last_ack_at = self.outbox_last_ack_at
+        self._committed_outbox_purged_total = self.outbox_purged_total
         if self.state_store.path.exists():
             _log.info(
                 "Restored QC state from %s backend=%s: status=%d workOrder=%s inspect=%d ok=%d ng=%d outbox=%d",
@@ -578,7 +582,68 @@ class QCStation:
     async def _persist(self) -> None:
         # fsync can occasionally take seconds on industrial/consumer storage.
         # Keep it off the OPC UA event loop so subscriptions do not starve.
-        await asyncio.to_thread(self.state_store.save, self._snapshot())
+        snapshot = copy.deepcopy(self._snapshot())
+        try:
+            await asyncio.to_thread(self.state_store.save, snapshot)
+        except Exception:
+            self._restore_committed_state()
+            try:
+                await self._sync_state_nodes()
+            except Exception:
+                _log.exception("State rollback completed but UA variables could not be synchronized")
+            raise
+        self._committed_snapshot = snapshot
+        self._committed_outbox_last_ack_at = self.outbox_last_ack_at
+        self._committed_outbox_purged_total = self.outbox_purged_total
+
+    def _restore_committed_state(self) -> None:
+        snapshot = self._committed_snapshot
+        self.status = snapshot.status
+        self.work_order_id = snapshot.work_order_id
+        self.target_count = snapshot.target_count
+        self.inspect_count = snapshot.inspect_count
+        self.ok_count = snapshot.ok_count
+        self.ng_count = snapshot.ng_count
+        self.window = deque(snapshot.window, maxlen=WINDOW_SIZE)
+        self.current_part_sn = snapshot.current_part_sn
+        self.sn_day = snapshot.sn_day
+        self.sn_seq = snapshot.sn_seq
+        self.last_result = snapshot.last_result
+        self.last_defect = snapshot.last_defect
+        self.last_confidence = snapshot.last_confidence
+        self.last_image_id = snapshot.last_image_id
+        self.last_timestamp = last_timestamp_or_default(snapshot.last_timestamp)
+        self.outbox = copy.deepcopy(snapshot.outbox)
+        self.outbox_last_ack_at = self._committed_outbox_last_ack_at
+        self.outbox_purged_total = self._committed_outbox_purged_total
+        self._outbox_wakeup.clear()
+        if self.outbox:
+            self._outbox_wakeup.set()
+
+    async def _sync_state_nodes(self) -> None:
+        if not self.nd:
+            return
+        if self.nd.get("status"):
+            await self.nd["status"].write_value(ua.Variant(self.status, ua.VariantType.Int32))
+        if self.nd.get("work_order"):
+            await self.nd["work_order"].write_value(self.work_order_id)
+        if self.nd.get("part_sn"):
+            await self.nd["part_sn"].write_value(self.current_part_sn)
+        if self.nd.get("last_result"):
+            await self.nd["last_result"].write_value(self.last_result)
+        if self.nd.get("last_defect"):
+            await self.nd["last_defect"].write_value(self.last_defect)
+        if self.nd.get("last_conf"):
+            await self.nd["last_conf"].write_value(self.last_confidence)
+        if self.nd.get("last_img"):
+            await self.nd["last_img"].write_value(self.last_image_id)
+        if self.nd.get("last_ts"):
+            await self.nd["last_ts"].write_value(self.last_timestamp)
+        if all(self.nd.get(key) for key in ("cnt_all", "cnt_ok", "cnt_ng")):
+            await self._write_stats()
+        if self.nd.get("ng_rate"):
+            await self.nd["ng_rate"].write_value(self._ng_rate())
+        await self._sync_outbox_status()
 
     # ---------- 事件触发与 outbox ----------
     def _make_event(

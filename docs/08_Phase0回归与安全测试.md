@@ -14,7 +14,7 @@ cd ~/UA_LinqInspect
 1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、UA 写回确认、指标持久化、单飞行、退避/看门狗、死信重放和旧 context 导入。
 2. `tests/storage_failure_test.js`：页数封顶模拟磁盘写满，验证入队/完工完整回滚；损坏库启动显式失败且不被重建。
 3. `tests/health_test.js`：`/healthz` 的 ready/degraded/unavailable、响应头和 flow 接线。
-4. `tests/state_persistence_test.py`：JSON/SQLite 状态与 Outbox 往返、SQLite 事务回滚、旧 JSON 迁移、损坏回退和写入失败保护。
+4. `tests/state_persistence_test.py`：JSON/SQLite 状态与 Outbox 往返、SQLite 事务回滚、旧 JSON 迁移、损坏回退、写入失败保护，以及保存失败后回滚内存状态并重同步 UA 变量。
 5. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证 SQLite 工单、计数、SN 与 Outbox 恢复，并完成恢复后的工单。
 6. `tests/edge_core_test.py`：Edge Core 控制面契约、幂等冲突、重试/死信和 UA 写回确认。
 7. `tests/security_test.py`：UA 传输安全、匿名只读、管理员 Method、控制/追溯/回执变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
@@ -72,7 +72,7 @@ cd ~/UA_LinqInspect
 | MES 接收端幂等 | 10/10 PASS | 稳定指纹、重复返回原回执、冲突 409、旧回执迁移、原型污染防护 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | outbox 状态接口 | 9/9 PASS | `OutboxStatus` 解析、容量拒收不 ACK、背压健康降级、`/qc/status` 与 Prometheus 指标 |
-| 状态/Outbox 单测 | 13/13 PASS | JSON/SQLite 往返、事务回滚、旧状态迁移、损坏回退和写入失败保护 |
+| 状态/Outbox 单测 | 19/19 PASS | JSON/SQLite 往返、事务回滚、旧状态迁移、损坏回退、写入失败保护与 UA 重同步 |
 | 事件 outbox 单测 | 3/3 PASS | 发布异常不丢状态、稳定 ID 重发、ACK 幂等 |
 | outbox 容量/导出单测 | 9/9 PASS | 高水位/硬上限拒绝、不丢事件、分页导出、令牌校验、清空幂等、重启恢复积压 |
 | 工位状态重启 | 13/13 PASS | `SIGKILL` 后工单、计数、SN 与 Outbox 恢复、继续完工 |
@@ -94,9 +94,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **555/555 PASS** | 31 个测试模块 |
+| **合计** | **559/559 PASS** | 31 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-043855/summary.json`。
+实际产物：`.tmp/regression-20261121-045602/summary.json`。
 
 ## 4. 手工执行单个测试
 

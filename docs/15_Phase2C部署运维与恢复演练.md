@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-043855/summary.json` ｜ 当前结果：555/555 PASS
+> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-045602/summary.json` ｜ 当前结果：559/559 PASS
 
 ## 1. 阶段目标
 
@@ -300,7 +300,7 @@ Phase 2C 新增专项：
 | `tests/backup_queue_test.py` | 31/31 PASS | 在线备份、指标 textfile、完整性、schema 合同、空库/缺列拒绝、只读源/输出演练、保留策略、活跃库备份 |
 | `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
 | `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
-| `tests/state_persistence_test.py` | 13/13 PASS | JSON/SQLite 状态与 Outbox、事务回滚、旧状态迁移、写入失败保护 |
+| `tests/state_persistence_test.py` | 19/19 PASS | SQLite 状态与 Outbox 同事务、JSON 兼容、事务回滚、旧状态迁移、保存失败回滚与 UA 重同步 |
 | `tests/qc_state_restart_test.py` | 13/13 PASS | SIGKILL 后 SQLite 工单、计数、SN 与 Outbox 恢复 |
 | `tests/ua_write_crash_recovery.py` | 27/27 PASS | UA 冻结时注入 NG/完工、MES 成功后 SIGKILL、重启后完成 UA 写回 |
 
@@ -310,8 +310,7 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 31 个测试模块、**555/555 PASS**，摘要为
-`.tmp/regression-20261121-043855/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 合并后的最终综合回归共 31 个测试模块、**559/559 PASS**，摘要为 `.tmp/regression-20261121-045602/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
