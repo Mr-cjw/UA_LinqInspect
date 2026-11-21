@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：596/596，证据：`.tmp/regression-20261121-055300/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：601/601，证据：`.tmp/regression-20261121-063615/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -133,7 +133,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置、模拟 MES 幂等合同、SQLite 存储故障恢复、真实挂载 EROFS/ENOSPC、备份 schema 合同、只读目录演练、状态持久化失败演练、进程内回滚与无硬件演示后当前合并回归为 **596/596 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置、模拟 MES 幂等合同、SQLite 存储故障恢复、真实挂载 EROFS/ENOSPC、备份 schema 合同、只读目录演练、状态持久化失败演练、进程内回滚、无硬件演示与发送泵迁移工具后当前合并回归为 **601/601 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
@@ -150,6 +150,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 健康探针 | 10/10 |
 | Edge Core | 12/12 |
 | 无硬件演示 | 4/4 |
+| Node-RED 迁移 | 5/5 |
 | 安全 | 16/16 |
 | UA 冒烟 | 36/36 |
 | Node-RED E2E | 21/21 |
@@ -166,7 +167,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **596/596** |
+| **合计** | **601/601** |
 
 ## 5. 下一阶段
 
