@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -704,7 +707,7 @@ h1{font-size:42px;line-height:1.08;margin:10px 0 12px;letter-spacing:-.03em}.her
  </div>
  <div class="join"><b>联合价值</b><span>质量事件 + 设备上下文 → 一次对账说清“这批 NG 与哪次停机/温度异常同时发生，MES 是否已收到”。</span></div>
 </section>
-<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/joint">运行双项目联合演示 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
+<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/joint">运行双项目联合演示 →</a><a class="jointlink" href="/investor" style="border-color:#7c622f;color:#f1c56f">陈总投资评审版 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
 <div class="stats">
  <div class="stat"><div class="label">最终业务状态</div><div id="final" class="value">待运行</div><div class="sub">MES 回执 + UA 写回都完成才 DONE</div></div>
  <div class="stat"><div class="label">未完成任务</div><div id="queue" class="value">-</div><div class="sub">PENDING / SENDING / RETRY_WAIT</div></div>
@@ -758,7 +761,8 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:
-        if self.path in ("/", "/index.html"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             body = _DASHBOARD.encode("utf-8")
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
@@ -767,7 +771,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == "/joint":
+        if path == "/joint":
             from demo_joint_oee_rca import JOINT_DASHBOARD
 
             body = JOINT_DASHBOARD.encode("utf-8")
@@ -778,10 +782,21 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if path == "/investor":
+            from investor_pitch import INVESTOR_DASHBOARD
+
+            body = INVESTOR_DASHBOARD.encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path == "/api/joint":
+        if self.path in {"/api/joint", "/api/investor"}:
             lock: threading.Lock = self.server.joint_lock  # type: ignore[attr-defined]
             if not lock.acquire(blocking=False):
                 self._json(409, {"error": "已有联合演示正在运行"})
