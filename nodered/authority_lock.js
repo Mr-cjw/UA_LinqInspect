@@ -31,6 +31,7 @@ class SenderAuthorityGuard {
     this.leaseMs = Math.max(1000, Number(options.leaseMs || DEFAULT_LEASE_MS));
     this.token = crypto.randomUUID();
     this.held = false;
+    this.inode = null;
   }
 
   _meta() {
@@ -48,55 +49,75 @@ class SenderAuthorityGuard {
     return Number.isFinite(heartbeat) && Date.now() - heartbeat <= this.leaseMs;
   }
 
-  _writeMeta() {
+  _statInode() {
+    try {
+      return fs.statSync(this.dir).ino;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _ownsPath() {
+    return this.inode != null && this._statInode() === this.inode;
+  }
+
+  _writeMeta(directory = this.dir) {
     const meta = {
       owner: this.owner,
       token: this.token,
       pid: process.pid,
       heartbeat: Date.now(),
     };
-    const temporary = path.join(this.dir, `.owner-${process.pid}-${Date.now()}.tmp`);
+    const temporary = path.join(directory, `.owner-${process.pid}-${Date.now()}.tmp`);
     fs.writeFileSync(temporary, JSON.stringify(meta), { mode: 0o600 });
-    fs.renameSync(temporary, path.join(this.dir, 'owner.json'));
+    fs.renameSync(temporary, path.join(directory, 'owner.json'));
+  }
+
+  _publish() {
+    const parent = path.dirname(this.dir);
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const claim = fs.mkdtempSync(path.join(parent, `.${path.basename(this.dir)}.claim-`));
+    try {
+      fs.chmodSync(claim, 0o700);
+      this._writeMeta(claim);
+      fs.renameSync(claim, this.dir);
+    } catch (_) {
+      fs.rmSync(claim, { recursive: true, force: true });
+      return false;
+    }
+    this.inode = this._statInode();
+    this.held = true;
+    return true;
   }
 
   tryAcquire() {
     if (this.held) return { ok: true, owner: this.owner };
-    try {
-      fs.mkdirSync(this.dir, { mode: 0o700 });
-      this._writeMeta();
-      this.held = true;
-      return { ok: true, owner: this.owner };
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (this._publish()) return { ok: true, owner: this.owner };
+      const current = this._meta();
+      if (this._isFresh(current)) {
+        return { ok: false, owner: String(current.owner || 'unknown'), reason: 'held' };
+      }
+      const stale = `${this.dir}.stale-${process.pid}-${Date.now()}`;
+      try {
+        fs.renameSync(this.dir, stale);
+        fs.rmSync(stale, { recursive: true, force: true });
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          return { ok: false, owner: String(current.owner || 'unknown'), reason: 'stale-race' };
+        }
+      }
     }
-    const current = this._meta();
-    if (this._isFresh(current)) {
-      return { ok: false, owner: String(current.owner || 'unknown'), reason: 'held' };
-    }
-    const stale = `${this.dir}.stale-${process.pid}-${Date.now()}`;
-    try {
-      fs.renameSync(this.dir, stale);
-      fs.rmSync(stale, { recursive: true, force: true });
-    } catch (error) {
-      if (error.code !== 'ENOENT') return { ok: false, owner: String(current.owner || 'unknown'), reason: 'stale-race' };
-    }
-    try {
-      fs.mkdirSync(this.dir, { mode: 0o700 });
-      this._writeMeta();
-      this.held = true;
-      return { ok: true, owner: this.owner };
-    } catch (error) {
-      const winner = this._meta();
-      return { ok: false, owner: String(winner.owner || 'unknown'), reason: error.code || 'acquire-failed' };
-    }
+    const winner = this._meta();
+    return { ok: false, owner: String(winner.owner || 'unknown'), reason: 'acquire-race' };
   }
 
   heartbeat() {
     if (!this.held) return false;
     const current = this._meta();
-    if (current.token !== this.token) {
+    if (current.token !== this.token || !this._ownsPath()) {
       this.held = false;
+      this.inode = null;
       return false;
     }
     this._writeMeta();
@@ -105,12 +126,12 @@ class SenderAuthorityGuard {
 
   release() {
     if (!this.held) return;
-    const current = this._meta();
-    if (current.token === this.token) {
+    if (this._ownsPath() && this._meta().token === this.token) {
       try { fs.rmSync(path.join(this.dir, 'owner.json'), { force: true }); } catch (_) {}
       try { fs.rmdirSync(this.dir); } catch (_) {}
     }
     this.held = false;
+    this.inode = null;
   }
 
   status() {

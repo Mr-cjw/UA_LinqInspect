@@ -155,6 +155,26 @@ def _normalized_receipt(row: sqlite3.Row | None, event_type: str, correlation_id
     return receipt
 
 
+def _canonical_payload(
+    body: dict[str, Any],
+    *,
+    event_type: str,
+    source_event_id: str,
+    station_id: str,
+    correlation_id: str,
+) -> dict[str, Any]:
+    """Add the canonical event envelope to legacy Node-RED queue payloads."""
+    payload = dict(body)
+    payload.setdefault("schemaVersion", "1.0")
+    payload.setdefault("sourceEventId", source_event_id[:200])
+    payload.setdefault("stationId", station_id[:100])
+    payload.setdefault("correlationId", correlation_id)
+    payload["eventType"] = event_type
+    if event_type == "NG_ORDER":
+        payload.setdefault("result", "NG")
+    return payload
+
+
 def _queue_item(row: sqlite3.Row) -> dict[str, Any]:
     try:
         body = json.loads(row["body_json"])
@@ -167,6 +187,13 @@ def _queue_item(row: sqlite3.Row) -> dict[str, Any]:
     correlation_id = str(row["correlation_id"] or body.get("correlationId") or "")
     source_event_id = str(body.get("sourceEventId") or body.get("SourceEventId") or correlation_id or legacy_id)
     station_id = str(body.get("stationId") or body.get("StationId") or os.getenv("QC_STATION_ID") or "QCStation")
+    payload = _canonical_payload(
+        body,
+        event_type=event_type,
+        source_event_id=source_event_id,
+        station_id=station_id,
+        correlation_id=correlation_id,
+    )
     has_writeback = row["ua_status"] is not None
     state = STATE_UA_WRITE_PENDING if has_writeback else STATE_PENDING
     receipt = _normalized_receipt(row, event_type, correlation_id)
@@ -184,9 +211,9 @@ def _queue_item(row: sqlite3.Row) -> dict[str, Any]:
         "stationId": station_id[:100],
         "eventType": event_type,
         "correlationId": correlation_id,
-        "payload": body,
-        "payloadJson": _canonical_json(body),
-        "payloadHash": _payload_hash(body),
+        "payload": payload,
+        "payloadJson": _canonical_json(payload),
+        "payloadHash": _payload_hash(payload),
         "state": state,
         "attempts": int(row["attempts"] or 0),
         "nextAttemptAt": next_attempt_at,
@@ -212,6 +239,13 @@ def _dead_item(row: sqlite3.Row) -> dict[str, Any]:
     correlation_id = str(row["correlation_id"] or body.get("correlationId") or "")
     source_event_id = str(body.get("sourceEventId") or body.get("SourceEventId") or correlation_id or legacy_id)
     station_id = str(body.get("stationId") or body.get("StationId") or os.getenv("QC_STATION_ID") or "QCStation")
+    payload = _canonical_payload(
+        body,
+        event_type=event_type,
+        source_event_id=source_event_id,
+        station_id=station_id,
+        correlation_id=correlation_id,
+    )
     created_at = _iso_from_text(row["created_at"], _iso_from_ms(row["next_at"]))
     failed_at = _iso_from_text(row["failed_at"], created_at)
     error_code = str(row["error_code"] or row["last_error_code"] or "MES_UNKNOWN")
@@ -224,9 +258,9 @@ def _dead_item(row: sqlite3.Row) -> dict[str, Any]:
         "stationId": station_id[:100],
         "eventType": event_type,
         "correlationId": correlation_id,
-        "payload": body,
-        "payloadJson": _canonical_json(body),
-        "payloadHash": _payload_hash(body),
+        "payload": payload,
+        "payloadJson": _canonical_json(payload),
+        "payloadHash": _payload_hash(payload),
         "state": STATE_DEAD,
         "attempts": int(row["attempts"] or 0),
         "nextAttemptAt": None,

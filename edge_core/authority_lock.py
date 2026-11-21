@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -47,6 +48,7 @@ class SenderAuthorityGuard:
         self.lease_seconds = max(1.0, float(lease_seconds))
         self.token = str(uuid.uuid4())
         self.held = False
+        self._inode: int | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -66,48 +68,70 @@ class SenderAuthorityGuard:
             return False
         return time.time() - heartbeat <= self.lease_seconds
 
-    def _write_meta(self) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    def _owns_path(self) -> bool:
+        if self._inode is None:
+            return False
+        try:
+            return self.dir.stat().st_ino == self._inode
+        except OSError:
+            return False
+
+    @staticmethod
+    def _write_meta(directory: Path, owner: str, token: str) -> None:
         meta = {
-            "owner": self.owner,
-            "token": self.token,
+            "owner": owner,
+            "token": token,
             "pid": os.getpid(),
             "heartbeat": round(time.time() * 1000),
         }
-        temporary = self.dir / f".owner-{os.getpid()}-{time.time_ns()}.tmp"
+        temporary = directory / f".owner-{os.getpid()}-{time.time_ns()}.tmp"
         temporary.write_text(json.dumps(meta), encoding="utf-8")
         os.chmod(temporary, 0o600)
-        os.replace(temporary, self.dir / "owner.json")
+        os.replace(temporary, directory / "owner.json")
+
+    def _publish(self) -> bool:
+        """Publish a fully-written lock directory with one atomic rename."""
+        parent = self.dir.parent
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        claim = Path(tempfile.mkdtemp(prefix=f".{self.dir.name}.claim-", dir=parent))
+        try:
+            os.chmod(claim, 0o700)
+            self._write_meta(claim, self.owner, self.token)
+            os.rename(claim, self.dir)
+        except OSError:
+            shutil.rmtree(claim, ignore_errors=True)
+            return False
+        self._inode = self.dir.stat().st_ino
+        self.held = True
+        return True
 
     def try_acquire(self) -> dict[str, Any]:
         if self.held:
             return {"ok": True, "owner": self.owner}
-        try:
-            self.dir.mkdir(mode=0o700)
-            self._write_meta()
-            self.held = True
-            return {"ok": True, "owner": self.owner}
-        except FileExistsError:
-            pass
-        current = self._meta()
-        if self._fresh(current):
-            return {"ok": False, "owner": str(current.get("owner") or "unknown"), "reason": "held"}
-        stale = self.dir.with_name(f"{self.dir.name}.stale-{os.getpid()}-{time.time_ns()}")
-        try:
-            os.rename(self.dir, stale)
-            shutil.rmtree(stale, ignore_errors=True)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            return {"ok": False, "owner": str(current.get("owner") or "unknown"), "reason": "stale-race"}
-        try:
-            self.dir.mkdir(mode=0o700)
-            self._write_meta()
-            self.held = True
-            return {"ok": True, "owner": self.owner}
-        except OSError as exc:
-            winner = self._meta()
-            return {"ok": False, "owner": str(winner.get("owner") or "unknown"), "reason": str(exc)}
+        for _ in range(3):
+            if self._publish():
+                return {"ok": True, "owner": self.owner}
+            current = self._meta()
+            if self._fresh(current):
+                return {"ok": False, "owner": str(current.get("owner") or "unknown"), "reason": "held"}
+            stale = self.dir.with_name(f"{self.dir.name}.stale-{os.getpid()}-{time.time_ns()}")
+            try:
+                os.rename(self.dir, stale)
+                shutil.rmtree(stale, ignore_errors=True)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return {
+                    "ok": False,
+                    "owner": str(current.get("owner") or "unknown"),
+                    "reason": "stale-race",
+                }
+        winner = self._meta()
+        return {
+            "ok": False,
+            "owner": str(winner.get("owner") or "unknown"),
+            "reason": "acquire-race",
+        }
 
     def heartbeat(self) -> bool:
         if not self.held:
@@ -115,7 +139,10 @@ class SenderAuthorityGuard:
         if self._meta().get("token") != self.token:
             self.held = False
             return False
-        self._write_meta()
+        if not self._owns_path():
+            self.held = False
+            return False
+        self._write_meta(self.dir, self.owner, self.token)
         return True
 
     def start_heartbeat(self, interval_seconds: float = 2.0) -> None:
@@ -138,16 +165,19 @@ class SenderAuthorityGuard:
             self._thread = None
         if not self.held:
             return
-        if self._meta().get("token") == self.token:
+        if self._owns_path() and self._meta().get("token") == self.token:
             try:
-                (self.dir / "owner.json").unlink()
+                if self._owns_path():
+                    (self.dir / "owner.json").unlink()
             except FileNotFoundError:
                 pass
             try:
-                self.dir.rmdir()
+                if self._owns_path():
+                    self.dir.rmdir()
             except OSError:
                 pass
         self.held = False
+        self._inode = None
 
     def status(self) -> dict[str, Any]:
         current = self._meta()

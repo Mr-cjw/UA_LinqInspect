@@ -39,6 +39,7 @@ TESTS = (
     ("edge_migration", "tests/edge_core_migration_test.py", 30),
     ("ua_writeback_adapter", "tests/ua_writeback_adapter_test.py", 30),
     ("sender_authority", "tests/sender_authority_test.py", 30),
+    ("sender_cutover", "tests/sender_cutover_test.py", 60),
     ("mount_storage", "tests/mount_storage_test.py", 120),
     ("state_persistence", "tests/state_persistence_test.py", 30),
     ("event_outbox", "tests/outbox_test.py", 30),
