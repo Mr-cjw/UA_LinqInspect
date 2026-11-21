@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Edge QC Gateway - Edge Core API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     质检-MES 可靠边缘连接器的控制面契约草案。
 
@@ -490,14 +490,27 @@ components:
 
     MesReceipt:
       type: object
-      required: [accepted, receiptNo, correlationId, receivedAt]
+      description: |
+        原始 MES 成功响应的规范化存储。NG_ORDER 原始响应必须提供 mesOrderNo；
+        COMPLETION_REPORT 原始响应必须提供 receiptNo。网关统一生成 receiptNo
+        供查询和 UA 写回使用，并保留业务语义字段。
+      required: [accepted, receiptType, receiptNo, correlationId, receivedAt]
       properties:
         accepted:
           type: boolean
           const: true
+        receiptType:
+          type: string
+          enum: [MES_ORDER, COMPLETION_RECEIPT]
         receiptNo:
           type: string
           minLength: 1
+          maxLength: 200
+          description: 规范化后的 MES 受理凭证号。
+        mesOrderNo:
+          type: [string, 'null']
+          maxLength: 200
+          description: NG_ORDER 的 MES 工单号。
         correlationId:
           type: string
         duplicated:
@@ -609,7 +622,19 @@ components:
       properties:
         code:
           type: string
-          examples: [INVALID_REQUEST, PAYLOAD_CONFLICT, STATE_CONFLICT, STORAGE_UNAVAILABLE]
+          examples:
+            - INVALID_REQUEST
+            - MISSING_FIELD
+            - UNKNOWN_FIELD
+            - UNSUPPORTED_SCHEMA_VERSION
+            - INVALID_CORRELATION_ID
+            - INVALID_IDEMPOTENCY_KEY
+            - INVALID_TIMESTAMP
+            - INVALID_COUNT
+            - INVALID_NG_RATE
+            - PAYLOAD_CONFLICT
+            - STATE_CONFLICT
+            - STORAGE_UNAVAILABLE
         message:
           type: string
         correlationId:

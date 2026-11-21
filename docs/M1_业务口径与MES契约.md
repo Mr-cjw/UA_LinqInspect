@@ -1,6 +1,6 @@
 # M1 交付：质检业务口径与 MES 消费契约
 
-> 版本：v1.1 ｜ 2026-11-20 ｜ 信息模型基准：[Phase0_需求拆解与信息模型.md](../Phase0_需求拆解与信息模型.md)
+> 版本：v1.2 ｜ 2026-11-21 ｜ 信息模型基准：[Phase0_需求拆解与信息模型.md](../Phase0_需求拆解与信息模型.md)
 >
 > 文档导航：[README.md](README.md)｜相关：[项目全景](00_项目全景与架构.md)｜[信息模型速查](01_信息模型与业务规则速查.md)｜[Phase 1 实测报告](09_Phase1关联追踪与MES错误分类.md)
 
@@ -49,6 +49,10 @@
 接收端幂等键为 `serialNumber`（NG 开单）或 `workOrderId`（完工报工）。服务端对去除 `schemaVersion`、`correlationId` 等传输信封字段后的业务 payload 计算稳定 SHA-256 指纹：重复请求必须返回原回执，不得生成第二张工单；同一业务键对应不同指纹时必须返回 `409 IDEMPOTENCY_CONFLICT`，由边缘队列进入终态死信并等待人工核对，不能静默复用旧回执。
 
 `correlationId` 由 UA Server 在每次检测/完工时生成（`corr-<uuid4>`）。一次 NG 检测的 `InspectionFinishedEvent` 与 `NgDetectedEvent` 共用同一个 ID；`WorkOrderCompletedEvent` 使用独立 ID。Node-RED 原样透传到 MES，并在 `/qc/status` 的 `lastRequest`、`lastRequestByType`、`lastResponse` 中暴露，用于把 UA 事件、HTTP 请求、MES 回执和死信串成一条可追溯链。
+
+Edge Core 外部接入面使用同一语义规则：`Idempotency-Key` 必须是 UUID；`X-Correlation-Id` 必须与请求体一致；请求体只允许 OpenAPI 声明的字段；`occurredAt` 必须带时区；`okCount + ngCount <= inspectCount`；零样本完工的 `ngRate` 必须为 `-1.0`。非法请求在入队前拒绝，不产生半完成投递任务。
+
+MES 成功响应也必须按事件类型区分：NG 开单响应提供 `mesOrderNo`，完工报工响应提供 `receiptNo`。网关只在对应字段存在且校验通过后写 UA，缺失时分别使用 `MISSING_MES_ORDER_NO`、`MISSING_RECEIPT_NO` 进入死信。
 
 **回执写回目标（M2 红线 4 修订）**：回执按业务语义拆分，Node-RED 只能调用 **`RecordMesReceipt(receiptType, receiptNo, workOrderId, correlationId)`**。NG 开单的 `mesOrderNo` 由 Method 写入 **`LastNgMesOrderNo`**，完工报工的 `receiptNo` 写入 **`LastCompletionReceiptNo`**；两者同时写 **`LastMesOrderNo`** 作为最近回执的兼容镜像。三个回执变量对外只读，直接 Write 会被拒绝。原设计"写回 CurrentWorkOrderId"会覆盖派工单号、破坏工单状态机——派工单号（我方经 StartInspection 下发）与 MES 回执号（对方受理凭证）语义分离，禁止混写。
 

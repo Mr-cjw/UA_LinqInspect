@@ -115,7 +115,7 @@ UA_LinqInspect/
 │   ├── setup_node_red_security.py  # 安装 Node-RED 认证、加密凭据和本地 secrets
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── deploy/                    # systemd、Prometheus 告警与环境变量模板
-├── edge_core/                  # 外部 Edge Core 控制面/OpenAPI 垂直切片
+├── edge_core/                  # 外部 Edge Core 控制面、共享 MES 契约校验与 OpenAPI 垂直切片
 ├── hardware/                  # 可选硬件扩展：树莓派 open62541 Server、STM32 客户端方案
 ├── docs/
 │   ├── README.md              # 文档导航与学习路径
@@ -150,7 +150,7 @@ UA_LinqInspect/
     ├── outbox_recovery.py     # outbox SIGKILL 恢复与容量降级（18 项）
     ├── qc_state_restart_test.py  # SQLite 状态与 Outbox SIGKILL 恢复（13 项）
     ├── security_test.py       # UA 权限、控制变量只读、HTTP 认证与运维接口鉴权（16 项断言）
-    ├── edge_core_test.py      # Edge Core 契约、幂等、死信重放与 UA 确认（7 项断言）
+    ├── edge_core_test.py      # Edge Core 输入/回执契约、幂等、死信重放与 UA 确认（12 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── mes_idempotency_test.js # 模拟 MES 重复投递与 payload 冲突（10 项断言）
     ├── nodered_e2e.py         # M2 正常链路与 MES 幂等 HTTP 契约（21 项断言）
@@ -355,7 +355,7 @@ curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" -X POST \
 
 ### 6. 运行 Edge Core 垂直切片
 
-`edge_core/` 是面向外部连接器/控制面的 SQLite Outbox 与状态机垂直切片。Node-RED 在线链路已有独立 SQLite WAL 队列；两者接口和职责仍需收敛。
+`edge_core/` 是面向外部连接器/控制面的 SQLite Outbox、状态机和 MES 契约校验垂直切片。请求字段、计数不变量、事件类型专属回执和稳定错误码由 `edge_core/contract.py` 统一执行。Node-RED 在线链路已有独立 SQLite WAL 队列；两者接口和职责仍需收敛。
 
 ```bash
 export EDGE_API_TOKEN='replace-with-strong-token'
@@ -492,15 +492,15 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 586/586 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 586/586 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 586/586 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 586/586 PASS，含只读恢复目标拒绝） |
-| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（586/586 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 591/591 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 591/591 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 591/591 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 591/591 PASS，含只读恢复目标拒绝） |
+| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（591/591 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
 | MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同事务持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
-| Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
+| Edge Core 0.2 | 外部控制面 OpenAPI、共享请求/回执校验、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 12 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 长断网、死信重放、soak、短断网和 Server 重启已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 

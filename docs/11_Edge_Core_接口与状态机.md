@@ -1,6 +1,6 @@
 # Edge Core Service：接口、状态机与持久化契约
 
-> 版本：v0.1 ｜ 日期：2026-11-20 ｜ API：[edge-core.openapi.yaml](api/edge-core.openapi.yaml)
+> 版本：v0.2 ｜ 日期：2026-11-21 ｜ API：[edge-core.openapi.yaml](api/edge-core.openapi.yaml)
 >
 > 状态：产品与工程契约草案。本文先固定边界，后续实现必须通过故障矩阵验证，不能仅以接口可调用为完成标准。
 
@@ -70,6 +70,26 @@ inspection:<stationId>:<sourceEventId>
 - 幂等键已存在但任务已 `DONE`：返回已完成结果；
 - 幂等键已存在但任务已 `DEAD`：返回死信状态，不自动重置。
 
+### 3.3 请求校验与稳定错误码
+
+Edge Core 在入队前执行完整字段校验，拒绝结果不会进入 SQLite Outbox：
+
+| 检查 | 稳定错误码 |
+|---|---|
+| `schemaVersion` 必须为 `1.0` | `UNSUPPORTED_SCHEMA_VERSION` |
+| 必填字段缺失 | `MISSING_FIELD` |
+| 请求体出现未声明字段 | `UNKNOWN_FIELD` |
+| `Idempotency-Key` 必须是 UUID | `INVALID_IDEMPOTENCY_KEY` |
+| `X-Correlation-Id` 必须存在且与请求体一致 | `CORRELATION_MISMATCH` |
+| `correlationId` 必须匹配 `corr-...` 格式 | `INVALID_CORRELATION_ID` |
+| `occurredAt` 必须为带时区的 ISO 8601 | `INVALID_TIMESTAMP` |
+| `confidence`、`ngRate` 数值范围非法 | `INVALID_NUMBER` |
+| 计数必须为非负整数且 `okCount + ngCount <= inspectCount` | `INVALID_COUNT` |
+| 零样本时 `ngRate` 必须为 `-1.0`；有样本时不得为负 | `INVALID_NG_RATE` |
+
+`NG_ORDER` 必须携带 `result=NG`、`workOrderId`、`serialNumber`、`defectType`；`COMPLETION_REPORT` 必须携带
+`workOrderId`、`inspectCount`、`okCount`、`ngCount`、`ngRate`。请求体只允许 OpenAPI 声明的字段，扩展信息放入 `metadata`。
+
 ## 4. 投递状态机
 
 ```text
@@ -115,14 +135,27 @@ PENDING ──claimed──> SENDING ──valid receipt──> ACKED
 
 ## 5. MES 响应契约
 
-最小成功响应：
+成功响应按业务语义分开校验：
+
+NG 开单：
 
 ```json
 {
   "accepted": true,
   "schemaVersion": "1.0",
   "correlationId": "corr-7d35b5d0-6811-4d66-b7db-42242543b9b1",
-  "receiptNo": "MES-20261120-0001"
+  "mesOrderNo": "MES-20261121-0001"
+}
+```
+
+完工报工：
+
+```json
+{
+  "accepted": true,
+  "schemaVersion": "1.0",
+  "correlationId": "corr-7d35b5d0-6811-4d66-b7db-42242543b9b1",
+  "receiptNo": "RC-20261121-0001"
 }
 ```
 
@@ -130,21 +163,41 @@ PENDING ──claimed──> SENDING ──valid receipt──> ACKED
 
 - HTTP 2xx；
 - `accepted === true`；
-- `schemaVersion` 匹配；
+- `schemaVersion` 匹配 `1.0`；
 - `correlationId` 与请求一致；
-- 回执号非空且格式合法；
-- 重复请求返回相同回执时允许 `duplicated: true`。
+- `NG_ORDER` 必须提供非空 `mesOrderNo`，`COMPLETION_REPORT` 必须提供非空 `receiptNo`；
+- 回执号去除首尾空白后长度为 1..200；
+- 重复请求返回相同回执时允许 `duplicated: true`，该字段若存在必须为 boolean。
+
+Edge Core 持久化时会将实际回执规范化为：
+
+```json
+{
+  "accepted": true,
+  "schemaVersion": "1.0",
+  "correlationId": "corr-...",
+  "receiptType": "MES_ORDER",
+  "receiptNo": "MES-...",
+  "mesOrderNo": "MES-...",
+  "receivedAt": "2026-11-21T12:34:56.789Z"
+}
+```
+
+`receiptType` 只允许 `MES_ORDER` 或 `COMPLETION_RECEIPT`。这样查询、对账和后续 UA 写回使用统一字段，同时不丢失 NG 与完工的业务语义。
 
 失败分类：
 
 | 类别 | 处理 |
 |---|---|
 | 400/401/403/404/409 等业务终态 | `DEAD`，不自动重试 |
-| 429 | 读取 `Retry-After`，进入 `RETRY_WAIT` |
+| 429 | 读取 `Retry-After` 并夹紧到 0.1~30s，进入 `RETRY_WAIT` |
 | 5xx | 有界退避重试 |
 | timeout / 传输异常 | 有界退避重试，复用同一幂等键 |
-| 非法 2xx | `DEAD`，错误码 `INVALID_RESPONSE_SCHEMA` |
-| 同键不同回执 | `DEAD`，错误码 `RECEIPT_CONFLICT` |
+| `schemaVersion` 非法或 `duplicated` 类型错误 | `DEAD`，`INVALID_RESPONSE_SCHEMA` |
+| `correlationId` 不一致 | `DEAD`，`CORRELATION_MISMATCH` |
+| 2xx 中 `accepted !== true` | `DEAD`，`MES_REJECTED` |
+| NG 成功响应缺少 `mesOrderNo` | `DEAD`，`MISSING_MES_ORDER_NO` |
+| 完工成功响应缺少 `receiptNo` | `DEAD`，`MISSING_RECEIPT_NO` |
 
 如果客户 MES 不支持幂等键，合同必须明确：连接器只能降低重复概率，不能保证 MES 不产生重复业务单。
 
@@ -272,6 +325,6 @@ CREATE TABLE metrics_counters (
 - 死信查询、确认和重放；
 - Bearer token 保护的控制面 API；
 - 轻量队列、死信、MES 和 UA 写回指标；
-- `tests/edge_core_test.py` 7 项自动化测试。
+- `tests/edge_core_test.py` 12 项自动化测试，覆盖输入约束、事件类型专属回执、稳定错误码、`Idempotency-Key` 透传和 `Retry-After` 最小值夹紧。
 
 **当前限制：** 在线 Node-RED 链路已使用另一套 SQLite WAL 队列（`nodered/sqlite_store.js`），Edge Core 仍作为外部控制面/接口垂直切片，两者尚未收敛。Edge Core 也尚未内置 OPC UA 回执写入器；MES 回执成功后任务停在 `UA_WRITE_PENDING`，需要外部 UA 写回适配器调用 `/v1/deliveries/{id}/ua-write-result`，只有写回成功才进入 `DONE`。

@@ -17,7 +17,7 @@ cd ~/UA_LinqInspect
 3. `tests/health_test.js`：`/healthz` 的 ready/degraded/unavailable、响应头和 flow 接线。
 4. `tests/state_persistence_test.py`：JSON/SQLite 状态与 Outbox 往返、SQLite 事务回滚、旧 JSON 迁移、损坏回退、写入失败保护，以及保存失败后回滚内存状态并重同步 UA 变量。
 5. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证 SQLite 工单、计数、SN 与 Outbox 恢复，并完成恢复后的工单。
-6. `tests/edge_core_test.py`：Edge Core 控制面契约、幂等冲突、重试/死信和 UA 写回确认。
+6. `tests/edge_core_test.py`：Edge Core 控制面契约、严格输入校验、事件类型专属回执、幂等冲突、重试/死信和 UA 写回确认。
 7. `tests/security_test.py`：UA 传输安全、匿名只读、管理员 Method、控制/追溯/回执变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
 8. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
 9. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
@@ -79,7 +79,7 @@ cd ~/UA_LinqInspect
 | outbox 容量/导出单测 | 9/9 PASS | 高水位/硬上限拒绝、不丢事件、分页导出、令牌校验、清空幂等、重启恢复积压 |
 | 工位状态重启 | 13/13 PASS | `SIGKILL` 后工单、计数、SN 与 Outbox 恢复、继续完工 |
 | 事件 outbox 崩溃恢复 | 18/18 PASS | 未 ACK 事件跨 `SIGKILL` 保留、稳定 ID 重发、ACK 后停止、积压状态恢复与背压拒绝 |
-| Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
+| Edge Core API/状态机 | 12/12 PASS | 严格输入约束、NG/完工专属回执、稳定错误码、幂等冲突、4xx/5xx、死信重放、重启后去重、API 查询 |
 | 安全回归 | 16/16 PASS | UA NoSecurity/匿名权限、控制变量直接写拒绝、匿名 outbox 导出/清空拒绝、Node-RED 认证 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 21/21 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通、MES 重复/冲突 HTTP 契约 |
@@ -96,9 +96,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **586/586 PASS** | 32 个测试模块 |
+| **合计** | **591/591 PASS** | 32 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-050341/summary.json`。
+实际产物：`.tmp/regression-20261121-052937/summary.json`。
 
 ## 4. 手工执行单个测试
 
