@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-015542/summary.json` ｜ 当前结果：512/512 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-021845/summary.json` ｜ 当前结果：523/523 PASS
 
 ## 1. 阶段目标
 
@@ -259,11 +259,12 @@ sudo -u ua-linqinspect /opt/ua-linqinspect/.venv/bin/python \
 1. 校验备份 `integrity_check` 和 `foreign_key_check`。
 2. 把备份复制到目标同目录的临时库。
 3. 再次校验临时库。
-4. 若目标已存在，在 `data/backups/qc-queue-pre-restore-*.sqlite` 创建安全快照。
-5. 删除目标旧 `-wal`/`-shm`。
-6. 设置 `0600` 后用同目录原子替换安装。
+4. 若目标已存在且可验证，在 `data/backups/qc-queue-pre-restore-*.sqlite` 创建安全快照。
+5. 若目标无法打开或通过 SQLite 完整性校验，不静默覆盖，而是移动到同目录 `qc-queue-corrupt-*.sqlite` 审计隔离文件。
+6. 删除目标旧 `-wal`/`-shm`。
+7. 设置 `0600` 后用同目录原子替换安装已验证备份。
 
-输出中的 `preRestore` 是回滚点，必须记录到变更单或演练记录。
+正常目标的输出中 `preRestore` 是回滚点，必须记录到变更单或演练记录。若输出 `quarantined`，说明原目标已损坏并被保留取证；恢复成功的判据仍是 `restored: true` 和 `restoredIntegrityCheck: ok`，隔离文件不能替代已验证备份。
 
 ### 7.4 启动与验收
 
@@ -294,7 +295,8 @@ Phase 2C 新增专项：
 | `tests/outbox_capacity_test.py` | 9/9 PASS | 高水位/硬上限拒绝、分页导出、令牌清空与幂等 |
 | `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
 | `tests/deploy_templates_test.py` | 23/23 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、认证配置 |
-| `tests/restore_queue_test.py` | 20/20 PASS | dry-run、--force、安全快照、WAL/SHM 清理、业务继续消费 |
+| `tests/storage_failure_test.js` | 3/3 PASS | 页数封顶模拟写满、入队/完工事务回滚、损坏库启动失败 |
+| `tests/restore_queue_test.py` | 28/28 PASS | dry-run、--force、安全快照、损坏目标隔离、WAL/SHM 清理、业务继续消费 |
 | `tests/backup_queue_test.py` | 20/20 PASS | 在线备份、指标 textfile、完整性、保留策略、活跃库备份 |
 | `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
 | `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
@@ -308,8 +310,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 30 个测试模块、**512/512 PASS**，摘要为
-`.tmp/regression-20261121-015542/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 综合回归共 31 个测试模块、**523/523 PASS**，摘要为
+`.tmp/regression-20261121-021845/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

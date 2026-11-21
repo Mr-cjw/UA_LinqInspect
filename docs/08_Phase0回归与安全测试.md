@@ -12,26 +12,27 @@ cd ~/UA_LinqInspect
 脚本会依次执行：
 
 1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、UA 写回确认、指标持久化、单飞行、退避/看门狗、死信重放和旧 context 导入。
-2. `tests/health_test.js`：`/healthz` 的 ready/degraded/unavailable、响应头和 flow 接线。
-3. `tests/state_persistence_test.py`：状态快照往返、非法 Running 回退和损坏 JSON 回退。
-4. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证运行中工单、计数和 SN 序列恢复，并完成恢复后的工单。
-5. `tests/edge_core_test.py`：Edge Core 控制面契约、幂等冲突、重试/死信和 UA 写回确认。
-6. `tests/security_test.py`：UA 传输安全、匿名只读、管理员 Method、控制/追溯/回执变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
-7. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
-8. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
-9. `tests/metrics_test.py`：Prometheus 指标格式、UA 写回、SQLite/WAL/SHM 体积和 correlationId 契约。
-10. `tests/backup_queue_test.py`：WAL 在线备份、完整性检查、行数一致、保留策略和 Prometheus textfile。
-11. `tests/restore_queue_test.py`：dry-run、`--force`、恢复前快照、WAL/SHM 清理和恢复后继续消费。
-12. `tests/deploy_templates_test.py`：模板渲染、systemd verify、Alertmanager、logrotate、告警规则和环境变量。
-13. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
-14. `tests/long_outage_recovery.py`：MES 长断网、死信重放和恢复 RTO。
-15. `tests/soak_test.py`：多工单周期 soak、回执唯一性和资源漂移。
-16. `tests/restart_recovery.py seed/verify`：非空 SQLite 队列重启、排空和回执续写。
-17. `tests/crash_recovery.py prepare/verify`：请求处于 `SENDING` 时 `SIGKILL`，验证看门狗续传、唯一性和回执续写。
-18. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
-19. `tests/outage_recovery.py stale`：超过 60 秒的陈旧事件不污染队列和回执。
-20. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
-21. `tests/mes_idempotency_test.js`：模拟 MES 的 payload 指纹、重复回执、冲突拒绝和原型污染防护。
+2. `tests/storage_failure_test.js`：页数封顶模拟磁盘写满，验证入队/完工完整回滚；损坏库启动显式失败且不被重建。
+3. `tests/health_test.js`：`/healthz` 的 ready/degraded/unavailable、响应头和 flow 接线。
+4. `tests/state_persistence_test.py`：状态快照往返、非法 Running 回退和损坏 JSON 回退。
+5. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证运行中工单、计数和 SN 序列恢复，并完成恢复后的工单。
+6. `tests/edge_core_test.py`：Edge Core 控制面契约、幂等冲突、重试/死信和 UA 写回确认。
+7. `tests/security_test.py`：UA 传输安全、匿名只读、管理员 Method、控制/追溯/回执变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
+8. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
+9. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
+10. `tests/metrics_test.py`：Prometheus 指标格式、UA 写回、SQLite/WAL/SHM 体积和 correlationId 契约。
+11. `tests/backup_queue_test.py`：WAL 在线备份、完整性检查、行数一致、保留策略和 Prometheus textfile。
+12. `tests/restore_queue_test.py`：dry-run、`--force`、恢复前快照、损坏目标隔离、WAL/SHM 清理和恢复后继续消费。
+13. `tests/deploy_templates_test.py`：模板渲染、systemd verify、Alertmanager、logrotate、告警规则和环境变量。
+14. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
+15. `tests/long_outage_recovery.py`：MES 长断网、死信重放和恢复 RTO。
+16. `tests/soak_test.py`：多工单周期 soak、回执唯一性和资源漂移。
+17. `tests/restart_recovery.py seed/verify`：非空 SQLite 队列重启、排空和回执续写。
+18. `tests/crash_recovery.py prepare/verify`：请求处于 `SENDING` 时 `SIGKILL`，验证看门狗续传、唯一性和回执续写。
+19. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
+20. `tests/outage_recovery.py stale`：超过 60 秒的陈旧事件不污染队列和回执。
+21. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
+22. `tests/mes_idempotency_test.js`：模拟 MES 的 payload 指纹、重复回执、冲突拒绝和原型污染防护。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -67,6 +68,7 @@ cd ~/UA_LinqInspect
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
 | SQLite 队列单测 | 19/19 PASS | 唯一约束、事务回滚、UA 写回确认、单飞行、退避、看门狗、迁移、上限、死信重放 |
+| SQLite 存储故障 | 3/3 PASS | 写满时入队/完工回滚、损坏库启动失败、恢复后继续可用 |
 | MES 接收端幂等 | 10/10 PASS | 稳定指纹、重复返回原回执、冲突 409、旧回执迁移、原型污染防护 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | outbox 状态接口 | 9/9 PASS | `OutboxStatus` 解析、容量拒收不 ACK、背压健康降级、`/qc/status` 与 Prometheus 指标 |
@@ -81,7 +83,7 @@ cd ~/UA_LinqInspect
 | Node-RED E2E | 21/21 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通、MES 重复/冲突 HTTP 契约 |
 | Prometheus 指标 | 80/80 PASS | 文本格式、HELP/TYPE、gauge 一致性、UA 写回计数、outbox 积压指标、SQLite/WAL/SHM 体积、响应契约 |
 | SQLite 备份 | 20/20 PASS | WAL 热备、完整性校验、行数一致、保留策略、运行中数据库、textfile 指标 |
-| 离线恢复 | 20/20 PASS | dry-run、`--force`、安全快照、WAL/SHM 清理、恢复后继续消费 |
+| 离线恢复 | 28/28 PASS | dry-run、`--force`、安全快照、损坏目标隔离、WAL/SHM 清理、恢复后继续消费 |
 | 部署模板 | 23/23 PASS | 模板渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、Node-RED 认证配置 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
 | MES 长断网 | 24/24 PASS | 重试耗尽死信、积压保留、恢复排空、实测 RTO、受鉴权重放 |
@@ -92,9 +94,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **512/512 PASS** | 30 个测试模块 |
+| **合计** | **523/523 PASS** | 31 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-015542/summary.json`。
+实际产物：`.tmp/regression-20261121-021845/summary.json`。
 
 ## 4. 手工执行单个测试
 

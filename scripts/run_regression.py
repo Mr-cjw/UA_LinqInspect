@@ -27,6 +27,7 @@ CERT_DIR = REPO_ROOT / "certs"
 
 NODE_TESTS = (
     ("sqlite_queue", "tests/sqlite_queue_test.js", 30),
+    ("storage_failure", "tests/storage_failure_test.js", 30),
     ("mes_idempotency", "tests/mes_idempotency_test.js", 30),
     ("health", "tests/health_test.js", 30),
     ("outbox_status", "tests/outbox_status_test.js", 30),

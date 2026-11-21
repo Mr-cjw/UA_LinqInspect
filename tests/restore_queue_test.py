@@ -272,6 +272,37 @@ def main() -> int:
         check("corrupt backup is rejected", completed.returncode != 0 and
               invalid.get("ok") is False)
 
+        corrupt_target = root / "corrupt-target" / "qc-queue.sqlite"
+        corrupt_target.parent.mkdir(parents=True)
+        corrupt_bytes = (b"not a sqlite database\n" * 200)
+        corrupt_target.write_bytes(corrupt_bytes)
+        for suffix in ("-wal", "-shm"):
+            Path(str(corrupt_target) + suffix).write_bytes(b"stale sidecar")
+
+        completed, recovered = run_restore(backup, corrupt_target, force=True)
+        check("corrupt target can be force-restored", completed.returncode == 0 and
+              recovered.get("ok") is True, str(recovered.get("error") or ""))
+        check("corrupt target has no misleading pre-restore snapshot",
+              recovered.get("preRestore") is None)
+        quarantined = Path(str(recovered.get("quarantined") or ""))
+        check("corrupt target is quarantined beside the target",
+              quarantined.is_file() and quarantined.parent == corrupt_target.parent and
+              quarantined.name.startswith("qc-queue-corrupt-"), str(quarantined))
+        check("quarantine preserves the corrupt original bytes",
+              quarantined.is_file() and quarantined.read_bytes() == corrupt_bytes)
+        check("corrupt target is replaced by the validated backup",
+              queue_rows(corrupt_target) == 2)
+        check("corrupt target keeps no stale WAL/SHM sidecars",
+              not Path(str(corrupt_target) + "-wal").exists() and
+              not Path(str(corrupt_target) + "-shm").exists())
+
+        recovered_verified = node_eval(VERIFY_RESTORED, corrupt_target)
+        check("restored corrupt target continues to dispatch",
+              recovered_verified["claimed"] == "send" and
+              recovered_verified["completed"] is True)
+        check("restored corrupt target still drains",
+              recovered_verified["after"]["queue"]["total"] == 1)
+
     passed = sum(1 for _, value in results if value)
     print(f"\n===== RESTORE QUEUE: {passed}/{len(results)} passed =====")
     return 0 if passed == len(results) else 1

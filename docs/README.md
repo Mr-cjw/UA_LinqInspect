@@ -103,19 +103,20 @@
 - Prometheus 指标：80/80 PASS（含 UA 写回、outbox 积压与 SQLite/WAL/SHM 体积）
 - 健康探针：10/10 PASS
 - SQLite 在线备份：20/20 PASS
-- 离线恢复：20/20 PASS
+- 离线恢复：28/28 PASS（含损坏目标隔离与恢复后续跑）
 - 部署模板、Alertmanager 与 logrotate：23/23 PASS（含 outbox 与队列容量告警）
 - M2 故障场景测试：52/52 PASS（5xx、timeout、4xx、429、非法 2xx、Method 拒绝）
 - M3 长断网与死信重放：24/24 PASS（实测排空 RTO 13.91s）
 - 周期 soak：20/20 PASS（6 个工单、回执唯一、无队列/死信漂移）
 - Node-RED 非空队列重启恢复：18/18 PASS
 - SQLite 队列单测：19/19 PASS（含 UA 写回确认、重启、失败重试与队列满时失败关闭）
+- SQLite 存储故障：3/3 PASS（模拟磁盘写满回滚、损坏库启动失败、隔离恢复后继续消费）
 - Node-RED SIGKILL 崩溃恢复：23/23 PASS
 - UA 写回前 SIGKILL 崩溃恢复：27/27 PASS（MES 成功后、UA 确认前）
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：512/512 PASS（30 个测试模块）
+- 一键隔离回归合计：523/523 PASS（31 个测试模块）
 
 一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。工位状态单写者与恢复边界见 [16_状态源重构与持久化恢复.md](16_状态源重构与持久化恢复.md)；Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 

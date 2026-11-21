@@ -3,7 +3,9 @@
 
 Stop Node-RED before replacing an existing database. The script takes a
 pre-restore safety snapshot, removes stale WAL/SHM sidecars, and atomically
-installs the restored database.
+installs the restored database. If the existing target cannot be opened or
+verified as SQLite, it is moved to a same-directory quarantine file for audit
+instead of being silently overwritten.
 """
 from __future__ import annotations
 
@@ -42,6 +44,21 @@ def unique_path(directory: Path, prefix: str) -> Path:
     return candidate
 
 
+def is_corruption_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "file is not a database",
+            "database disk image is malformed",
+            "database corrupt",
+            "malformed database schema",
+            "integrity_check failed",
+            "foreign_key_check failed",
+        )
+    )
+
+
 def restore(backup: Path, target: Path, force: bool, dry_run: bool) -> dict:
     if not backup.is_file():
         raise FileNotFoundError(f"backup does not exist: {backup}")
@@ -56,6 +73,7 @@ def restore(backup: Path, target: Path, force: bool, dry_run: bool) -> dict:
     if temporary.exists():
         temporary.unlink()
     pre_restore: Path | None = None
+    quarantined: Path | None = None
     try:
         copy_database(backup, temporary)
         restored_verification = verify_backup(temporary)
@@ -68,6 +86,7 @@ def restore(backup: Path, target: Path, force: bool, dry_run: bool) -> dict:
             "restoredIntegrityCheck": restored_verification["integrityCheck"],
             "tables": restored_verification["tables"],
             "preRestore": None,
+            "quarantined": None,
         }
         if dry_run:
             summary["restored"] = False
@@ -77,18 +96,36 @@ def restore(backup: Path, target: Path, force: bool, dry_run: bool) -> dict:
             safety_dir = target.parent / "backups"
             safety_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             pre_restore = unique_path(safety_dir, "qc-queue-pre-restore")
-            copy_database(target, pre_restore)
-            verify_backup(pre_restore)
-            os.chmod(pre_restore, 0o600)
-            summary["preRestore"] = str(pre_restore)
+            try:
+                copy_database(target, pre_restore)
+                verify_backup(pre_restore)
+            except Exception as exc:
+                if pre_restore.exists():
+                    pre_restore.unlink()
+                pre_restore = None
+                if not is_corruption_error(exc):
+                    raise
+                quarantined = unique_path(target.parent, "qc-queue-corrupt")
+                os.replace(target, quarantined)
+                summary["quarantined"] = str(quarantined)
+            else:
+                os.chmod(pre_restore, 0o600)
+                summary["preRestore"] = str(pre_restore)
 
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(str(target) + suffix)
-            if sidecar.exists():
-                sidecar.unlink()
-
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, target)
+        try:
+            if quarantined is not None:
+                os.chmod(quarantined, 0o600)
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(str(target) + suffix)
+                if sidecar.exists():
+                    sidecar.unlink()
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+        except Exception:
+            if quarantined is not None and not target.exists():
+                os.replace(quarantined, target)
+                summary["quarantined"] = None
+            raise
         summary["restored"] = True
         return summary
     finally:
