@@ -8,6 +8,7 @@ import os
 import re
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -122,6 +123,19 @@ def sn_sequence(value: object) -> int:
     return int(match.group(1)) if match else -1
 
 
+def read_sqlite_state(db_path: Path) -> dict:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM qc_station_state WHERE station_id = 'QCStation'"
+        ).fetchone()
+    if not row:
+        return {}
+    value = dict(row)
+    value["outbox"] = json.loads(value.get("outbox_json") or "[]")
+    return value
+
+
 async def main() -> int:
     for required in (
         REPO_ROOT / "certs/server/server_cert.der",
@@ -135,7 +149,8 @@ async def main() -> int:
     work_order = f"WO-STATE-RESTART-{int(time.time())}"
     with tempfile.TemporaryDirectory(prefix="qc-state-restart-") as temp:
         root = Path(temp)
-        state_path = root / "qc-state.json"
+        legacy_state_path = root / "qc-state.json"
+        state_db_path = root / "qc-edge.sqlite3"
         env = os.environ.copy()
         admin_user = env.get("UA_ADMIN_USER") or "state-restart-admin"
         admin_pass = env.get("UA_ADMIN_PASS") or "state-restart-password"
@@ -152,7 +167,9 @@ async def main() -> int:
                 "UA_SERVER_PRIVATE_KEY": str(REPO_ROOT / "certs/server/server_key.pem"),
                 "UA_TRUSTED_CLIENT_CERTS_DIR": str(REPO_ROOT / "certs/trusted_clients"),
                 "UA_AUDIT_LOG": str(root / "ua-audit.log"),
-                "QC_STATE_PATH": str(state_path),
+                "QC_STATE_PATH": str(legacy_state_path),
+                "QC_STATE_BACKEND": "sqlite",
+                "QC_STATE_DB_PATH": str(state_db_path),
                 "QC_AUTO_INSPECT": "1",
                 "QC_INSPECT_INTERVAL": "0.15",
                 "QC_NG_PROBABILITY": "1.0",
@@ -173,20 +190,25 @@ async def main() -> int:
                       f"({ret[1] if len(ret) > 1 else ''})")
 
                 async def persisted_and_running():
-                    if not state_path.exists():
+                    if not state_db_path.exists():
                         return False
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    state = read_sqlite_state(state_db_path)
                     return (
                         state.get("status") == 1
-                        and state.get("workOrderId", state.get("work_order_id")) == work_order
-                        and state.get("inspectCount", state.get("inspect_count", 0)) >= 2
-                        and bool(state.get("currentPartSn", state.get("current_part_sn")))
+                        and state.get("work_order_id") == work_order
+                        and int(state.get("inspect_count") or 0) >= 2
+                        and bool(state.get("current_part_sn"))
                     )
 
                 persisted = await wait_until(
                     persisted_and_running, timeout=15, label="durable running state before crash"
                 )
                 check("durable state records running work order and inspections", persisted)
+                outbox_before_crash = read_sqlite_state(state_db_path).get("outbox", [])
+                check("SQLite transaction persists NG outbox events",
+                      len(outbox_before_crash) >= 2 and
+                      all(str(event.get("eventId", "")).startswith("evt-") for event in outbox_before_crash),
+                      f"(events={len(outbox_before_crash)})")
                 before_count = int(await read(nodes["count"]) or 0)
                 before_sn = str(await read(nodes["part_sn"]) or "")
                 check("first server produced inspection and SN", before_count >= 2 and sn_sequence(before_sn) > 0,
@@ -194,11 +216,18 @@ async def main() -> int:
 
             stop_server(first, crash=True)
             first = None
-            persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
-            persisted_count = int(persisted_state.get("inspectCount", persisted_state.get("inspect_count", 0)))
-            persisted_sn = str(persisted_state.get("currentPartSn", persisted_state.get("current_part_sn")) or "")
-            check("SIGKILL leaves recoverable schema-v1 state", persisted_state.get("status") == 1 and persisted_count >= 2,
+            persisted_state = read_sqlite_state(state_db_path)
+            persisted_count = int(persisted_state.get("inspect_count") or 0)
+            persisted_sn = str(persisted_state.get("current_part_sn") or "")
+            check("SIGKILL leaves recoverable schema-v1 state",
+                  persisted_state.get("schema_version") == 1 and
+                  persisted_state.get("status") == 1 and persisted_count >= 2,
                   f"(count={persisted_count}, sn={persisted_sn or 'empty'})")
+            outbox_after_crash = persisted_state.get("outbox", [])
+            check("outbox survives SIGKILL without duplicate event ids",
+                  len(outbox_after_crash) >= len(outbox_before_crash) and
+                  len({event.get("eventId") for event in outbox_after_crash}) == len(outbox_after_crash),
+                  f"(events={len(outbox_after_crash)})")
 
             second = start_server(env, root / "server-second.log")
             client = await create_secure_client()

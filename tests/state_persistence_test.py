@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from server.qc_state import QCOutboxEvent, QCStateStore, QCStationSnapshot
+from server.qc_sqlite_state import SQLiteQCStateStore
 
 
 class StatePersistenceTests(unittest.TestCase):
@@ -190,6 +192,88 @@ class StatePersistenceTests(unittest.TestCase):
             self.assertEqual(calls, 2)
             self.assertEqual(store.load().work_order_id, "WO-COMMITTED")
             self.assertEqual(list(Path(temp).glob(".state.json.tmp-*")), [])
+
+    def test_sqlite_round_trip_preserves_state_and_pending_outbox(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "qc-edge.sqlite3"
+            event = QCOutboxEvent(
+                event_id="evt-sqlite-001",
+                event_type="ng",
+                fields={
+                    "WorkOrderId": "WO-SQLITE-001",
+                    "SerialNumber": "SN-SQLITE-001",
+                    "CorrelationId": "corr-sqlite-001",
+                    "SourceEventId": "evt-sqlite-001",
+                    "EventVersion": 1,
+                },
+                severity=3,
+                message="NG detected",
+                created_at="2026-11-21T00:00:00+00:00",
+            )
+            snapshot = QCStationSnapshot(
+                status=1,
+                work_order_id="WO-SQLITE-001",
+                target_count=5,
+                inspect_count=1,
+                ng_count=1,
+                current_part_sn="SN-SQLITE-001",
+                sn_day="20261121",
+                sn_seq=1,
+                outbox=[event],
+            )
+            SQLiteQCStateStore(db_path, window_size=3).save(snapshot)
+            restored = SQLiteQCStateStore(db_path, window_size=3).load()
+            self.assertEqual(restored.work_order_id, "WO-SQLITE-001")
+            self.assertEqual(restored.inspect_count, 1)
+            self.assertEqual(len(restored.outbox), 1)
+            self.assertEqual(restored.outbox[0].event_id, "evt-sqlite-001")
+            self.assertEqual(restored.outbox[0].fields["CorrelationId"], "corr-sqlite-001")
+
+    def test_sqlite_failed_update_preserves_previous_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "qc-edge.sqlite3"
+            store = SQLiteQCStateStore(db_path, window_size=3)
+            store.save(self.snapshot("WO-SQLITE-OLD", 1))
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TRIGGER fail_state_update BEFORE UPDATE ON qc_station_state
+                    BEGIN
+                        SELECT RAISE(ABORT, 'simulated storage failure');
+                    END;
+                    """
+                )
+                conn.commit()
+            with self.assertRaises(sqlite3.DatabaseError):
+                store.save(self.snapshot("WO-SQLITE-NEW", 2))
+            restored = store.load()
+            self.assertEqual(restored.work_order_id, "WO-SQLITE-OLD")
+            self.assertEqual(restored.inspect_count, 1)
+
+    def test_sqlite_legacy_json_migration_preserves_outbox(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            legacy = root / "state.json"
+            event = QCOutboxEvent(
+                event_id="evt-migrate-001",
+                event_type="done",
+                fields={"WorkOrderId": "WO-MIGRATE-001", "CorrelationId": "corr-migrate-001"},
+                severity=2,
+                message="completed",
+                created_at="2026-11-21T00:00:00+00:00",
+            )
+            QCStateStore(legacy, window_size=3).save(QCStationSnapshot(
+                status=1,
+                work_order_id="WO-MIGRATE-001",
+                inspect_count=2,
+                outbox=[event],
+            ))
+            store = SQLiteQCStateStore(root / "qc-edge.sqlite3", window_size=3, legacy_json_path=legacy)
+            restored = store.load()
+            self.assertEqual(restored.work_order_id, "WO-MIGRATE-001")
+            self.assertEqual(restored.outbox[0].event_id, "evt-migrate-001")
+            reopened = SQLiteQCStateStore(root / "qc-edge.sqlite3", window_size=3, legacy_json_path=legacy)
+            self.assertEqual(reopened.load().outbox[0].event_id, "evt-migrate-001")
 
 
 if __name__ == "__main__":

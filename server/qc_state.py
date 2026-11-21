@@ -82,6 +82,27 @@ class QCOutboxEvent:
     created_at: str = ""
 
 
+def serialize_outbox_event(event: QCOutboxEvent) -> dict[str, Any]:
+    return {
+        "eventVersion": event.event_version,
+        "eventId": event.event_id,
+        "eventType": event.event_type,
+        "fields": event.fields,
+        "severity": event.severity,
+        "message": event.message,
+        "createdAt": event.created_at,
+    }
+
+
+def snapshot_to_value(snapshot: QCStationSnapshot) -> dict[str, Any]:
+    value = {
+        _SNAPSHOT_KEYS[key]: item
+        for key, item in asdict(snapshot).items()
+    }
+    value["outbox"] = [serialize_outbox_event(event) for event in snapshot.outbox]
+    return value
+
+
 class QCStateStore:
     def __init__(self, path: str | Path, *, window_size: int = 20):
         self.path = Path(path).expanduser()
@@ -99,12 +120,7 @@ class QCStateStore:
 
     def save(self, snapshot: QCStationSnapshot) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        value = {
-            _SNAPSHOT_KEYS[key]: item
-            for key, item in asdict(snapshot).items()
-        }
-        value["outbox"] = [self._serialize_outbox_event(event) for event in snapshot.outbox]
-        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        payload = json.dumps(snapshot_to_value(snapshot), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         temp = self.path.with_name(f".{self.path.name}.tmp-{os.getpid()}")
         try:
             descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -131,15 +147,10 @@ class QCStateStore:
 
     @staticmethod
     def _serialize_outbox_event(event: QCOutboxEvent) -> dict[str, Any]:
-        return {
-            "eventVersion": event.event_version,
-            "eventId": event.event_id,
-            "eventType": event.event_type,
-            "fields": event.fields,
-            "severity": event.severity,
-            "message": event.message,
-            "createdAt": event.created_at,
-        }
+        return serialize_outbox_event(event)
+
+    def validate_value(self, value: Any) -> QCStationSnapshot:
+        return self._validate(value)
 
     def _validate(self, value: Any) -> QCStationSnapshot:
         if not isinstance(value, dict):

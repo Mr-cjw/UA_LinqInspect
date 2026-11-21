@@ -17,7 +17,9 @@
   UA_SERVER_PRIVATE_KEY_PASSWORD 私钥密码（可选）
   UA_TRUSTED_CLIENT_CERTS_DIR 受信客户端证书目录（必填，至少包含一个 .pem/.der）
   UA_AUDIT_LOG        审计日志路径（默认 server_audit.log，自动轮转）
-  QC_STATE_PATH       工位状态快照路径（默认 data/qc-state.json）
+  QC_STATE_PATH       旧 JSON 工位状态路径（迁移来源，默认 data/qc-state.json）
+  QC_STATE_BACKEND    工位状态后端：auto/sqlite/json（auto 在设置 QC_STATE_DB_PATH 或 QC_DB_PATH 时使用 SQLite）
+  QC_STATE_DB_PATH    SQLite 工位状态库；默认复用 QC_DB_PATH
   QC_AUTO_INSPECT     是否启动虚拟质检循环（1=开，默认；0=关，交给真实 YOLOv8/外部写入）
   QC_INSPECT_INTERVAL 检测间隔秒（默认 2.0）
   QC_NG_PROBABILITY   虚拟 NG 概率（默认 0.3）
@@ -60,6 +62,7 @@ try:
         QCStationSnapshot,
         last_timestamp_or_default,
     )
+    from .qc_sqlite_state import SQLiteQCStateStore
 except ImportError:  # direct execution: python server/qc_server.py
     from qc_state import (
         OUTBOX_EVENT_VERSION,
@@ -68,6 +71,7 @@ except ImportError:  # direct execution: python server/qc_server.py
         QCStationSnapshot,
         last_timestamp_or_default,
     )
+    from qc_sqlite_state import SQLiteQCStateStore
 
 NS_URI = "urn:fde:linqinspect:qc"
 DEFECT_CODES = ("SCRATCH", "DENT", "STAIN", "BURR", "MISSING")
@@ -83,6 +87,18 @@ SERVER_KEY_PASSWORD = os.getenv("UA_SERVER_PRIVATE_KEY_PASSWORD", "")
 CLIENT_TRUST_DIR = os.getenv("UA_TRUSTED_CLIENT_CERTS_DIR", "").strip()
 AUDIT_LOG_PATH = os.getenv("UA_AUDIT_LOG", "server_audit.log").strip() or "server_audit.log"
 STATE_PATH = os.getenv("QC_STATE_PATH", "data/qc-state.json").strip() or "data/qc-state.json"
+STATE_DB_PATH = (
+    os.getenv("QC_STATE_DB_PATH", "").strip()
+    or os.getenv("QC_DB_PATH", "").strip()
+    or "data/qc-edge.sqlite3"
+)
+STATE_BACKEND = os.getenv("QC_STATE_BACKEND", "auto").strip().lower() or "auto"
+if STATE_BACKEND == "auto":
+    STATE_BACKEND = "sqlite" if (
+        os.getenv("QC_STATE_DB_PATH", "").strip() or os.getenv("QC_DB_PATH", "").strip()
+    ) else "json"
+if STATE_BACKEND not in ("sqlite", "json"):
+    raise ValueError("QC_STATE_BACKEND must be auto, sqlite or json")
 AUTO_INSPECT = os.getenv("QC_AUTO_INSPECT", "1") != "0"
 INSPECT_INTERVAL = float(os.getenv("QC_INSPECT_INTERVAL", "2.0"))
 NG_PROBABILITY = float(os.getenv("QC_NG_PROBABILITY", "0.3"))
@@ -368,7 +384,19 @@ class QCStation:
         self.server = server
         self.idx = None
         self._lock = asyncio.Lock()
-        self.state_store = state_store or QCStateStore(STATE_PATH, window_size=WINDOW_SIZE)
+        if state_store is not None:
+            self.state_store = state_store
+            self.state_backend = "sqlite" if isinstance(state_store, SQLiteQCStateStore) else "injected"
+        elif STATE_BACKEND == "sqlite":
+            self.state_store = SQLiteQCStateStore(
+                STATE_DB_PATH,
+                window_size=WINDOW_SIZE,
+                legacy_json_path=STATE_PATH,
+            )
+            self.state_backend = "sqlite"
+        else:
+            self.state_store = QCStateStore(STATE_PATH, window_size=WINDOW_SIZE)
+            self.state_backend = "json"
         snapshot = self.state_store.load()
         self.status = snapshot.status
         self.work_order_id = snapshot.work_order_id
@@ -396,8 +424,8 @@ class QCStation:
         self.nd = {}
         if self.state_store.path.exists():
             _log.info(
-                "Restored QC state from %s: status=%d workOrder=%s inspect=%d ok=%d ng=%d outbox=%d",
-                self.state_store.path, self.status, self.work_order_id,
+                "Restored QC state from %s backend=%s: status=%d workOrder=%s inspect=%d ok=%d ng=%d outbox=%d",
+                self.state_store.path, self.state_backend, self.status, self.work_order_id,
                 self.inspect_count, self.ok_count, self.ng_count, len(self.outbox),
             )
 
