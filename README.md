@@ -29,6 +29,28 @@ Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调
 - 仿真实现：AI 视觉推理和 MES HTTP 服务，二者都是零成本替代品。
 - 未纳入主链路：树莓派/STM32 硬件版本，仅在 `hardware/` 中提供架构和骨架。
 
+## 先体验：五分钟软件演示（无需硬件）
+
+如果只想先判断“这个项目到底在做什么”，不需要启动 Node-RED 和 OPC UA Server，直接运行：
+
+```bash
+.venv/bin/python scripts/demo_edge_core.py
+```
+
+它会用真实的 Edge Core SQLite 状态机、HTTP API 和投递 Worker，演示一条 NG 经历
+MES 超时、服务重启、持续 503、死信、人工重放、MES 回执和 UA 写回确认，
+最后进入 `DONE`。MES 与 OPC UA 写回为本地模拟，页面和终端都会明确标注。
+
+需要可视化体验：
+
+```bash
+.venv/bin/python scripts/demo_edge_core.py --ui --no-open
+# 浏览器打开 http://127.0.0.1:8899/
+```
+
+完整讲解、60 秒投资说明和真/模拟边界见
+[五分钟软件体验演示](docs/17_五分钟软件体验演示.md)。
+
 ## 启动流程总览
 
 启动顺序固定为：**初始化依赖 → 生成/同步证书 → 启动 OPC UA Server → 启动 Node-RED → 运行验证**。
@@ -90,6 +112,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [Phase 2A：SQLite 事务队列与崩溃恢复](docs/10_Phase2A_SQLite事务队列与崩溃恢复.md)
 - [Phase 2B：可观测性与 SQLite 在线备份](docs/11_Phase2B可观测性与SQLite备份.md)
 - [Phase 2C：部署运维与恢复演练](docs/15_Phase2C部署运维与恢复演练.md)
+- [五分钟软件体验：没有硬件先验证可靠性](docs/17_五分钟软件体验演示.md)
 
 ## 项目结构
 
@@ -113,6 +136,7 @@ UA_LinqInspect/
 │   ├── restore_queue.py       # 离线恢复、恢复前快照与原子替换
 │   ├── render_deploy.py       # 渲染 systemd/环境文件部署模板
 │   ├── setup_node_red_security.py  # 安装 Node-RED 认证、加密凭据和本地 secrets
+│   ├── demo_edge_core.py      # 无需硬件的 Edge Core 故障恢复演示（终端/浏览器）
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── deploy/                    # systemd、Prometheus 告警与环境变量模板
 ├── contracts/                 # Node-RED 与 Edge Core 共用的投递读模型 JSON Schema
@@ -139,6 +163,7 @@ UA_LinqInspect/
 │   ├── 14_投资人BP叙事.md
 │   ├── 15_Phase2C部署运维与恢复演练.md
 │   ├── 16_状态源重构与持久化恢复.md
+│   ├── 17_五分钟软件体验演示.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
@@ -152,6 +177,7 @@ UA_LinqInspect/
     ├── qc_state_restart_test.py  # SQLite 状态与 Outbox SIGKILL 恢复（13 项）
     ├── security_test.py       # UA 权限、控制变量只读、HTTP 认证与运维接口鉴权（16 项断言）
     ├── edge_core_test.py      # Edge Core 输入/回执契约、幂等、死信重放与 UA 确认（12 项断言）
+    ├── demo_edge_core_test.py # 无硬件演示的故障恢复与唯一回执回归（4 项）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── mes_idempotency_test.js # 模拟 MES 重复投递与 payload 冲突（10 项断言）
     ├── nodered_e2e.py         # M2 正常链路与 MES 幂等 HTTP 契约（21 项断言）
@@ -493,16 +519,17 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 592/592 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 592/592 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 592/592 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 592/592 PASS，含只读恢复目标拒绝） |
-| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（592/592 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 596/596 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 596/596 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 596/596 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 596/596 PASS，含只读恢复目标拒绝） |
+| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（596/596 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
 | MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同事务持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、共享请求/回执校验、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 12 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | 投递读模型 0.1 | Node-RED 与 Edge Core 共用 `delivery-record.schema.json`，统一投递字段、状态映射和回执结构 | 🟡 读模型已统一；物理表和发送泵仍待收敛 |
+| 五分钟演示 0.1 | 无需硬件展示超时、重启、5xx、死信重放、唯一回执与 UA 写回 | ✅ 最终状态 `DONE`，4 项自动化测试 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 长断网、死信重放、soak、短断网和 Server 重启已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |
 

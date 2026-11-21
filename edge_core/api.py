@@ -32,6 +32,8 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
         return self.server.api_token  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: Any) -> None:
+        if getattr(self.server, "quiet", False):
+            return
         print(f"edge-core-api {self.address_string()} {fmt % args}")
 
     def _authorized(self) -> bool:
@@ -213,4 +215,5 @@ def create_api_server(host: str, port: int, store: DeliveryStore, api_token: str
     server.store = store  # type: ignore[attr-defined]
     server.api_token = api_token  # type: ignore[attr-defined]
     server.mes_base_url = mes_base_url  # type: ignore[attr-defined]
+    server.quiet = False  # type: ignore[attr-defined]
     return server

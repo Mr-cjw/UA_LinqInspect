@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-054339/summary.json` ｜ 当前结果：592/592 PASS
+> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-055300/summary.json` ｜ 当前结果：596/596 PASS
 
 ## 1. 阶段目标
 
@@ -303,6 +303,7 @@ Phase 2C 新增专项：
 | `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
 | `tests/state_persistence_test.py` | 19/19 PASS | SQLite 状态与 Outbox 同事务、JSON 兼容、事务回滚、旧状态迁移、保存失败回滚与 UA 重同步 |
 | `tests/qc_state_restart_test.py` | 13/13 PASS | SIGKILL 后 SQLite 工单、计数、SN 与 Outbox 恢复 |
+| `tests/demo_edge_core_test.py` | 4/4 PASS | 无硬件演示超时、服务重启、死信重放、MES 唯一回执与 UA 写回确认 |
 | `tests/ua_write_crash_recovery.py` | 27/27 PASS | UA 冻结时注入 NG/完工、MES 成功后 SIGKILL、重启后完成 UA 写回 |
 
 一键回归命令：
@@ -311,7 +312,7 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 共享投递读模型接入后的综合回归共 32 个测试模块、**592/592 PASS**，摘要为 `.tmp/regression-20261121-054339/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 共享投递读模型与无硬件演示接入后的综合回归共 33 个测试模块、**596/596 PASS**，摘要为 `.tmp/regression-20261121-055300/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
