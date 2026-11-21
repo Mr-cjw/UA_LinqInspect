@@ -34,6 +34,7 @@ NODE_TESTS = (
 )
 
 TESTS = (
+    ("edge_demo", "tests/demo_edge_core_test.py", 30),
     ("mount_storage", "tests/mount_storage_test.py", 120),
     ("state_persistence", "tests/state_persistence_test.py", 30),
     ("event_outbox", "tests/outbox_test.py", 30),
