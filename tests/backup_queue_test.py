@@ -289,7 +289,9 @@ def main() -> int:
               not any((root / "empty-backups").glob("qc-queue-*.sqlite")))
 
         partial_source = root / "partial.sqlite"
-        shutil.copy2(backup_path, partial_source)
+        # Use the stable fixture, not an earlier backup that retention may
+        # legitimately have pruned during the prior assertions.
+        shutil.copy2(source, partial_source)
         partial_connection = sqlite3.connect(partial_source)
         partial_connection.execute("ALTER TABLE metrics DROP COLUMN updated_at")
         partial_connection.commit()
