@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
@@ -100,6 +101,104 @@ function rowToDeadLetter(row) {
     lastErrorCode: row.last_error_code || '',
     errorCode: row.error_code || '',
     failedAt: row.failed_at || '',
+  };
+}
+
+function isoFromMilliseconds(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  try {
+    return new Date(number).toISOString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function isoFromText(value, fallbackMilliseconds = 0) {
+  if (value) {
+    const parsed = Date.parse(String(value));
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  return isoFromMilliseconds(fallbackMilliseconds);
+}
+
+function eventTypeForQueue(type) {
+  return type === 'ng' ? 'NG_ORDER' : 'COMPLETION_REPORT';
+}
+
+function canonicalReceipt(row, correlationId) {
+  if (!row || !row.ua_receipt) return null;
+  const receiptNo = asString(row.ua_receipt).trim();
+  if (!receiptNo) return null;
+  const eventType = eventTypeForQueue(row.type);
+  return {
+    accepted: true,
+    schemaVersion: '1.0',
+    correlationId,
+    receiptType: eventType === 'NG_ORDER' ? 'MES_ORDER' : 'COMPLETION_RECEIPT',
+    receiptNo,
+    ...(eventType === 'NG_ORDER' ? { mesOrderNo: receiptNo } : {}),
+    receivedAt: isoFromMilliseconds(row.ua_updated_at) || new Date().toISOString(),
+  };
+}
+
+function canonicalState(row, now) {
+  if (row.ua_status) return 'UA_WRITE_PENDING';
+  if (row.status === 'SENDING') return 'SENDING';
+  if (asInteger(row.next_at) > now) return 'RETRY_WAIT';
+  return 'PENDING';
+}
+
+function canonicalQueueRecord(row, now, watchdogMs) {
+  const body = JSON.parse(row.body_json);
+  const correlationId = asString(row.correlation_id);
+  const eventType = eventTypeForQueue(row.type);
+  const hasWriteback = Boolean(row.ua_status);
+  return {
+    schemaVersion: '1.0',
+    deliveryId: asString(row.id),
+    businessKey: asString(row.id),
+    sourceEventId: asString(body.sourceEventId || body.SourceEventId) || correlationId || asString(row.id),
+    stationId: asString(body.stationId || body.StationId) || process.env.QC_STATION_ID || 'QCStation',
+    eventType,
+    correlationId,
+    state: canonicalState(row, now),
+    attempts: asInteger(row.attempts),
+    nextAttemptAt: asInteger(row.next_at) > 0 ? isoFromMilliseconds(row.next_at) : null,
+    leaseUntil: row.status === 'SENDING' && !hasWriteback
+      ? isoFromMilliseconds(asInteger(row.sent_at) + watchdogMs)
+      : null,
+    lastErrorCode: asString(row.last_error_code) || null,
+    lastErrorMessage: asString(row.last_status) || null,
+    mesReceipt: canonicalReceipt(row, correlationId),
+    uaWriteConfirmed: false,
+    createdAt: isoFromText(row.created_at, row.enqueued_at) || new Date(0).toISOString(),
+    updatedAt: isoFromMilliseconds(row.ua_updated_at || row.sent_at || row.enqueued_at) ||
+      isoFromText(row.created_at, row.enqueued_at) || new Date(0).toISOString(),
+  };
+}
+
+function canonicalDeadRecord(row) {
+  const body = JSON.parse(row.body_json);
+  const correlationId = asString(row.correlation_id);
+  return {
+    schemaVersion: '1.0',
+    deliveryId: asString(row.queue_id),
+    businessKey: asString(row.queue_id),
+    sourceEventId: asString(body.sourceEventId || body.SourceEventId) || correlationId || asString(row.queue_id),
+    stationId: asString(body.stationId || body.StationId) || process.env.QC_STATION_ID || 'QCStation',
+    eventType: eventTypeForQueue(row.type),
+    correlationId,
+    state: 'DEAD',
+    attempts: asInteger(row.attempts),
+    nextAttemptAt: null,
+    leaseUntil: null,
+    lastErrorCode: asString(row.error_code || row.last_error_code) || null,
+    lastErrorMessage: asString(row.last_status) || null,
+    mesReceipt: null,
+    uaWriteConfirmed: false,
+    createdAt: isoFromText(row.created_at) || isoFromText('', Date.parse(row.failed_at)) || new Date(0).toISOString(),
+    updatedAt: isoFromText(row.failed_at) || new Date(0).toISOString(),
   };
 }
 
@@ -971,6 +1070,26 @@ class SqliteQueueStore {
         queueLength: this._queueCount(),
       };
     });
+  }
+
+  deliveryRecords({ limit = 50, now = Date.now() } = {}) {
+    const max = Math.min(200, Math.max(1, asInteger(limit, 50)));
+    const queueRows = this.db.prepare(`
+      SELECT q.*, w.status AS ua_status, w.receipt AS ua_receipt,
+             w.updated_at AS ua_updated_at
+      FROM queue q
+      LEFT JOIN ua_writebacks w ON w.queue_id = q.id
+      ORDER BY q.seq ASC
+      LIMIT ?
+    `).all(max);
+    const items = queueRows.map(row => canonicalQueueRecord(row, now, this.watchdogMs));
+    if (items.length < max) {
+      const deadRows = this.db.prepare(
+        'SELECT * FROM dead_letters ORDER BY seq ASC LIMIT ?'
+      ).all(max - items.length);
+      items.push(...deadRows.map(canonicalDeadRecord));
+    }
+    return { items, nextCursor: null };
   }
 
   status() {

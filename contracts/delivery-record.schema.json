@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ua-linqinspect.local/contracts/delivery-record.schema.json",
+  "title": "Canonical Delivery Record v1",
+  "description": "Shared read model for Node-RED and Edge Core delivery state. It does not imply a single cross-process transaction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "deliveryId",
+    "businessKey",
+    "sourceEventId",
+    "stationId",
+    "eventType",
+    "correlationId",
+    "state",
+    "attempts",
+    "nextAttemptAt",
+    "leaseUntil",
+    "lastErrorCode",
+    "lastErrorMessage",
+    "mesReceipt",
+    "uaWriteConfirmed",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "deliveryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "businessKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "sourceEventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "stationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "eventType": {
+      "enum": ["NG_ORDER", "COMPLETION_REPORT"]
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "state": {
+      "enum": [
+        "PENDING",
+        "SENDING",
+        "RETRY_WAIT",
+        "ACKED",
+        "UA_WRITE_PENDING",
+        "DONE",
+        "DEAD",
+        "DISCARDED"
+      ]
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nextAttemptAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "leaseUntil": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "lastErrorCode": {
+      "type": ["string", "null"]
+    },
+    "lastErrorMessage": {
+      "type": ["string", "null"]
+    },
+    "mesReceipt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "accepted",
+            "schemaVersion",
+            "correlationId",
+            "receiptType",
+            "receiptNo",
+            "receivedAt"
+          ],
+          "properties": {
+            "accepted": {"const": true},
+            "schemaVersion": {"const": "1.0"},
+            "correlationId": {"type": "string"},
+            "receiptType": {
+              "enum": ["MES_ORDER", "COMPLETION_RECEIPT"]
+            },
+            "receiptNo": {"type": "string", "minLength": 1, "maxLength": 200},
+            "mesOrderNo": {"type": ["string", "null"], "maxLength": 200},
+            "duplicated": {"type": "boolean"},
+            "receivedAt": {"type": "string", "format": "date-time"}
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "uaWriteConfirmed": {
+      "type": "boolean"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

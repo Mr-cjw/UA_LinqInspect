@@ -12,6 +12,11 @@ const {
   WATCHDOG_MS,
 } = require('../nodered/sqlite_store.js');
 
+const deliverySchema = JSON.parse(fs.readFileSync(
+  path.join(__dirname, '..', 'contracts', 'delivery-record.schema.json'),
+  'utf8'
+));
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qc-sqlite-queue-'));
 let sequence = 0;
 let passed = 0;
@@ -241,6 +246,82 @@ try {
       const third = store.claimNext(2002);
       assert.equal(third.state, 'send');
       assert.notEqual(third.item.id, first.item.id);
+    } finally {
+      store.close();
+    }
+  });
+
+  check('canonical delivery records match the shared schema across states', () => {
+    const store = createStore({ dbPath: freshDbPath('canonical-delivery') });
+    try {
+      const createdAt = '2026-11-20T12:00:00.000Z';
+      const enqueue = store.enqueue({
+        id: 'ng|SN-CANONICAL|2026-11-20T12:00:00.000Z',
+        type: 'ng',
+        correlationId: 'corr-canonical-0001',
+        url: 'http://127.0.0.1/mes/ng-order',
+        body: {
+          schemaVersion: '1.0',
+          sourceEventId: 'evt-canonical-0001',
+          stationId: 'QCStation',
+          serialNumber: 'SN-CANONICAL',
+          occurredAt: createdAt,
+        },
+        createdAt,
+        dedupKeys: [
+          { kind: 'ng_fp', key: `SN-CANONICAL|${createdAt}` },
+          { kind: 'ng_sn', key: 'SN-CANONICAL' },
+        ],
+        now: 1000,
+      });
+      assert.equal(enqueue.enqueued, true);
+
+      const required = new Set(deliverySchema.required);
+      const verifyRecord = record => {
+        assert.deepEqual(new Set(Object.keys(record)), required);
+        assert.equal(record.schemaVersion, '1.0');
+        assert.equal(record.sourceEventId, 'evt-canonical-0001');
+        assert.equal(record.stationId, 'QCStation');
+        assert.equal(record.eventType, 'NG_ORDER');
+        assert.match(record.createdAt, /Z$/);
+        assert.match(record.updatedAt, /Z$/);
+      };
+
+      let record = store.deliveryRecords({ now: 1000 }).items[0];
+      verifyRecord(record);
+      assert.equal(record.state, 'PENDING');
+      assert.equal(record.mesReceipt, null);
+
+      const claimed = store.claimNext(2000);
+      record = store.deliveryRecords({ now: 2000 }).items[0];
+      verifyRecord(record);
+      assert.equal(record.state, 'SENDING');
+      assert.match(record.leaseUntil, /Z$/);
+
+      startUaWriteback(store, claimed, 2001, 'MES-CANONICAL-0001');
+      record = store.deliveryRecords({ now: 2001 }).items[0];
+      verifyRecord(record);
+      assert.equal(record.state, 'UA_WRITE_PENDING');
+      assert.equal(record.mesReceipt.receiptType, 'MES_ORDER');
+      assert.equal(record.mesReceipt.receiptNo, 'MES-CANONICAL-0001');
+      assert.equal(record.mesReceipt.mesOrderNo, 'MES-CANONICAL-0001');
+      assert.match(record.mesReceipt.receivedAt, /Z$/);
+
+      enqueueNg(store, 'SN-CANONICAL-DEAD', '2026-11-20T12:01:00.000Z', 3000);
+      const deadCandidate = store.claimNext(4000);
+      store.deadLetter({
+        id: deadCandidate.item.id,
+        correlationId: deadCandidate.item.correlationId,
+        errorCode: 'MES_REJECTED',
+        reason: 'canonical dead-letter check',
+        now: 4001,
+      });
+      const deadRecord = store.deliveryRecords({ now: 4001 }).items
+        .find(item => item.deliveryId === deadCandidate.item.id);
+      verifyRecord(deadRecord);
+      assert.equal(deadRecord.state, 'DEAD');
+      assert.equal(deadRecord.lastErrorCode, 'MES_REJECTED');
+      assert.match(deadRecord.updatedAt, /Z$/);
     } finally {
       store.close();
     }

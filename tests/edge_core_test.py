@@ -203,6 +203,13 @@ class EdgeCoreTests(unittest.TestCase):
         )
         self.assertTrue(self.worker().run_once())
         current = self.store.get(delivery["deliveryId"])
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1] / "contracts" / "delivery-record.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(set(current), set(schema["required"]))
+        self.assertEqual(current["schemaVersion"], "1.0")
         self.assertEqual(current["state"], STATE_UA_WRITE_PENDING)
         self.assertTrue(current["mesReceipt"]["receiptNo"].startswith("MES-"))
         self.assertEqual(current["mesReceipt"]["receiptType"], "MES_ORDER")

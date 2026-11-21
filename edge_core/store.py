@@ -145,6 +145,7 @@ class DeliveryStore:
     def _row_to_delivery(row: sqlite3.Row) -> dict[str, Any]:
         receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else None
         return {
+            "schemaVersion": "1.0",
             "deliveryId": row["delivery_id"],
             "businessKey": row["business_key"],
             "sourceEventId": row["source_event_id"],
