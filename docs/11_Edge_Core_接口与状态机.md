@@ -348,4 +348,4 @@ Node-RED 继续作为在线执行器、Edge Core 仅做外部控制面，还是�
 - `tests/edge_core_test.py` 12 项自动化测试，覆盖输入约束、事件类型专属回执、稳定错误码、`Idempotency-Key` 透传和 `Retry-After` 最小值夹紧。
 - Node-RED 与 Edge Core 的投递读模型共同校验 `contracts/delivery-record.schema.json`。
 
-**当前限制：** 在线 Node-RED 链路已使用另一套 SQLite WAL 队列（`nodered/sqlite_store.js`），Edge Core 仍作为外部控制面/接口垂直切片，两者尚未收敛。Edge Core 也尚未内置 OPC UA 回执写入器；MES 回执成功后任务停在 `UA_WRITE_PENDING`，需要外部 UA 写回适配器调用 `/v1/deliveries/{id}/ua-write-result`，只有写回成功才进入 `DONE`。
+**当前限制：** 在线 Node-RED 链路已使用另一套 SQLite WAL 队列（`nodered/sqlite_store.js`），Edge Core 仍作为外部控制面/接口垂直切片，两者尚未收敛。Edge Core 已有独立安全 UA 写回适配器（`edge_core/ua_writeback.py`），但尚未纳入 systemd、新事件直写和双泵互锁仍未完成。

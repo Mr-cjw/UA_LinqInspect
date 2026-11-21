@@ -443,6 +443,7 @@ components:
         - sourceEventId
         - stationId
         - eventType
+        - workOrderId
         - correlationId
         - state
         - attempts
@@ -472,6 +473,10 @@ components:
         eventType:
           type: string
           enum: [NG_ORDER, COMPLETION_REPORT]
+        workOrderId:
+          type: string
+          minLength: 1
+          maxLength: 200
         correlationId:
           type: string
         attempts:

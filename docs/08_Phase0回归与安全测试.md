@@ -82,6 +82,7 @@ cd ~/UA_LinqInspect
 | Edge Core API/状态机 | 12/12 PASS | 严格输入约束、NG/完工专属回执、稳定错误码、幂等冲突、4xx/5xx、死信重放、重启后去重、API 查询 |
 | 无需硬件演示 | 4/4 PASS | 真实 API/SQLite/Worker、超时、服务重启、死信重放、MES 唯一回执与 UA 写回确认 |
 | Node-RED 迁移 | 5/5 PASS | dry-run、幂等导入、状态/回执/死信保留、冲突拒绝与确定性 ID |
+| UA 写回适配器 | 3/3 PASS | 真实安全 Method、成功 `DONE`、失败回报与缺失回执拒绝 |
 | 安全回归 | 16/16 PASS | UA NoSecurity/匿名权限、控制变量直接写拒绝、匿名 outbox 导出/清空拒绝、Node-RED 认证 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 21/21 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通、MES 重复/冲突 HTTP 契约 |
@@ -98,9 +99,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **601/601 PASS** | 34 个测试模块 |
+| **合计** | **604/604 PASS** | 35 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-064719/summary.json`。
+实际产物：`.tmp/regression-20261121-124010/summary.json`。
 
 ## 4. 手工执行单个测试
 
