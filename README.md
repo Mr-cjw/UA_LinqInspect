@@ -58,20 +58,20 @@ MES 超时、服务重启、持续 503、死信、人工重放、MES 回执和 U
 联合场景会启动真实 Mock PLC，触发停机和温度异常，再把 NG 送入真实 Edge Core，
 完成 MES 回执与 UA 确认，并输出 OEE 分解和 RCA 候选原因。
 
-面向陈总的投资评审版（推荐现场演示从这个页面开始）：
+项目总览与现场演示（推荐现场演示从这个页面开始）：
 
 ```bash
 .venv/bin/python scripts/demo_edge_core.py --ui --no-open
-# 浏览器打开 http://127.0.0.1:8899/investor
+# 浏览器打开 http://127.0.0.1:8899/overview
 ```
 
-页面把“一条 NG 为什么会丢单、我们如何解决、商业上怎么收费、90 天用钱换什么、
-哪些还没有证明”放在同一条叙事里，并可现场运行联合场景。
+页面把“一条 NG 为什么会丢单、三套代码如何互补、哪些是真实运行、哪些仍是模拟、
+90 天如何验证落地”放在同一条叙事里，并可现场运行联合场景。
 
-完整讲解、60 秒投资说明和真/模拟边界见
+完整讲解、60 秒项目说明和真/模拟边界见
 [五分钟软件体验演示](docs/17_五分钟软件体验演示.md) 与
 [双项目联合架构](docs/18_双项目联合架构.md)，现场话术见
-[陈总演示讲稿与问答](docs/21_陈总演示讲稿与问答.md)。
+[项目演示讲稿与问答](docs/21_项目演示讲稿与问答.md)。
 
 ## 启动流程总览
 
@@ -137,8 +137,8 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [五分钟软件体验：没有硬件先验证可靠性](docs/17_五分钟软件体验演示.md)
 - [双项目联合架构：质量闭环 + 设备上下文](docs/18_双项目联合架构.md)
 - [发送泵迁移与回滚方案](docs/19_发送泵迁移与回滚方案.md)
-- [陈总投资评审版](docs/20_陈总投资评审版.md)
-- [陈总演示讲稿与问答](docs/21_陈总演示讲稿与问答.md)
+- [项目总览与现场演示](docs/20_项目总览与现场演示.md)
+- [项目演示讲稿与问答](docs/21_项目演示讲稿与问答.md)
 - [UA 回执写回适配器](docs/22_UA回执写回适配器.md)
 
 ## 项目结构
@@ -167,7 +167,7 @@ UA_LinqInspect/
 │   ├── migrate_nodered_to_edge_core.py # Node-RED 队列离线迁移与冲突预检
 │   ├── demo_joint_oee_rca.py  # 双项目联合演示：设备上下文 → NG → MES → OEE/RCA
 │   ├── run_ua_writeback_adapter.py # Edge Core → OPC UA RecordMesReceipt 写回
-│   ├── investor_pitch.py      # 陈总投资评审页：实时证据、商业路径与融资计划
+│   ├── project_overview.py    # 项目总览页：现场运行证据、能力分层与落地边界
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── deploy/                    # systemd、Prometheus 告警与环境变量模板
 ├── contracts/                 # Node-RED 与 Edge Core 共用的投递读模型 JSON Schema
@@ -197,8 +197,8 @@ UA_LinqInspect/
 │   ├── 17_五分钟软件体验演示.md
 │   ├── 18_双项目联合架构.md
 │   ├── 19_发送泵迁移与回滚方案.md
-│   ├── 20_陈总投资评审版.md
-│   ├── 21_陈总演示讲稿与问答.md
+│   ├── 20_项目总览与现场演示.md
+│   ├── 21_项目演示讲稿与问答.md
 │   ├── 22_UA回执写回适配器.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约

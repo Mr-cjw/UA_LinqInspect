@@ -707,7 +707,7 @@ h1{font-size:42px;line-height:1.08;margin:10px 0 12px;letter-spacing:-.03em}.her
  </div>
  <div class="join"><b>联合价值</b><span>质量事件 + 设备上下文 → 一次对账说清“这批 NG 与哪次停机/温度异常同时发生，MES 是否已收到”。</span></div>
 </section>
-<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/joint">运行双项目联合演示 →</a><a class="jointlink" href="/investor" style="border-color:#7c622f;color:#f1c56f">陈总投资评审版 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
+<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/joint">运行双项目联合演示 →</a><a class="jointlink" href="/overview" style="border-color:#7c622f;color:#f1c56f">项目总览与现场演示 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
 <div class="stats">
  <div class="stat"><div class="label">最终业务状态</div><div id="final" class="value">待运行</div><div class="sub">MES 回执 + UA 写回都完成才 DONE</div></div>
  <div class="stat"><div class="label">未完成任务</div><div id="queue" class="value">-</div><div class="sub">PENDING / SENDING / RETRY_WAIT</div></div>
@@ -782,10 +782,10 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if path == "/investor":
-            from investor_pitch import INVESTOR_DASHBOARD
+        if path == "/overview":
+            from project_overview import PROJECT_OVERVIEW_DASHBOARD
 
-            body = INVESTOR_DASHBOARD.encode("utf-8")
+            body = PROJECT_OVERVIEW_DASHBOARD.encode("utf-8")
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))
@@ -796,7 +796,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path in {"/api/joint", "/api/investor"}:
+        if self.path in {"/api/joint", "/api/overview"}:
             lock: threading.Lock = self.server.joint_lock  # type: ignore[attr-defined]
             if not lock.acquire(blocking=False):
                 self._json(409, {"error": "已有联合演示正在运行"})

@@ -590,7 +590,7 @@ JOINT_DASHBOARD = r"""<!doctype html>
 </style>
 </head>
 <body><div class="wrap">
-<header class="hero"><div><div class="eyebrow">JOINT DEMO · TWO REPOSITORIES</div><h1>设备异常 × 质检 NG</h1><p>左边项目负责让质量结果可靠进入 MES，右边项目负责采集设备状态、产量、温度和报警。联合后，不只回答“有没有交付”，还回答“这次损失发生在哪里、时间和设备异常是否重合”。</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a class="back" href="/investor">陈总评审版 →</a><a class="back" href="/">← 返回质量连接器演示</a></div></header>
+<header class="hero"><div><div class="eyebrow">JOINT DEMO · TWO REPOSITORIES</div><h1>设备异常 × 质检 NG</h1><p>左边项目负责让质量结果可靠进入 MES，右边项目负责采集设备状态、产量、温度和报警。联合后，不只回答“有没有交付”，还回答“这次损失发生在哪里、时间和设备异常是否重合”。</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a class="back" href="/overview">项目总览 →</a><a class="back" href="/">← 返回质量连接器演示</a></div></header>
 <section class="chain">
  <div class="lane"><h3>质检交付主线 · UA_LinqInspect</h3><div class="flow"><span>QC NG</span><i>→</i><span>Edge Core Outbox</span><i>→</i><span>MES 回执</span><i>→</i><span>UA 确认</span></div><p>本次真实执行：SQLite、API、Worker、回执校验和状态机。</p></div>
  <div class="lane device"><h3>设备上下文 · RPi4 OEE / RCA Gateway</h3><div class="flow"><span>Mock PLC</span><i>→</i><span>停机</span><i>→</i><span>温度 92℃</span><i>→</i><span>报警快照</span></div><p>本次真实执行：另一个仓库的 OPC UA Server、Method 故障注入和变量订阅读取。</p></div>
