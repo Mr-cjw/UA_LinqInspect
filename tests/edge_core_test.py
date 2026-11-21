@@ -210,6 +210,7 @@ class EdgeCoreTests(unittest.TestCase):
         )
         self.assertEqual(set(current), set(schema["required"]))
         self.assertEqual(current["schemaVersion"], "1.0")
+        self.assertEqual(current["workOrderId"], "WO-20261120-001")
         self.assertEqual(current["state"], STATE_UA_WRITE_PENDING)
         self.assertTrue(current["mesReceipt"]["receiptNo"].startswith("MES-"))
         self.assertEqual(current["mesReceipt"]["receiptType"], "MES_ORDER")

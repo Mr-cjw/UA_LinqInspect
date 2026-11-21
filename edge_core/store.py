@@ -144,6 +144,8 @@ class DeliveryStore:
     @staticmethod
     def _row_to_delivery(row: sqlite3.Row) -> dict[str, Any]:
         receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else None
+        payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        work_order_id = str(payload.get("workOrderId") or payload.get("work_order_id") or "")
         return {
             "schemaVersion": "1.0",
             "deliveryId": row["delivery_id"],
@@ -151,6 +153,7 @@ class DeliveryStore:
             "sourceEventId": row["source_event_id"],
             "stationId": row["station_id"],
             "eventType": row["event_type"],
+            "workOrderId": work_order_id,
             "correlationId": row["correlation_id"],
             "state": row["state"],
             "attempts": row["attempts"],

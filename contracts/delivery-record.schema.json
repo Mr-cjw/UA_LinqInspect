@@ -12,6 +12,7 @@
     "sourceEventId",
     "stationId",
     "eventType",
+    "workOrderId",
     "correlationId",
     "state",
     "attempts",
@@ -50,6 +51,11 @@
     },
     "eventType": {
       "enum": ["NG_ORDER", "COMPLETION_REPORT"]
+    },
+    "workOrderId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
     },
     "correlationId": {
       "type": "string",

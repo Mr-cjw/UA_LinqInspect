@@ -264,6 +264,7 @@ try {
           schemaVersion: '1.0',
           sourceEventId: 'evt-canonical-0001',
           stationId: 'QCStation',
+          workOrderId: 'WO-CANONICAL-0001',
           serialNumber: 'SN-CANONICAL',
           occurredAt: createdAt,
         },
@@ -283,6 +284,7 @@ try {
         assert.equal(record.sourceEventId, 'evt-canonical-0001');
         assert.equal(record.stationId, 'QCStation');
         assert.equal(record.eventType, 'NG_ORDER');
+        assert.equal(record.workOrderId, 'WO-CANONICAL-0001');
         assert.match(record.createdAt, /Z$/);
         assert.match(record.updatedAt, /Z$/);
       };
