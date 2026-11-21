@@ -48,8 +48,19 @@ MES 超时、服务重启、持续 503、死信、人工重放、MES 回执和 U
 # 浏览器打开 http://127.0.0.1:8899/
 ```
 
+双项目联合演示（需要同级 `rpi4-opcua-oee-rca-gateway` 仓库与 `npm install`）：
+
+```bash
+.venv/bin/python scripts/demo_edge_core.py --ui --no-open
+# 浏览器打开 http://127.0.0.1:8899/joint
+```
+
+联合场景会启动真实 Mock PLC，触发停机和温度异常，再把 NG 送入真实 Edge Core，
+完成 MES 回执与 UA 确认，并输出 OEE 分解和 RCA 候选原因。
+
 完整讲解、60 秒投资说明和真/模拟边界见
-[五分钟软件体验演示](docs/17_五分钟软件体验演示.md)。
+[五分钟软件体验演示](docs/17_五分钟软件体验演示.md) 与
+[双项目联合架构](docs/18_双项目联合架构.md)。
 
 ## 启动流程总览
 
@@ -140,6 +151,7 @@ UA_LinqInspect/
 │   ├── setup_node_red_security.py  # 安装 Node-RED 认证、加密凭据和本地 secrets
 │   ├── demo_edge_core.py      # 无需硬件的 Edge Core 故障恢复演示（终端/浏览器）
 │   ├── migrate_nodered_to_edge_core.py # Node-RED 队列离线迁移与冲突预检
+│   ├── demo_joint_oee_rca.py  # 双项目联合演示：设备上下文 → NG → MES → OEE/RCA
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── deploy/                    # systemd、Prometheus 告警与环境变量模板
 ├── contracts/                 # Node-RED 与 Edge Core 共用的投递读模型 JSON Schema
@@ -186,6 +198,7 @@ UA_LinqInspect/
     ├── edge_core_test.py      # Edge Core 输入/回执契约、幂等、死信重放与 UA 确认（12 项断言）
     ├── demo_edge_core_test.py # 无硬件演示的故障恢复与唯一回执回归（4 项）
     ├── edge_core_migration_test.py # Node-RED 到 Edge Core 的幂等迁移与冲突检测（5 项）
+    ├── demo_joint_oee_rca_test.py # 跨仓库联合演示：OEE、RCA、MES 闭环（4 项）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
     ├── mes_idempotency_test.js # 模拟 MES 重复投递与 payload 冲突（10 项断言）
     ├── nodered_e2e.py         # M2 正常链路与 MES 幂等 HTTP 契约（21 项断言）
