@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from server.qc_server import QCStation
 from server.qc_state import QCOutboxEvent, QCStateStore, QCStationSnapshot
 
 
@@ -190,6 +191,110 @@ class StatePersistenceTests(unittest.TestCase):
             self.assertEqual(calls, 2)
             self.assertEqual(store.load().work_order_id, "WO-COMMITTED")
             self.assertEqual(list(Path(temp).glob(".state.json.tmp-*")), [])
+
+
+class FakeNode:
+    def __init__(self):
+        self.value = None
+
+    async def write_value(self, value):
+        self.value = value
+
+
+class StateTransactionTests(unittest.IsolatedAsyncioTestCase):
+    def station(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        return QCStation(None, state_store=QCStateStore(root / "state.json")), root
+
+    async def test_failed_persist_rolls_back_durable_fields(self):
+        station, _ = self.station()
+        await station._persist()
+        station.status = 1
+        station.work_order_id = "WO-UNCOMMITTED"
+        station.inspect_count = 7
+        with patch.object(station.state_store, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                await station._persist()
+        self.assertEqual(station.status, 0)
+        self.assertEqual(station.work_order_id, "")
+        self.assertEqual(station.inspect_count, 0)
+        self.assertEqual(station.state_store.load().work_order_id, "")
+
+    async def test_successful_persist_advances_rollback_baseline(self):
+        station, _ = self.station()
+        station.status = 1
+        station.work_order_id = "WO-COMMITTED"
+        await station._persist()
+        station.work_order_id = "WO-UNCOMMITTED"
+        with patch.object(station.state_store, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                await station._persist()
+        self.assertEqual(station.status, 1)
+        self.assertEqual(station.work_order_id, "WO-COMMITTED")
+        self.assertEqual(station.state_store.load().work_order_id, "WO-COMMITTED")
+
+    async def test_inspection_failure_rolls_back_counters_and_outbox(self):
+        station, _ = self.station()
+        station.status = 1
+        station.work_order_id = "WO-INSPECT"
+        await station._persist()
+        with patch.object(station.state_store, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                await station.record_inspection(False, "DENT", 0.9, "IMG-1", "SN-1")
+        self.assertEqual(station.inspect_count, 0)
+        self.assertEqual(station.ok_count, 0)
+        self.assertEqual(station.ng_count, 0)
+        self.assertEqual(station.current_part_sn, "")
+        self.assertEqual(station.outbox, [])
+
+    async def test_ack_failure_rolls_back_outbox_and_ack_timestamp(self):
+        station, _ = self.station()
+        event = station._make_event(
+            "ng", {"WorkOrderId": "WO-1"}, severity=3, message="NG", correlation_id="corr-1"
+        )
+        station._append_outbox(event)
+        await station._persist()
+        with patch.object(station.state_store, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                await station._acknowledge_event(None, event.event_id)
+        self.assertEqual([item.event_id for item in station.outbox], [event.event_id])
+        self.assertEqual(station.outbox_last_ack_at, "")
+
+    async def test_purge_failure_rolls_back_outbox_and_purge_total(self):
+        station, _ = self.station()
+        event = station._make_event(
+            "ng", {"WorkOrderId": "WO-1"}, severity=3, message="NG", correlation_id="corr-1"
+        )
+        station._append_outbox(event)
+        await station._persist()
+        with patch.object(station.state_store, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                await station._purge_outbox(None, station._outbox_purge_token())
+        self.assertEqual([item.event_id for item in station.outbox], [event.event_id])
+        self.assertEqual(station.outbox_purged_total, 0)
+        self.assertEqual(station.outbox_last_ack_at, "")
+
+    async def test_failed_persist_resynchronizes_ua_state(self):
+        station, _ = self.station()
+        names = (
+            "status", "work_order", "part_sn", "last_result", "last_defect", "last_conf",
+            "last_img", "last_ts", "cnt_all", "cnt_ok", "cnt_ng", "ng_rate",
+            "outbox_status", "outbox_pending", "outbox_oldest_age", "outbox_oldest_at",
+            "outbox_capacity", "outbox_high_watermark", "outbox_backpressure",
+        )
+        station.nd = {name: FakeNode() for name in names}
+        await station._persist()
+        station.status = 1
+        station.work_order_id = "WO-UNCOMMITTED"
+        with patch.object(station.state_store, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                await station._persist()
+        status_value = station.nd["status"].value
+        self.assertEqual(getattr(status_value, "Value", status_value), 0)
+        self.assertEqual(station.nd["work_order"].value, "")
+        self.assertEqual(station.nd["outbox_pending"].value.Value, 0)
 
 
 if __name__ == "__main__":
