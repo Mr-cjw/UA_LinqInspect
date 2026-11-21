@@ -23,10 +23,16 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ua-linqinspect-server.service
 sudo systemctl enable --now ua-linqinspect-nodered.service
 sudo systemctl enable --now ua-linqinspect-backup.timer
+
+# Edge Core 发送泵采用条件启动，默认 QC_DELIVERY_AUTHORITY=node-red 时保持停止。
+# 完成迁移、回滚演练并把两端变量切换为 edge-core 后再启用：
+sudo systemctl enable --now ua-linqinspect-edge-core.service
+sudo systemctl enable --now ua-linqinspect-ua-writeback.service
 ```
 
 Prometheus 规则文件位于 `.tmp/deploy-rendered/prometheus/ua-linqinspect-alerts.yml`。
-Node-RED 的 `/metrics`、`/healthz`、`/qc/status` 受 HTTP Basic Auth 保护；Prometheus
+Node-RED 的 `/metrics`、`/healthz`、`/qc/status` 受 HTTP Basic Auth 保护；Edge Core API
+默认只监听回环地址并校验 Bearer token。Prometheus
 抓取配置必须用 `basic_auth` 指向密码文件。完整示例见 Phase 2C 文档。
 完整说明、告警口径和恢复演练见
 [../docs/15_Phase2C部署运维与恢复演练.md](../docs/15_Phase2C部署运维与恢复演练.md)。

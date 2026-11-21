@@ -44,6 +44,8 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     required = (
         repo_root / "server" / "qc_server.py",
+        repo_root / "edge_core" / "main.py",
+        repo_root / "scripts" / "run_ua_writeback_adapter.py",
         repo_root / ".venv" / "bin" / "python",
         repo_root / ".node-red" / "node_modules" / ".bin" / "node-red",
         repo_root / "nodered" / "settings.secure.js",

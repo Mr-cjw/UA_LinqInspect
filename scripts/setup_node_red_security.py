@@ -31,6 +31,11 @@ ENV_KEYS = (
     "NODERED_OPCUA_PASSWORD",
     "QC_REPO_ROOT",
     "QC_DB_PATH",
+    "QC_STATION_ID",
+    "QC_DELIVERY_AUTHORITY",
+    "QC_SENDER_LOCK_DIR",
+    "EDGE_API_BASE_URL",
+    "EDGE_API_TOKEN",
 )
 
 
@@ -76,6 +81,14 @@ def main() -> int:
     values.setdefault("QC_STATE_PATH", str(ROOT / "data" / "qc-state.json"))
     values.setdefault("QC_STATE_BACKEND", "sqlite")
     values.setdefault("QC_STATE_DB_PATH", values["QC_DB_PATH"])
+    values.setdefault("QC_STATION_ID", "QCStation")
+    values.setdefault("QC_DELIVERY_AUTHORITY", "node-red")
+    values.setdefault(
+        "QC_SENDER_LOCK_DIR",
+        str(ROOT / "data" / ".sender-authority"),
+    )
+    values.setdefault("EDGE_API_BASE_URL", "http://127.0.0.1:8770")
+    values.setdefault("EDGE_API_TOKEN", secrets.token_urlsafe(24))
 
     lines = ["# Generated local-only Node-RED secrets. Never commit this file."]
     for key in (
@@ -91,6 +104,11 @@ def main() -> int:
         "QC_STATE_PATH",
         "QC_STATE_BACKEND",
         "QC_STATE_DB_PATH",
+        "QC_STATION_ID",
+        "QC_DELIVERY_AUTHORITY",
+        "QC_SENDER_LOCK_DIR",
+        "EDGE_API_BASE_URL",
+        "EDGE_API_TOKEN",
     ):
         value = values[key].replace("'", "'\\''")
         lines.append(f"export {key}='{value}'")
