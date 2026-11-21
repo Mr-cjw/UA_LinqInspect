@@ -37,6 +37,7 @@ NODE_TESTS = (
 TESTS = (
     ("edge_demo", "tests/demo_edge_core_test.py", 30),
     ("edge_migration", "tests/edge_core_migration_test.py", 30),
+    ("mes_contract_doctor", "tests/mes_contract_doctor_test.py", 30),
     ("ua_writeback_adapter", "tests/ua_writeback_adapter_test.py", 30),
     ("sender_authority", "tests/sender_authority_test.py", 30),
     ("sender_cutover", "tests/sender_cutover_test.py", 60),
