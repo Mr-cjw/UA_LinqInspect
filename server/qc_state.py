@@ -106,11 +106,20 @@ class QCStateStore:
         value["outbox"] = [self._serialize_outbox_event(event) for event in snapshot.outbox]
         payload = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         temp = self.path.with_name(f".{self.path.name}.tmp-{os.getpid()}")
-        with temp.open("w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, self.path)
+        try:
+            descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp, 0o600)
+            os.replace(temp, self.path)
+        except Exception:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
         try:
             directory_fd = os.open(self.path.parent, os.O_RDONLY)
             try:

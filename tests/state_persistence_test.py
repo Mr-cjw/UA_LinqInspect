@@ -2,14 +2,27 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from server.qc_state import QCOutboxEvent, QCStateStore, QCStationSnapshot
 
 
 class StatePersistenceTests(unittest.TestCase):
+    @staticmethod
+    def snapshot(work_order_id: str = "WO-001", count: int = 1) -> QCStationSnapshot:
+        return QCStationSnapshot(
+            status=1,
+            work_order_id=work_order_id,
+            target_count=5,
+            inspect_count=count,
+            current_part_sn=f"SN-{count:03d}",
+        )
+
     def test_round_trip_preserves_work_order_and_counters(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "state.json"
@@ -109,6 +122,74 @@ class StatePersistenceTests(unittest.TestCase):
             self.assertEqual(restored.status, 0)
             self.assertEqual(restored.inspect_count, 0)
             self.assertEqual(restored.window, [])
+
+    def test_snapshot_is_private_and_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            QCStateStore(path).save(self.snapshot())
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(list(Path(temp).glob(".state.json.tmp-*")), [])
+
+    def test_write_failure_preserves_previous_snapshot_and_cleans_temp(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            store = QCStateStore(path)
+            store.save(self.snapshot("WO-OLD", 1))
+            previous = path.read_bytes()
+            with patch("server.qc_state.os.fsync", side_effect=OSError("simulated disk full")):
+                with self.assertRaises(OSError):
+                    store.save(self.snapshot("WO-NEW", 2))
+            self.assertEqual(path.read_bytes(), previous)
+            self.assertEqual(store.load().work_order_id, "WO-OLD")
+            self.assertEqual(list(Path(temp).glob(".state.json.tmp-*")), [])
+
+    def test_replace_failure_preserves_previous_snapshot_and_cleans_temp(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            store = QCStateStore(path)
+            store.save(self.snapshot("WO-OLD", 1))
+            previous = path.read_bytes()
+            with patch("server.qc_state.os.replace", side_effect=OSError("simulated replace failure")):
+                with self.assertRaises(OSError):
+                    store.save(self.snapshot("WO-NEW", 2))
+            self.assertEqual(path.read_bytes(), previous)
+            self.assertEqual(store.load().work_order_id, "WO-OLD")
+            self.assertEqual(list(Path(temp).glob(".state.json.tmp-*")), [])
+
+    def test_read_only_directory_preserves_previous_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            path = directory / "state.json"
+            store = QCStateStore(path)
+            store.save(self.snapshot("WO-OLD", 1))
+            previous = path.read_bytes()
+            os.chmod(directory, 0o500)
+            try:
+                with self.assertRaises(PermissionError):
+                    store.save(self.snapshot("WO-NEW", 2))
+                self.assertEqual(path.read_bytes(), previous)
+                self.assertEqual(store.load().work_order_id, "WO-OLD")
+                self.assertEqual(list(directory.glob(".state.json.tmp-*")), [])
+            finally:
+                os.chmod(directory, 0o700)
+
+    def test_directory_fsync_failure_keeps_committed_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            store = QCStateStore(path)
+            calls = 0
+
+            def fail_directory_sync(descriptor):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated directory fsync failure")
+
+            with patch("server.qc_state.os.fsync", side_effect=fail_directory_sync):
+                store.save(self.snapshot("WO-COMMITTED", 2))
+            self.assertEqual(calls, 2)
+            self.assertEqual(store.load().work_order_id, "WO-COMMITTED")
+            self.assertEqual(list(Path(temp).glob(".state.json.tmp-*")), [])
 
 
 if __name__ == "__main__":

@@ -89,7 +89,7 @@
 
 - Python：`.venv`，Python 3.12.3，`asyncua 2.1.0`
 - Node.js：26.13.1；Node-RED：5.0.9；`node-red-contrib-opcua`：0.2.355
-- 状态工具单测：5/5 PASS
+- 状态工具单测：10/10 PASS（含写入/替换/只读目录失败保留旧快照与临时文件清理）
 - 事件 outbox 单测：3/3 PASS
 - outbox 容量/导出单测：9/9 PASS
 - outbox 状态接口：9/9 PASS（含容量拒收不 ACK）
@@ -116,7 +116,7 @@
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：545/545 PASS（31 个测试模块）
+- 一键隔离回归合计：550/550 PASS（31 个测试模块）
 
 一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。工位状态单写者与恢复边界见 [16_状态源重构与持久化恢复.md](16_状态源重构与持久化恢复.md)；Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 
