@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-124010/summary.json` ｜ 当前结果：604/604 PASS
+> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-130832/summary.json` ｜ 当前结果：613/613 PASS
 
 ## 1. 阶段目标
 
@@ -16,9 +16,11 @@ Phase 2C 补齐部署模板、健康探针、备份 timer、告警规则和离�
 ## 2. 部署拓扑
 
 ```text
-systemd: ua-linqinspect-server.service   -> server/qc_server.py :4840
-systemd: ua-linqinspect-nodered.service  -> Node-RED :1880 / healthz / metrics
-systemd: ua-linqinspect-backup.timer     -> backup_queue.py -> data/backups
+systemd: ua-linqinspect-server.service        -> server/qc_server.py :4840
+systemd: ua-linqinspect-nodered.service       -> Node-RED :1880 / healthz / metrics
+systemd: ua-linqinspect-edge-core.service     -> Edge Core API/Worker :8770（edge-core 模式）
+systemd: ua-linqinspect-ua-writeback.service  -> Edge Core → OPC UA 回执写回
+systemd: ua-linqinspect-backup.timer          -> backup_queue.py -> data/backups
 Prometheus                               -> scrape Node-RED /metrics
 node_exporter textfile                   -> /var/lib/ua-linqinspect/qc-backup.prom
 ```
@@ -75,6 +77,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ua-linqinspect-server.service
 sudo systemctl enable --now ua-linqinspect-nodered.service
 sudo systemctl enable --now ua-linqinspect-backup.timer
+
+# 仅在完成迁移与回滚演练、QC_DELIVERY_AUTHORITY=edge-core 后启用：
+sudo systemctl enable --now ua-linqinspect-edge-core.service
+sudo systemctl enable --now ua-linqinspect-ua-writeback.service
 ```
 
 至少替换环境文件中的 `UA_ADMIN_PASS`、`NODERED_*_PASSWORD`、
@@ -90,7 +96,9 @@ sudo systemctl enable --now ua-linqinspect-backup.timer
 | Unit | 关键行为 |
 |---|---|
 | `ua-linqinspect-server.service` | `Restart=on-failure`，只写审计日志和 StateDirectory |
-| `ua-linqinspect-nodered.service` | 等待 Server，使用 SQLite WAL 和 HTTP Basic Auth；只写 `data/` 与 `.node-red/` |
+| `ua-linqinspect-nodered.service` | 等待 Server，使用 SQLite WAL 和 HTTP Basic Auth；edge-core 模式下停止本地发送泵 |
+| `ua-linqinspect-edge-core.service` | 仅在 `QC_DELIVERY_AUTHORITY=edge-core` 时启动；持有跨进程单发送者租约 |
+| `ua-linqinspect-ua-writeback.service` | 调用安全 OPC UA `RecordMesReceipt` 并回报 Edge Core |
 | `ua-linqinspect-backup.service` | `Type=oneshot`，执行在线备份并写 Prometheus textfile |
 | `ua-linqinspect-backup.timer` | 每日 02:15，随机延迟 5 分钟，`Persistent=true` 补跑漏掉的任务 |
 
@@ -305,6 +313,8 @@ Phase 2C 新增专项：
 | `tests/qc_state_restart_test.py` | 13/13 PASS | SIGKILL 后 SQLite 工单、计数、SN 与 Outbox 恢复 |
 | `tests/demo_edge_core_test.py` | 4/4 PASS | 无硬件演示超时、服务重启、死信重放、MES 唯一回执与 UA 写回确认 |
 | `tests/edge_core_migration_test.py` | 5/5 PASS | Node-RED 队列 dry-run、幂等迁移、状态/回执/死信保留与冲突拒绝 |
+| `tests/edge_core_ingress_test.js` | 7/7 PASS | Node-RED 直写 Edge Core、仅在 202 后 ACK、失败保留、跨语言发送权租约 |
+| `tests/sender_authority_test.py` | 2/2 PASS | Python/Node-RED 共享租约互斥、释放与进程退出恢复 |
 | `tests/ua_writeback_adapter_test.py` | 3/3 PASS | 真实安全 OPC UA `RecordMesReceipt`、成功 `DONE`、失败回报与缺失回执拒绝 |
 | `tests/ua_write_crash_recovery.py` | 27/27 PASS | UA 冻结时注入 NG/完工、MES 成功后 SIGKILL、重启后完成 UA 写回 |
 
@@ -314,7 +324,7 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 共享投递读模型、无硬件演示、迁移工具与 UA 写回适配器接入后的综合回归共 35 个测试模块、**604/604 PASS**，摘要为 `.tmp/regression-20261121-124010/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 共享投递读模型、无硬件演示、迁移工具与 UA 写回适配器接入后的综合回归共 37 个测试模块、**613/613 PASS**，摘要为 `.tmp/regression-20261121-130832/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

@@ -99,9 +99,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **604/604 PASS** | 35 个测试模块 |
+| **合计** | **613/613 PASS** | 37 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-124010/summary.json`。
+实际产物：`.tmp/regression-20261121-130832/summary.json`。
 
 ## 4. 手工执行单个测试
 
