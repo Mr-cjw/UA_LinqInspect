@@ -68,6 +68,11 @@ REQUIRED_ENV = {
     "EDGE_API_HOST",
     "EDGE_API_PORT",
     "EDGE_API_TOKEN",
+    "EDGE_MES_TIMEOUT_SECONDS",
+    "EDGE_MAX_ATTEMPTS",
+    "MES_BEARER_TOKEN",
+    "EDGE_MES_BASIC_USER",
+    "EDGE_MES_BASIC_PASS",
     "UA_CLIENT_CERT",
     "UA_CLIENT_KEY",
     "UA_SERVER_CERT",
@@ -233,6 +238,11 @@ def main() -> int:
               "NODERED_CREDENTIAL_SECRET=CHANGE_ME" in env_text and
               "NODERED_HTTP_PASS=CHANGE_ME" in env_text and
               "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text)
+        check("environment template exposes one-or-the-other MES auth modes",
+              "MES_BEARER_TOKEN=" in env_text and
+              "EDGE_MES_BASIC_USER=" in env_text and
+              "EDGE_MES_BASIC_PASS=" in env_text and
+              "at most one mode" in env_text)
         check("environment template exposes outbox capacity controls",
               "QC_OUTBOX_MAX_PENDING=1000" in env_text and
               "QC_OUTBOX_HIGH_WATERMARK=800" in env_text and

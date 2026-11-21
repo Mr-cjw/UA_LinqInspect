@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
@@ -22,6 +23,8 @@ class DeliveryWorker:
         *,
         mes_base_url: str,
         bearer_token: str = "",
+        basic_user: str = "",
+        basic_pass: str = "",
         max_attempts: int = 4,
         retry_delays: tuple[float, ...] = (1.0, 2.0, 4.0),
         request_timeout: float = 3.0,
@@ -32,6 +35,8 @@ class DeliveryWorker:
         self.store = store
         self.mes_base_url = mes_base_url.rstrip("/")
         self.bearer_token = bearer_token
+        self.basic_user = basic_user
+        self.basic_pass = basic_pass
         self.max_attempts = max_attempts
         self.retry_delays = retry_delays
         self.request_timeout = request_timeout
@@ -133,7 +138,10 @@ class DeliveryWorker:
             "x-correlation-id": correlation_id,
             "idempotency-key": str(payload.get("sourceEventId") or correlation_id),
         }
-        if self.bearer_token:
+        if self.basic_user:
+            raw = f"{self.basic_user}:{self.basic_pass}".encode("utf-8")
+            headers["authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
+        elif self.bearer_token:
             headers["authorization"] = f"Bearer {self.bearer_token}"
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:

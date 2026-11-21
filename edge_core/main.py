@@ -32,6 +32,8 @@ def main() -> int:
             store,
             mes_base_url=config.mes_base_url,
             bearer_token=config.mes_token,
+            basic_user=config.mes_basic_user,
+            basic_pass=config.mes_basic_pass,
             max_attempts=config.max_attempts,
             request_timeout=config.worker_timeout,
             poll_interval=config.worker_interval,

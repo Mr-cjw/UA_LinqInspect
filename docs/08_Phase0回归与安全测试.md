@@ -79,7 +79,10 @@ cd ~/UA_LinqInspect
 | outbox 容量/导出单测 | 9/9 PASS | 高水位/硬上限拒绝、不丢事件、分页导出、令牌校验、清空幂等、重启恢复积压 |
 | 工位状态重启 | 13/13 PASS | `SIGKILL` 后工单、计数、SN 与 Outbox 恢复、继续完工 |
 | 事件 outbox 崩溃恢复 | 18/18 PASS | 未 ACK 事件跨 `SIGKILL` 保留、稳定 ID 重发、ACK 后停止、积压状态恢复与背压拒绝 |
-| Edge Core API/状态机 | 12/12 PASS | 严格输入约束、NG/完工专属回执、稳定错误码、幂等冲突、4xx/5xx、死信重放、重启后去重、API 查询 |
+| Edge Core API/状态机 | 14/14 PASS | 严格输入约束、MES Bearer/Basic 鉴权、NG/完工专属回执、稳定错误码、幂等冲突、4xx/5xx、死信重放、重启后去重、API 查询 |
+| Edge Core 入站 | 7/7 PASS | Node-RED 直写 202 后才 ACK，503 保持 UA outbox 未确认 |
+| 发送权并发与迁移/回滚 | 4/4 PASS | Node/Python 单赢家、Edge Core 启动互锁、离线迁移与源库保留 |
+| Node-RED 在线全链路 | 14/14 PASS | Node-RED 直写、Edge Core Worker、MES Basic、真实 UA 写回、回滚与审计保留 |
 | 无需硬件演示 | 4/4 PASS | 真实 API/SQLite/Worker、超时、服务重启、死信重放、MES 唯一回执与 UA 写回确认 |
 | Node-RED 迁移 | 5/5 PASS | dry-run、幂等导入、状态/回执/死信保留、冲突拒绝与确定性 ID |
 | UA 写回适配器 | 3/3 PASS | 真实安全 Method、成功 `DONE`、失败回报与缺失回执拒绝 |
@@ -89,7 +92,7 @@ cd ~/UA_LinqInspect
 | Prometheus 指标 | 80/80 PASS | 文本格式、HELP/TYPE、gauge 一致性、UA 写回计数、outbox 积压指标、SQLite/WAL/SHM 体积、响应契约 |
 | SQLite 备份 | 31/31 PASS | WAL 热备、完整性/外键/schema 校验、空库/缺列拒绝、只读源/输出演练、行数一致、保留策略、运行中数据库、textfile 指标 |
 | 离线恢复 | 39/39 PASS | dry-run、`--force`、安全快照、损坏目标隔离、只读目标拒绝、WAL/SHM 清理、恢复后继续消费 |
-| 部署模板 | 23/23 PASS | 模板渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、Node-RED 认证配置 |
+| 部署模板 | 24/24 PASS | 模板渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、Node-RED 认证配置 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
 | MES 长断网 | 24/24 PASS | 重试耗尽死信、积压保留、恢复排空、实测 RTO、受鉴权重放 |
 | 周期 soak | 20/20 PASS | 6 个工单循环、回执唯一、无新增死信、无队列漂移 |
@@ -99,9 +102,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **615/615 PASS** | 38 个测试模块 |
+| **合计** | **632/632 PASS** | 39 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-140506/summary.json`。
+实际产物：`.tmp/regression-20261121-142934/summary.json`。
 
 ## 4. 手工执行单个测试
 

@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""End-to-end Node-RED -> Edge Core -> MES -> UA writeback cutover drill."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+import secrets
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from asyncua import Client, ua
+from asyncua.crypto.security_policies import SecurityPolicyBasic256Sha256
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TESTS_DIR = REPO_ROOT / "tests"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+for path in (REPO_ROOT, TESTS_DIR, SCRIPTS_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from run_regression import (  # noqa: E402
+    NODE_RED_BIN,
+    free_port,
+    prepare_node_red,
+    stop_process,
+    wait_for_http,
+    wait_for_log,
+)
+from edge_core.store import DeliveryStore  # noqa: E402
+from ua_test_client import (  # noqa: E402
+    APPLICATION_URI,
+    CLIENT_CERT,
+    CLIENT_KEY,
+    SERVER_CERT,
+)
+
+RESULTS: list[dict[str, Any]] = []
+
+
+def check(name: str, condition: bool, detail: str = "") -> None:
+    RESULTS.append({"name": name, "passed": bool(condition), "detail": detail})
+    print(f"{'PASS' if condition else 'FAIL'} | {name} {detail}".rstrip(), flush=True)
+
+
+def http_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read(4 * 1024 * 1024)
+    value = json.loads(raw.decode("utf-8")) if raw else {}
+    if not isinstance(value, dict):
+        raise RuntimeError(f"expected JSON object from {url}")
+    return value
+
+
+def wait_until(predicate, timeout: float, description: str):
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            value = predicate()
+            if value:
+                return value
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.2)
+    suffix = f"; last error={last_error}" if last_error else ""
+    raise TimeoutError(f"timed out waiting for {description}{suffix}")
+
+
+def start_process(command: list[str], env: dict[str, str], log_path: Path):
+    handle = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen(
+        command,
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=handle,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return process, handle
+
+
+async def secure_client(endpoint: str, username: str, password: str) -> Client:
+    for path in (CLIENT_CERT, CLIENT_KEY, SERVER_CERT):
+        if not path.is_file():
+            raise FileNotFoundError(f"missing test certificate: {path}")
+    client = Client(endpoint, timeout=5)
+    client.application_uri = APPLICATION_URI
+    await client.set_security(
+        SecurityPolicyBasic256Sha256,
+        certificate=str(CLIENT_CERT),
+        private_key=str(CLIENT_KEY),
+        server_certificate=str(SERVER_CERT),
+        mode=ua.MessageSecurityMode.SignAndEncrypt,
+    )
+    client.set_user(username)
+    client.set_password(password)
+    await client.connect()
+    return client
+
+
+async def drive_work_order(endpoint: str, username: str, password: str, work_order: str) -> dict[str, Any]:
+    client = await secure_client(endpoint, username, password)
+    try:
+        namespace_index = await client.get_namespace_index("urn:fde:linqinspect:qc")
+        root = await client.nodes.objects.get_child([f"{namespace_index}:QCStation"])
+        statistics = await root.get_child([f"{namespace_index}:Statistics"])
+        inspect_count_node = await statistics.get_child([f"{namespace_index}:InspectCount"])
+        ng_count_node = await statistics.get_child([f"{namespace_index}:NgCount"])
+        start_result = await root.call_method(f"{namespace_index}:StartInspection", work_order, 8)
+        if not start_result or start_result[0] is not True:
+            raise RuntimeError(f"StartInspection rejected: {start_result}")
+
+        deadline = time.monotonic() + 15
+        inspect_count = 0
+        ng_count = 0
+        while time.monotonic() < deadline:
+            inspect_count = int(await inspect_count_node.read_value())
+            ng_count = int(await ng_count_node.read_value())
+            if inspect_count >= 8 and ng_count >= 1:
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise TimeoutError(
+                f"virtual inspection did not produce enough NG data: inspect={inspect_count} ng={ng_count}"
+            )
+
+        complete_result = await root.call_method(f"{namespace_index}:CompleteWorkOrder", work_order)
+        if not complete_result or complete_result[0] is not True:
+            raise RuntimeError(f"CompleteWorkOrder rejected: {complete_result}")
+        return {
+            "workOrderId": work_order,
+            "inspectCount": inspect_count,
+            "ngCount": ng_count,
+            "completionSummary": str(complete_result[1]) if len(complete_result) > 1 else "",
+        }
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def read_receipts(endpoint: str, username: str, password: str) -> dict[str, Any]:
+    client = await secure_client(endpoint, username, password)
+    try:
+        namespace_index = await client.get_namespace_index("urn:fde:linqinspect:qc")
+        root = await client.nodes.objects.get_child([f"{namespace_index}:QCStation"])
+        values = {}
+        for name in (
+            "DeviceStatus",
+            "LastNgMesOrderNo",
+            "LastMesOrderNo",
+            "LastCompletionReceiptNo",
+        ):
+            node = await root.get_child([f"{namespace_index}:{name}"])
+            values[name] = await node.read_value()
+        return values
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+def main() -> int:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    artifact_dir = Path(
+        os.getenv("ONLINE_CUTOVER_ARTIFACT")
+        or REPO_ROOT / ".tmp" / f"online-cutover-{stamp}"
+    ).expanduser().resolve()
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    ua_port = free_port()
+    nr_port = free_port()
+    edge_port = free_port()
+    while len({ua_port, nr_port, edge_port}) != 3:
+        nr_port = free_port()
+        edge_port = free_port()
+
+    endpoint = f"opc.tcp://127.0.0.1:{ua_port}"
+    node_red_base = f"http://127.0.0.1:{nr_port}"
+    edge_api_base = f"http://127.0.0.1:{edge_port}"
+    admin_user = "online-cutover-admin"
+    admin_password = secrets.token_urlsafe(24)
+    edge_token = secrets.token_urlsafe(24)
+    http_auth = "Basic " + base64.b64encode(
+        f"{admin_user}:{admin_password}".encode("utf-8")
+    ).decode("ascii")
+
+    node_red_user_dir, node_red_xdg_dir = prepare_node_red(
+        artifact_dir, endpoint, node_red_base, admin_user, admin_password
+    )
+    source_db = artifact_dir / "qc-queue.sqlite"
+    edge_db = artifact_dir / "edge-core.sqlite"
+    lock_dir = artifact_dir / "sender-authority"
+    base_env = os.environ.copy()
+    base_env.update({
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": str(REPO_ROOT),
+        "XDG_CONFIG_HOME": str(node_red_xdg_dir),
+        "UA_ENDPOINT": endpoint,
+        "UA_ENDPOINT_PORT": str(ua_port),
+        "UA_ADMIN_USER": admin_user,
+        "UA_ADMIN_PASS": admin_password,
+        "NODERED_BASE": node_red_base,
+        "NODERED_HTTP_USER": admin_user,
+        "NODERED_HTTP_PASS": admin_password,
+        "NODERED_HTTP_AUTH": http_auth,
+        "QC_REPO_ROOT": str(REPO_ROOT),
+        "QC_DB_PATH": str(source_db),
+        "QC_STATE_PATH": str(artifact_dir / "qc-state.json"),
+        "QC_STATE_BACKEND": "sqlite",
+        "QC_STATE_DB_PATH": str(source_db),
+        "QC_SENDER_LOCK_DIR": str(lock_dir),
+        "QC_DELIVERY_AUTHORITY": "node-red",
+    })
+    server_env = base_env | {
+        "UA_BIND_ADDRESS": "127.0.0.1",
+        "UA_SERVER_CERT": str(SERVER_CERT),
+        "UA_SERVER_PRIVATE_KEY": str(REPO_ROOT / "certs" / "server" / "server_key.pem"),
+        "UA_TRUSTED_CLIENT_CERTS_DIR": str(REPO_ROOT / "certs" / "trusted_clients"),
+        "UA_AUDIT_LOG": str(artifact_dir / "ua-server-audit.log"),
+        "QC_AUTO_INSPECT": "1",
+        "QC_INSPECT_INTERVAL": "0.4",
+        "QC_NG_PROBABILITY": "1.0",
+        "QC_NG_WINDOW": "20",
+    }
+    edge_env = base_env | {
+        "QC_DELIVERY_AUTHORITY": "edge-core",
+        "EDGE_API_HOST": "127.0.0.1",
+        "EDGE_API_PORT": str(edge_port),
+        "EDGE_API_BASE_URL": edge_api_base,
+        "EDGE_API_TOKEN": edge_token,
+        "EDGE_DB_PATH": str(edge_db),
+        "MES_BASE_URL": node_red_base,
+        "EDGE_MES_BASIC_USER": admin_user,
+        "EDGE_MES_BASIC_PASS": admin_password,
+        "EDGE_MES_TIMEOUT_SECONDS": "4",
+        "EDGE_WORKER_INTERVAL_SECONDS": "0.1",
+        "EDGE_MAX_ATTEMPTS": "4",
+        "EDGE_LEASE_SECONDS": "10",
+    }
+    node_red_edge_env = edge_env | {
+        "QC_DELIVERY_AUTHORITY": "edge-core",
+        "EDGE_API_BASE_URL": edge_api_base,
+        "EDGE_API_TOKEN": edge_token,
+    }
+    writeback_env = edge_env | {
+        "UA_CLIENT_CERT": str(CLIENT_CERT),
+        "UA_CLIENT_KEY": str(CLIENT_KEY),
+        "UA_SERVER_CERT": str(SERVER_CERT),
+        "UA_CLIENT_APPLICATION_URI": APPLICATION_URI,
+        "UA_WRITEBACK_TIMEOUT_SECONDS": "5",
+        "UA_WRITEBACK_BATCH_LIMIT": "200",
+    }
+    headers = {"authorization": http_auth}
+    api_headers = {"authorization": f"Bearer {edge_token}"}
+    processes: list[tuple[Any, Any]] = []
+    work_order = f"WO-ONLINE-CUTOVER-{stamp}"
+    summary: dict[str, Any] = {
+        "ok": False,
+        "artifactDir": str(artifact_dir),
+        "uaEndpoint": endpoint,
+        "nodeRedBase": node_red_base,
+        "edgeApiBase": edge_api_base,
+        "workOrderId": work_order,
+    }
+
+    def launch(command: list[str], env: dict[str, str], name: str):
+        process, handle = start_process(command, env, artifact_dir / f"{name}.log")
+        processes.append((process, handle))
+        return process
+
+    try:
+        ua_process = launch(
+            [sys.executable, str(REPO_ROOT / "server" / "qc_server.py")],
+            server_env,
+            "ua-server",
+        )
+        wait_for_log(artifact_dir / "ua-server.log", "OPC UA Server listening", 25)
+
+        nr_baseline = launch(
+            [str(NODE_RED_BIN), "--userDir", str(node_red_user_dir), "--port", str(nr_port), "--no-telemetry"],
+            base_env,
+            "node-red-baseline",
+        )
+        wait_for_log(artifact_dir / "node-red-baseline.log", "Started flows", 35)
+        wait_for_http(node_red_base + "/qc/status", 20, headers)
+        baseline_status = wait_until(
+            lambda: (
+                status
+                if (status := http_json(node_red_base + "/qc/status", headers=headers))
+                .get("senderAuthority", {})
+                .get("held") is True
+                else None
+            ),
+            12,
+            "Node-RED baseline sender authority",
+        )
+        check(
+            "baseline Node-RED owns the sender lease",
+            baseline_status["senderAuthority"].get("currentOwner") == "node-red",
+            json.dumps(baseline_status["senderAuthority"], ensure_ascii=False),
+        )
+        stop_process(nr_baseline)
+        nr_baseline = None
+
+        edge_process = launch([sys.executable, "-m", "edge_core.main"], edge_env, "edge-core")
+        wait_for_http(edge_api_base + "/v1/health", 20)
+        lock_meta = wait_until(
+            lambda: json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
+            if (lock_dir / "owner.json").is_file()
+            else None,
+            10,
+            "Edge Core sender lease",
+        )
+        check(
+            "Edge Core acquires sender authority after Node-RED stops",
+            lock_meta.get("owner") == "edge-core" and lock_meta.get("pid") == edge_process.pid,
+            json.dumps(lock_meta, ensure_ascii=False),
+        )
+
+        adapter = launch(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "run_ua_writeback_adapter.py"),
+                "--interval",
+                "0.5",
+                "--limit",
+                "200",
+            ],
+            writeback_env,
+            "ua-writeback",
+        )
+
+        nr_edge = launch(
+            [str(NODE_RED_BIN), "--userDir", str(node_red_user_dir), "--port", str(nr_port), "--no-telemetry"],
+            node_red_edge_env,
+            "node-red-edge-core",
+        )
+        wait_for_log(artifact_dir / "node-red-edge-core.log", "Started flows", 35)
+        wait_for_http(node_red_base + "/qc/status", 20, headers)
+        time.sleep(6)
+
+        nr_status = http_json(node_red_base + "/qc/status", headers=headers)
+        check(
+            "Node-RED runs in Edge Core authority mode",
+            nr_status.get("deliveryAuthority") == "edge-core",
+            f"(authority={nr_status.get('deliveryAuthority')})",
+        )
+        check(
+            "Node-RED local send pump is blocked by the shared lease",
+            nr_status.get("senderAuthority", {}).get("held") is False
+            and nr_status.get("senderAuthority", {}).get("currentOwner") == "edge-core",
+            json.dumps(nr_status.get("senderAuthority"), ensure_ascii=False),
+        )
+
+        drive = asyncio.run(drive_work_order(endpoint, admin_user, admin_password, work_order))
+        check(
+            "virtual inspections and completion ran through the switched chain",
+            drive["inspectCount"] >= 8 and drive["ngCount"] >= 1,
+            json.dumps(drive, ensure_ascii=False),
+        )
+
+        def matching_deliveries() -> list[dict[str, Any]]:
+            payload = http_json(edge_api_base + "/v1/deliveries?limit=200", headers=api_headers)
+            items = payload.get("items")
+            if not isinstance(items, list):
+                raise RuntimeError("Edge Core deliveries response is missing items")
+            return [item for item in items if item.get("workOrderId") == work_order]
+
+        deliveries = wait_until(
+            lambda: (
+                items
+                if (items := matching_deliveries())
+                and any(item.get("eventType") == "NG_ORDER" for item in items)
+                and any(item.get("eventType") == "COMPLETION_REPORT" for item in items)
+                and all(item.get("state") == "DONE" and item.get("uaWriteConfirmed") for item in items)
+                else None
+            ),
+            35,
+            "MES delivery and UA writeback to DONE",
+        )
+        ng_deliveries = [item for item in deliveries if item["eventType"] == "NG_ORDER"]
+        completion_deliveries = [item for item in deliveries if item["eventType"] == "COMPLETION_REPORT"]
+        check("at least one NG delivery reached DONE", len(ng_deliveries) >= 1, f"(count={len(ng_deliveries)})")
+        check("completion delivery reached DONE once", len(completion_deliveries) == 1,
+              f"(count={len(completion_deliveries)})")
+        check(
+            "MES receipts are present and typed for every delivery",
+            all(
+                item.get("mesReceipt", {}).get("receiptType")
+                == ("MES_ORDER" if item["eventType"] == "NG_ORDER" else "COMPLETION_RECEIPT")
+                and item.get("mesReceipt", {}).get("receiptNo")
+                for item in deliveries
+            ),
+            json.dumps([item.get("mesReceipt") for item in deliveries], ensure_ascii=False)[:1500],
+        )
+
+        edge_status = http_json(edge_api_base + "/v1/status", headers=api_headers)
+        check(
+            "Edge Core queue and dead letters are empty",
+            edge_status.get("queue", {}).get("total") == 0
+            and edge_status.get("deadLetters", {}).get("total") == 0,
+            json.dumps(edge_status, ensure_ascii=False)[:1500],
+        )
+
+        outbox_status = wait_until(
+            lambda: (
+                status
+                if (status := http_json(node_red_base + "/qc/status", headers=headers))
+                .get("outbox", {})
+                .get("pendingCount") == 0
+                else None
+            ),
+            15,
+            "UA outbox acknowledgement",
+        )
+        check(
+            "Node-RED acknowledged the UA outbox after Edge Core accepted ingress",
+            outbox_status["outbox"].get("pendingCount") == 0,
+            json.dumps(outbox_status["outbox"], ensure_ascii=False),
+        )
+
+        receipts = asyncio.run(read_receipts(endpoint, admin_user, admin_password))
+        ng_receipts = {str(item["mesReceipt"]["receiptNo"]) for item in ng_deliveries}
+        completion_receipt = str(completion_deliveries[0]["mesReceipt"]["receiptNo"])
+        check(
+            "UA receipt variables were updated by the real writeback adapter",
+            str(receipts.get("LastNgMesOrderNo")) in ng_receipts
+            and str(receipts.get("LastCompletionReceiptNo")) == completion_receipt,
+            json.dumps({"ngReceipts": sorted(ng_receipts), "completionReceipt": completion_receipt,
+                        "receipts": receipts}, ensure_ascii=False),
+        )
+        check(
+            "station returned to Idle after completion",
+            receipts.get("DeviceStatus") == 0,
+            f"(DeviceStatus={receipts.get('DeviceStatus')})",
+        )
+
+        stop_process(nr_edge)
+        nr_edge = None
+        stop_process(adapter)
+        adapter = None
+        stop_process(edge_process)
+        edge_process = None
+        wait_until(lambda: not lock_dir.exists(), 10, "Edge Core lease release")
+
+        rollback_env = base_env | {"QC_DELIVERY_AUTHORITY": "node-red"}
+        nr_rollback = launch(
+            [str(NODE_RED_BIN), "--userDir", str(node_red_user_dir), "--port", str(nr_port), "--no-telemetry"],
+            rollback_env,
+            "node-red-rollback",
+        )
+        wait_for_log(artifact_dir / "node-red-rollback.log", "Started flows", 35)
+        wait_for_http(node_red_base + "/qc/status", 20, headers)
+        rollback_status = wait_until(
+            lambda: (
+                status
+                if (status := http_json(node_red_base + "/qc/status", headers=headers))
+                .get("senderAuthority", {})
+                .get("held") is True
+                else None
+            ),
+            12,
+            "Node-RED rollback sender authority",
+        )
+        check(
+            "Node-RED reacquires sender authority after Edge Core shutdown",
+            rollback_status["senderAuthority"].get("currentOwner") == "node-red",
+            json.dumps(rollback_status["senderAuthority"], ensure_ascii=False),
+        )
+        persisted = [
+            item for item in DeliveryStore(edge_db).list_deliveries(limit=200)
+            if item.get("workOrderId") == work_order
+        ]
+        check(
+            "Edge Core delivery audit remains available for rollback reconciliation",
+            len(persisted) == len(deliveries)
+            and all(item.get("state") == "DONE" and item.get("uaWriteConfirmed") for item in persisted),
+            f"(count={len(persisted)})",
+        )
+        summary.update({
+            "ok": all(item["passed"] for item in RESULTS),
+            "deliveries": deliveries,
+            "receipts": receipts,
+            "checks": RESULTS,
+        })
+    except Exception as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+        check("online cutover drill completed without exception", False, summary["error"])
+    finally:
+        for process, handle in reversed(processes):
+            stop_process(process)
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    summary["checks"] = RESULTS
+    summary["ok"] = all(item["passed"] for item in RESULTS)
+    (artifact_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    passed = sum(1 for item in RESULTS if item["passed"])
+    print(f"\n===== ONLINE CUTOVER: {passed}/{len(RESULTS)} passed =====", flush=True)
+    print(f"Artifacts: {artifact_dir / 'summary.json'}", flush=True)
+    return 0 if summary["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

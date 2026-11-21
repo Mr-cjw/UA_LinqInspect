@@ -74,6 +74,10 @@ UA_WRITE_CRASH_TESTS = (
     ("ua_write_crash_verify", "tests/ua_write_crash_recovery.py", "verify", 120),
 )
 
+ONLINE_TESTS = (
+    ("online_cutover", "tests/edge_core_online_flow_test.py", 120),
+)
+
 OUTAGE_TESTS = (
     ("short_outage", "tests/outage_recovery.py", "stall", 90),
     ("stale_filter", "tests/outage_recovery.py", "stale", 45),
@@ -153,7 +157,7 @@ def prepare_node_red(
     password: str,
 ) -> tuple[Path, Path]:
     user_dir = work_dir / "node-red"
-    user_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True, exist_ok=True)
     settings = SETTINGS_SOURCE.read_text(encoding="utf-8")
     password_hash = bcrypt_hash(password)
     auth_fragment = {
@@ -567,6 +571,17 @@ def main() -> int:
                     verify_name, verify_path, verify_timeout, outage_env, artifact_dir, verify_arg
                 )
                 results.append(verify_result)
+
+        if all(result["passed"] for result in results):
+            online_env = base_env | {
+                "ONLINE_CUTOVER_ARTIFACT": str(artifact_dir / "online-cutover"),
+            }
+            for name, path, timeout in ONLINE_TESTS:
+                print(f"\n===== RUN {name} =====")
+                result = run_test(name, path, timeout, online_env, artifact_dir)
+                results.append(result)
+                if not result["passed"] and not args.keep_going:
+                    break
     except Exception as exc:
         failure = f"{type(exc).__name__}: {exc}"
         print(f"\nRegression setup/run error: {failure}", file=sys.stderr)
@@ -576,7 +591,7 @@ def main() -> int:
 
     expected_results = (
         len(NODE_TESTS) + len(TESTS) + len(RECOVERY_TESTS) + len(CRASH_TESTS)
-        + len(UA_WRITE_CRASH_TESTS) + len(OUTAGE_TESTS)
+        + len(UA_WRITE_CRASH_TESTS) + len(OUTAGE_TESTS) + len(ONLINE_TESTS)
     )
     passed = failure is None and all(result["passed"] for result in results) and len(results) == expected_results
     summary.update(

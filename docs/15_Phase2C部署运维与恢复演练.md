@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-140506/summary.json` ｜ 当前结果：615/615 PASS
+> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-142934/summary.json` ｜ 当前结果：632/632 PASS
 
 ## 1. 阶段目标
 
@@ -302,7 +302,8 @@ Phase 2C 新增专项：
 | `tests/outbox_status_test.js` | 9/9 PASS | OutboxStatus 解析、容量拒收不 ACK、背压健康降级、状态接口与指标 |
 | `tests/outbox_capacity_test.py` | 9/9 PASS | 高水位/硬上限拒绝、分页导出、令牌清空与幂等 |
 | `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
-| `tests/deploy_templates_test.py` | 23/23 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、认证配置 |
+| `tests/edge_core_online_flow_test.py` | 14/14 PASS | Node-RED 在线直写、Edge Core 权威、MES Basic、真实 UA 写回、回滚与审计持久化 |
+| `tests/deploy_templates_test.py` | 24/24 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、认证配置 |
 | `tests/storage_failure_test.js` | 3/3 PASS | 页数封顶模拟写满、入队/完工事务回滚、损坏库启动失败 |
 | `tests/mount_storage_test.py` | 25/25 PASS | 受限 tmpfs 的真实内核 `EROFS`/`ENOSPC`、状态回滚、SQLite 队列事务保持与恢复 |
 | `tests/restore_queue_test.py` | 39/39 PASS | dry-run、--force、安全快照、损坏目标隔离、schema-less 备份拒绝、只读目标拒绝、WAL/SHM 清理、业务继续消费 |
@@ -324,7 +325,7 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 共享投递读模型、无硬件演示、迁移工具、UA 写回适配器、发送权并发与受控切换/回滚演练接入后的综合回归共 38 个测试模块、**615/615 PASS**，摘要为 `.tmp/regression-20261121-140506/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 共享投递读模型、无硬件演示、迁移工具、UA 写回适配器、发送权并发、受控切换/回滚与真实 Node-RED 在线全链路演练接入后的综合回归共 39 个测试模块、**632/632 PASS**，摘要为 `.tmp/regression-20261121-142934/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

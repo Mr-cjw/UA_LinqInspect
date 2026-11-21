@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import time
@@ -14,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from edge_core.api import create_api_server
+from edge_core.config import load_config
 from edge_core.store import (
     ConflictError,
     DeliveryStore,
@@ -192,6 +194,44 @@ class EdgeCoreTests(unittest.TestCase):
                 idempotency_key=str(uuid.uuid4()),
                 correlation_id=changed["correlationId"],
             )
+
+    def test_mes_auth_configuration_rejects_ambiguous_credentials(self):
+        with self.assertRaises(ValueError):
+            load_config({"EDGE_API_TOKEN": "test", "EDGE_MES_BASIC_USER": "mes"})
+        with self.assertRaises(ValueError):
+            load_config({
+                "EDGE_API_TOKEN": "test",
+                "MES_BEARER_TOKEN": "bearer",
+                "EDGE_MES_BASIC_USER": "mes",
+                "EDGE_MES_BASIC_PASS": "secret",
+            })
+        config = load_config({
+            "EDGE_API_TOKEN": "test",
+            "EDGE_MES_BASIC_USER": "mes",
+            "EDGE_MES_BASIC_PASS": "secret",
+        })
+        self.assertEqual(config.mes_basic_user, "mes")
+        self.assertEqual(config.mes_basic_pass, "secret")
+
+    def test_mes_basic_auth_is_sent_to_mes(self):
+        event = make_event()
+        delivery, _ = self.store.enqueue(
+            event,
+            url=self.mes_url + "/mes/ng-order",
+            idempotency_key=str(uuid.uuid4()),
+            correlation_id=event["correlationId"],
+        )
+        worker = DeliveryWorker(
+            self.store,
+            mes_base_url=self.mes_url,
+            basic_user="mes-user",
+            basic_pass="mes-secret",
+            request_timeout=2,
+        )
+        self.assertTrue(worker.run_once())
+        expected = "Basic " + base64.b64encode(b"mes-user:mes-secret").decode("ascii")
+        self.assertEqual(FakeMesHandler.requests[0]["headers"]["Authorization"], expected)
+        self.assertEqual(self.store.get(delivery["deliveryId"])["state"], STATE_UA_WRITE_PENDING)
 
     def test_successful_mes_receipt_then_ua_write_completes_delivery(self):
         event = make_event()
