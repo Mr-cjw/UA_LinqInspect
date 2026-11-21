@@ -166,7 +166,9 @@ async def main() -> int:
         check(f"{family} has HELP", family in helps)
         check(f"{family} has TYPE", family in metric_types)
     check("queue depth is a gauge", metric_types.get("qc_queue_depth") == "gauge")
-    check("enqueue total is a counter", metric_types.get("qc_enqueue_total") == "counter")
+    check("enqueue total exposes accepted and rejected outcomes",
+          metric_types.get("qc_enqueue_total") == "counter" and
+          ("qc_enqueue_total", (("outcome", "rejected"), ("type", "ng"))) in samples)
     check("delivery total is a counter", metric_types.get("qc_delivery_total") == "counter")
     check("database bytes is a gauge", metric_types.get("qc_database_bytes") == "gauge")
     check("event outbox pending is a gauge", metric_types.get("qc_event_outbox_pending") == "gauge")

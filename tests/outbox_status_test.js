@@ -53,9 +53,13 @@ function makeStore() {
 function nodeRecorder() {
   return {
     warnings: [],
+    errors: [],
     statuses: [],
     warn(message) {
       this.warnings.push(String(message));
+    },
+    error(message) {
+      this.errors.push(String(message));
     },
     status(value) {
       this.statuses.push(value);
@@ -172,6 +176,53 @@ check('metrics expose outbox pending, age, capacity and backpressure', () => {
   assert.match(msg.payload, /^qc_event_outbox_high_watermark 800$/m);
   assert.match(msg.payload, /^qc_event_outbox_backpressure 1$/m);
   assert.match(msg.payload, /^qc_event_outbox_status_age_seconds \d+$/m);
+});
+
+check('capacity rejection keeps the event unacknowledged for UA replay', () => {
+  const { flow } = accessors();
+  const node = nodeRecorder();
+  let response = {
+    enqueued: false,
+    duplicate: false,
+    rejected: true,
+    reason: 'capacity',
+    queueLength: 100,
+    capacity: 100,
+  };
+  const store = {
+    enqueue() {
+      return response;
+    },
+  };
+  const event = {
+    workOrderId: 'WO-CAPACITY',
+    serialNumber: 'SN-CAPACITY',
+    defectType: 'DENT',
+    confidence: 0.9,
+    imageId: 'IMG-CAPACITY',
+    occurredAt: '2026-11-21T00:00:00.000Z',
+    correlationId: 'corr-capacity',
+    sourceEventId: 'evt-capacity',
+  };
+
+  const rejected = qlogic.enqueueNg(event, flow, node, store);
+  assert.equal(rejected, null);
+  assert.equal(node.errors.length, 1);
+  assert.match(node.errors[0], /未 ACK/);
+  assert.equal(flow.get('lastEnqueueRejection').queueLength, 100);
+
+  response = {
+    enqueued: false,
+    duplicate: true,
+    rejected: false,
+    reason: 'dedup',
+    queueLength: 100,
+    capacity: 100,
+  };
+  const duplicate = qlogic.enqueueNg(event, flow, node, store);
+  assert.equal(duplicate.action, 'method');
+  assert.equal(duplicate.methodId, 'ns=2;s=QCStation.AcknowledgeEvent');
+  assert.equal(duplicate.inputArguments[0].value, 'evt-capacity');
 });
 
 console.log(`\n===== OUTBOX STATUS: ${passed}/${passed + failures.length} passed =====`);

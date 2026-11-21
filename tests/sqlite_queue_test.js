@@ -580,22 +580,32 @@ try {
     }
   });
 
-  check('queue overflow drops the oldest PENDING item', () => {
+  check('queue capacity rejects new work without evicting durable items', () => {
     const store = createStore({ dbPath: freshDbPath('overflow') });
     try {
-      for (let index = 0; index <= MAX_QUEUE; index += 1) {
+      for (let index = 0; index < MAX_QUEUE; index += 1) {
         const result = enqueueNg(
           store,
           `SN-OVERFLOW-${index}`,
           `2026-11-20T12:00:${String(index % 60).padStart(2, '0')}.000Z`,
           1000 + index
         );
-        if (index === MAX_QUEUE) {
-          assert.equal(result.dropped.length, 1);
-          assert.equal(result.dropped[0], 'ng|SN-OVERFLOW-0|2026-11-20T12:00:00.000Z');
-        }
+        assert.equal(result.enqueued, true);
       }
+      const rejected = enqueueNg(
+        store,
+        'SN-OVERFLOW-LAST',
+        '2026-11-20T12:59:59.000Z',
+        2000,
+      );
+      assert.equal(rejected.enqueued, false);
+      assert.equal(rejected.duplicate, false);
+      assert.equal(rejected.rejected, true);
+      assert.equal(rejected.reason, 'capacity');
+      assert.equal(rejected.capacity, MAX_QUEUE);
       assert.equal(store.status().queue.total, MAX_QUEUE);
+      assert.equal(store.hasDedup('ng_sn', 'SN-OVERFLOW-LAST'), false);
+      assert.equal(metricValue(store, 'enqueue_total', 'ng', 'rejected'), 1);
     } finally {
       store.close();
     }
@@ -604,17 +614,30 @@ try {
   check('legacy flow context imports once and is cleared', () => {
     const dbPath = freshDbPath('legacy');
     const legacy = {
-      buf: [{
-        id: 'ng|SN-LEGACY|2026-11-20T12:00:00.000Z',
-        type: 'ng',
-        correlationId: 'corr-legacy',
-        url: 'http://127.0.0.1/mes/ng-order',
-        body: { schemaVersion: '1.0', serialNumber: 'SN-LEGACY' },
-        createdAt: '2026-11-20T12:00:00.000Z',
-        attempts: 0,
-        nextAt: 0,
-        status: 'PENDING',
-      }],
+      buf: [
+        {
+          id: 'ng|SN-LEGACY|2026-11-20T12:00:00.000Z',
+          type: 'ng',
+          correlationId: 'corr-legacy',
+          url: 'http://127.0.0.1/mes/ng-order',
+          body: { schemaVersion: '1.0', serialNumber: 'SN-LEGACY' },
+          createdAt: '2026-11-20T12:00:00.000Z',
+          attempts: 0,
+          nextAt: 0,
+          status: 'PENDING',
+        },
+        ...Array.from({ length: MAX_QUEUE }, (_, index) => ({
+          id: `ng|SN-LEGACY-${index}|2026-11-20T12:00:01.000Z`,
+          type: 'ng',
+          correlationId: `corr-legacy-${index}`,
+          url: 'http://127.0.0.1/mes/ng-order',
+          body: { schemaVersion: '1.0', serialNumber: `SN-LEGACY-${index}` },
+          createdAt: '2026-11-20T12:00:01.000Z',
+          attempts: 0,
+          nextAt: 0,
+          status: 'PENDING',
+        })),
+      ],
       dead: [{
         id: 'done|WO-DEAD',
         type: 'complete',
@@ -637,11 +660,13 @@ try {
     try {
       first.bootstrap(flow);
       const status = first.status();
-      assert.equal(status.queue.total, 1);
-      assert.equal(status.deadLetters.total, 1);
+      assert.equal(status.queue.total, MAX_QUEUE);
+      assert.equal(status.deadLetters.total, 2);
       assert.equal(status.dedup.ngFingerprints, 1);
       assert.equal(status.dedup.ngSerialNumbers, 1);
       assert.equal(status.dedup.completedWorkOrders, 1);
+      assert.equal(metricValue(first, 'delivery_errors_total', 'ng', '', 'QUEUE_OVERFLOW'), 1);
+      assert.equal(metricValue(first, 'delivery_errors_total', 'ng', '', 'OTHER_ERROR'), 0);
       assert.deepEqual(flow.get('buf'), []);
       assert.deepEqual(flow.get('dead'), []);
       assert.deepEqual(flow.get('ngSeen'), {});
@@ -654,8 +679,8 @@ try {
     const second = createStore({ dbPath });
     try {
       second.bootstrap(secondFlow);
-      assert.equal(second.status().queue.total, 1);
-      assert.equal(second.status().deadLetters.total, 1);
+      assert.equal(second.status().queue.total, MAX_QUEUE);
+      assert.equal(second.status().deadLetters.total, 2);
       assert.equal(second.status().dedup.ngFingerprints, 1);
     } finally {
       second.close();

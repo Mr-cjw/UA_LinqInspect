@@ -153,10 +153,10 @@ UA_LinqInspect/
     ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
     ├── metrics_test.py        # Prometheus 指标、outbox、UA 写回与状态一致性（80 项断言）
     ├── health_test.js         # /healthz ready/degraded/unavailable（10 项断言）
-    ├── outbox_status_test.js  # OutboxStatus 解析、健康降级与 Prometheus 指标（8 项断言）
+    ├── outbox_status_test.js  # OutboxStatus 解析、队列拒收 ACK、健康降级与指标（9 项断言）
     ├── backup_queue_test.py   # WAL 在线备份、完整性与保留策略（20 项断言）
     ├── restore_queue_test.py  # dry-run、强制恢复、安全快照与继续消费（20 项断言）
-    ├── deploy_templates_test.py # 模板渲染、systemd/Alertmanager/logrotate 与告警（22 项断言）
+    ├── deploy_templates_test.py # 模板渲染、systemd/Alertmanager/logrotate 与告警（23 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
     ├── long_outage_recovery.py # MES 长断网、死信重放与实测 RTO（24 项断言）
     ├── soak_test.py           # 周期工单 soak、回执唯一性与资源漂移（20 项断言）
@@ -184,6 +184,7 @@ UA_LinqInspect/
 - **重启恢复**：一键回归会保留非空队列，停止/重启 Node-RED 或 `SIGKILL` 进程，验证 SQLite 续传、UA 写回确认与回执续写；UA Server 的工单、计数和 SN 序号也会从快照恢复
 - **可观测性**：`GET /metrics` 暴露队列深度、死信、去重、入队/投递、UA 写回、看门狗和 UA outbox 积压；计数与队列状态同事务持久化
 - **outbox 容量保护**：NG/完工事件积压达到高水位时拒绝新开检，达到硬上限时拒绝新检测与完工，不静默丢弃业务事件；管理员可分页导出并用一次性令牌清空
+- **队列容量保护**：SQLite 队列达到 100 条时拒绝新事件且不 ACK，保留 UA outbox 等待重试，不驱逐已有任务；`lastEnqueueRejection`、`qc_enqueue_total{outcome="rejected"}` 与 `QcQueueEnqueueRejected` 告警提供诊断
 - **在线备份**：`scripts/backup_queue.py` 使用 SQLite backup API，先校验再原子落盘，避免 WAL 模式下直接复制主文件
 - **健康探针**：`GET /healthz` 在 SQLite 不可用时返回 503 `unavailable`；连续 UA 心跳失败达到 3 次或 outbox 进入背压时返回 503 `degraded`
 - **部署与恢复**：systemd unit/timer、Prometheus 告警和 `restore_queue.py` 形成可重复的运维路径；恢复前必须停止 Node-RED
@@ -486,13 +487,13 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 494/494 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 494/494 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 494/494 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 494/494 PASS） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 494/494 PASS；与投递队列尚未同事务） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 496/496 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 496/496 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 496/496 PASS） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 496/496 PASS） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 496/496 PASS；与投递队列尚未同事务） |
 | 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
-| outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 8/8、积压恢复 18/18） |
+| outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | M3 | 连通性/断网重连测试 + IEC 62541 评审 | 🟡 长断网、死信重放、soak、短断网和 Server 重启已自动化；抓包与真实网络切换证据待补 |
 | M4 | 最终交付包 + 简历话术 | ⬜ |

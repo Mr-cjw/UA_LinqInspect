@@ -13,8 +13,8 @@
 ✅ [Medium] ~~`server/qc_server.py` 的 outbox 当前没有容量上限、压缩和人工清理接口；Node-RED 长时间不可用时会持续增大状态快照~~：已增加 `QC_OUTBOX_MAX_PENDING`/`QC_OUTBOX_HIGH_WATERMARK`，高水位拒绝新开检、硬上限拒绝检测与完工且不静默丢事件；Node-RED 暴露 `qc_event_outbox_*` 指标和告警；新增管理员 `ExportPendingEvents` 分页导出与令牌校验的 `PurgeOutbox`，并有匿名拒绝、背压恢复和清空幂等测试。仍缺事件合并/压缩策略和真实磁盘满降级演练。
 ✅ [High] ~~在线 Node-RED 已使用 SQLite 队列，但仍有“MES 回执成功后先完成任务、UA 写回失败缺少最终确认”的语义缺口~~：已用持久化 `ua_writebacks`/`ua_write_targets` 把 MES 成功与 UA 写回确认分离；两个目标全部确认后才删除任务，失败按退避重试并进入死信。
 ✅ [High] ~~MES 2xx/4xx/429/5xx/timeout 未分类~~：Phase 1 已实现回执 schema、关联 ID、错误码、4xx 终态死信、429 `Retry-After`、5xx/timeout 退避和非法 2xx 拒绝；Edge Core 另有事务化死信重放接口。
-□ [High] `nodered/flows.json` 节点 `fn_dedup_ng`、`fn_dedup_done`、`fn_enq_ng`、`fn_enq_done`：先去重并置位，再入队；入队异常、进程崩溃或队列溢出后，同一事件会永久被当作重复丢弃。应先去重与入队原子化，或让去重状态随任务成功/死信状态回滚，并提供重放。
-□ [High] `nodered/flows.json` 节点 `fn_enq_ng`、`fn_enq_done`：队列达到 100 时直接丢弃最旧 PENDING 任务且不写死信；高 NG 率或 MES 慢时会静默丢业务。应转入死信并记录丢弃原因，同时提供背压/告警。
+✅ [High] ~~`nodered/flows.json` 节点 `fn_dedup_ng`、`fn_dedup_done`、`fn_enq_ng`、`fn_enq_done`：先去重并置位，再入队；入队异常、进程崩溃或队列溢出后，同一事件会永久被当作重复丢弃~~：去重检查、去重键写入和队列插入已在同一 SQLite 事务；容量拒绝不会写入去重键，重复事件只有在队列/去重已有持久记录时才 ACK。
+✅ [High] ~~`nodered/flows.json` 节点 `fn_enq_ng`、`fn_enq_done`：队列达到 100 时直接丢弃最旧 PENDING 任务且不写死信~~：已改为失败关闭，队列满时拒绝新事件且不 ACK，UA outbox 保留并周期重试；新增 `lastEnqueueRejection`、`qc_enqueue_total{outcome="rejected"}` 和 `QcQueueEnqueueRejected` 告警，不再静默丢业务。
 □ [High] `server/qc_server.py:260-276` 与 `nodered/flows.json` 的持久化去重：虚拟 SN 使用进程内 `seq=0` 重置，而 Node-RED `snSeen` 跨重启保留；同日重启后会重新生成 `SN-yyyyMMdd-000001`，合法 NG 被误判为重复。应使用持久化全局序列、UUID 或工单+设备+时间组合键。
 □ [High] `server/qc_server.py:151-199`：服务重启后工单、计数器、窗口、SN 序号全部丢失，Node-RED 却保留去重和队列；会丢失进行中的报工并产生状态错位。应持久化工单/统计/序列，或启动时强制进入安全恢复流程并重建状态。
 □ [High] `nodered/flows.json` 的 `opc_evt`、`opc_evt_done`、`fn_ua_err`：事件订阅只在部署时建立并在 5 秒后重发；断线/Server 重启后没有订阅重建、事件缺口检测或补读机制，心跳只打印告警。应实现重连状态机、重新 `CreateSubscription/CreateMonitoredItems`、事件序号缺口检测和可恢复补读策略。

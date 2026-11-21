@@ -19,6 +19,15 @@ groups:
           summary: "UA LinqInspect pending queue is growing"
           description: "Pending queue depth has remained above 20 for 5 minutes."
 
+      - alert: QcQueueEnqueueRejected
+        expr: increase(qc_enqueue_total{outcome="rejected"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "UA LinqInspect SQLite queue rejected a new event"
+          description: "The durable queue is at capacity. New events remain unacknowledged in the UA outbox and will be replayed after the queue drains; inspect MES latency, dead letters and queue depth."
+
       - alert: QcEventOutboxBackpressure
         expr: qc_event_outbox_backpressure > 0
         for: 2m

@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261120-182355/summary.json` ｜ 当前结果：494/494 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-003658/summary.json` ｜ 当前结果：496/496 PASS
 
 ## 1. 阶段目标
 
@@ -165,6 +165,7 @@ node_exporter 只应读取备份指标文件，不应直接采集 SQLite。启�
 |---|---|---|
 | `QcEdgeDown` | `up == 0` 持续 2 分钟 | Node-RED 指标端点不可达 |
 | `QcQueueBacklogHigh` | pending 大于 20 持续 5 分钟 | MES 处理速度不足或不可达 |
+| `QcQueueEnqueueRejected` | 5 分钟内出现容量拒绝持续 1 分钟 | SQLite 队列已满；事件保留在 UA outbox，等待队列排空后重试 |
 | `QcEventOutboxBackpressure` | outbox 背压标志为 1 持续 2 分钟 | UA 事件积压达到高水位，新开检会被拒绝 |
 | `QcEventOutboxBacklogHigh` | 积压数不低于高水位持续 2 分钟 | Node-RED 未订阅、未入队或未 ACK |
 | `QcEventOutboxOldestTooOld` | 最老未确认事件超过 120 秒持续 5 分钟 | outbox 长时间不排空 |
@@ -288,10 +289,10 @@ Phase 2C 新增专项：
 | 测试 | 结果 | 覆盖 |
 |---|---:|---|
 | `tests/health_test.js` | 10/10 PASS | ready/degraded/unavailable、边界、响应头、flow 接线 |
-| `tests/outbox_status_test.js` | 8/8 PASS | OutboxStatus 解析、背压健康降级、状态接口与指标 |
+| `tests/outbox_status_test.js` | 9/9 PASS | OutboxStatus 解析、容量拒收不 ACK、背压健康降级、状态接口与指标 |
 | `tests/outbox_capacity_test.py` | 9/9 PASS | 高水位/硬上限拒绝、分页导出、令牌清空与幂等 |
 | `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
-| `tests/deploy_templates_test.py` | 22/22 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox 告警、logrotate、环境变量、认证配置 |
+| `tests/deploy_templates_test.py` | 23/23 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、认证配置 |
 | `tests/restore_queue_test.py` | 20/20 PASS | dry-run、--force、安全快照、WAL/SHM 清理、业务继续消费 |
 | `tests/backup_queue_test.py` | 20/20 PASS | 在线备份、指标 textfile、完整性、保留策略、活跃库备份 |
 | `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
@@ -306,8 +307,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 29 个测试模块、**494/494 PASS**，摘要为
-`.tmp/regression-20261120-182355/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 综合回归共 29 个测试模块、**496/496 PASS**，摘要为
+`.tmp/regression-20261121-003658/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
@@ -328,6 +329,7 @@ curl -u "$NODERED_HTTP_USER:$NODERED_HTTP_PASS" \
 - systemd 部署模板、健康探针、Prometheus 告警规则和备份 timer。
 - SQLite 主库/WAL/SHM 体积指标、WAL 与磁盘空间告警、Alertmanager 路由模板和 logrotate 模板。
 - UA outbox 积压/年龄/容量指标、背压健康降级和 Prometheus 告警；管理员可分页导出并用令牌清空积压。
+- SQLite 队列满时失败关闭：拒绝新事件、不驱逐旧任务、不 ACK UA outbox，并暴露拒绝指标与临界告警。
 - SQLite 在线备份、离线恢复、恢复前安全快照和完整性校验。
 - 进程重启、SIGKILL、短断网和 UA Server 重启后的队列恢复。
 - MES 长断网后的积压排空、死信保留与受鉴权重放；6 工单 soak 无漂移。

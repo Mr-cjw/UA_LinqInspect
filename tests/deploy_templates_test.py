@@ -22,6 +22,7 @@ EXPECTED_UNITS = {
 EXPECTED_ALERTS = {
     "QcEdgeDown",
     "QcQueueBacklogHigh",
+    "QcQueueEnqueueRejected",
     "QcEventOutboxBackpressure",
     "QcEventOutboxBacklogHigh",
     "QcEventOutboxOldestTooOld",
@@ -168,6 +169,9 @@ def main() -> int:
               "qc_event_outbox_pending >= qc_event_outbox_high_watermark" in alerts_text and
               "qc_event_outbox_oldest_age_seconds > 120" in alerts_text and
               "qc_event_outbox_status_age_seconds > 30" in alerts_text)
+        check("queue capacity rejection has a critical alert",
+              'increase(qc_enqueue_total{outcome="rejected"}[5m]) > 0' in alerts_text and
+              'severity: critical' in alerts_text)
 
         alertmanager_text = (output_dir / "prometheus" / "alertmanager.yml").read_text(encoding="utf-8")
         check("Alertmanager config routes critical and warning alerts",

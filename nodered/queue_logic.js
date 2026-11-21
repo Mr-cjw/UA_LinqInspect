@@ -218,11 +218,25 @@ function enqueueNg(msg, flow, node, store) {
       dedupKeys: ngKeys(serialNumber, occurredAt),
     });
     if (!result.enqueued) {
-      node.warn('[重复入队丢弃][' + correlationId + '] ' + id);
-      return eventAckMessage(msg, node);
-    }
-    for (const dropped of result.dropped) {
-      node.warn('[缓冲溢出] 上限 100，丢弃最旧 ' + dropped);
+      if (result.duplicate) {
+        node.warn('[重复入队丢弃][' + correlationId + '] ' + id);
+        return eventAckMessage(msg, node);
+      }
+      const rejection = {
+        correlationId,
+        type: 'ng',
+        id,
+        reason: result.reason || 'capacity',
+        queueLength: result.queueLength || 0,
+        capacity: result.capacity || 0,
+        at: timestamp(),
+      };
+      flow.set('lastEnqueueRejection', rejection);
+      node.error('[SQLite入队拒绝][' + correlationId + '] NG ' + serialNumber +
+        ' 队列=' + rejection.queueLength + '/' + rejection.capacity +
+        '；事件未 ACK，保留在 UA outbox 等待重试', msg);
+      node.status({ fill: 'red', shape: 'ring', text: '队列拒收 ' + rejection.queueLength + '/' + rejection.capacity });
+      return null;
     }
     node.status({ fill: 'yellow', shape: 'dot', text: '队列=' + result.queueLength });
     node.warn('[入队][' + correlationId + '] NG ' + serialNumber + ' 队列=' + result.queueLength);
@@ -261,11 +275,25 @@ function enqueueDone(msg, flow, node, store) {
       dedupKeys: [{ kind: 'done', key: workOrderId }],
     });
     if (!result.enqueued) {
-      node.warn('[重复入队丢弃][' + correlationId + '] ' + id);
-      return eventAckMessage(msg, node);
-    }
-    for (const dropped of result.dropped) {
-      node.warn('[缓冲溢出] 上限 100，丢弃最旧 ' + dropped);
+      if (result.duplicate) {
+        node.warn('[重复入队丢弃][' + correlationId + '] ' + id);
+        return eventAckMessage(msg, node);
+      }
+      const rejection = {
+        correlationId,
+        type: 'complete',
+        id,
+        reason: result.reason || 'capacity',
+        queueLength: result.queueLength || 0,
+        capacity: result.capacity || 0,
+        at: timestamp(),
+      };
+      flow.set('lastEnqueueRejection', rejection);
+      node.error('[SQLite入队拒绝][' + correlationId + '] 报工 ' + workOrderId +
+        ' 队列=' + rejection.queueLength + '/' + rejection.capacity +
+        '；事件未 ACK，保留在 UA outbox 等待重试', msg);
+      node.status({ fill: 'red', shape: 'ring', text: '队列拒收 ' + rejection.queueLength + '/' + rejection.capacity });
+      return null;
     }
     node.status({ fill: 'yellow', shape: 'dot', text: '队列=' + result.queueLength });
     node.warn('[入队][' + correlationId + '] 报工 ' + workOrderId + ' 队列=' + result.queueLength);
@@ -702,7 +730,7 @@ function renderMetrics(snapshot, state, heartbeatFailures, uptimeSec, outbox = {
 
   family('qc_enqueue_total', 'Enqueue attempts by event type and outcome.', 'counter');
   for (const type of ['ng', 'complete']) {
-    for (const outcome of ['accepted', 'duplicate']) {
+    for (const outcome of ['accepted', 'duplicate', 'rejected']) {
       lines.push(
         `qc_enqueue_total{type="${type}",outcome="${outcome}"} ` +
         prometheusValue(value('enqueue_total', type, outcome))
@@ -852,6 +880,7 @@ function status(msg, flow, store) {
     lastRequest: flow.get('lastRequest') || null,
     lastRequestByType: flow.get('lastRequestByType') || {},
     lastResponse: flow.get('lastResponse') || null,
+    lastEnqueueRejection: flow.get('lastEnqueueRejection') || null,
     dedup: snapshot.dedup,
     uaWriteback: snapshot.uaWriteback,
     storage: snapshot.storage,

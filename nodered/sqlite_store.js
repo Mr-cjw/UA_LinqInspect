@@ -22,6 +22,7 @@ const METRIC_ERROR_CODES = new Set([
   'TRANSPORT_ERROR',
   'UNKNOWN_ERROR',
   'WATCHDOG_TIMEOUT',
+  'QUEUE_OVERFLOW',
   'INVALID_RESPONSE_SCHEMA',
   'CORRELATION_MISMATCH',
   'MISSING_MES_ORDER_NO',
@@ -469,12 +470,20 @@ class SqliteQueueStore {
         if (result.changes) queueImported += 1;
       }
 
+      let overflowImported = 0;
       while (this._queueCount() > MAX_QUEUE) {
         const victim = this.db.prepare(
-          "SELECT id FROM queue WHERE status = 'PENDING' ORDER BY seq LIMIT 1"
-        ).get() || this.db.prepare('SELECT id FROM queue ORDER BY seq LIMIT 1').get();
+          "SELECT * FROM queue WHERE status = 'PENDING' ORDER BY seq LIMIT 1"
+        ).get();
         if (!victim) break;
-        this.db.prepare('DELETE FROM queue WHERE id = ?').run(victim.id);
+        this._moveToDead(
+          victim,
+          'QUEUE_OVERFLOW',
+          'legacy-migration-overflow',
+          victim.attempts || 0,
+          Date.now(),
+        );
+        overflowImported += 1;
       }
 
       const insertDedup = this.db.prepare(
@@ -533,7 +542,13 @@ class SqliteQueueStore {
       }
 
       this._metaSetStatement.run(LEGACY_MIGRATION_KEY, nowIso(Date.now()));
-      return { migrated: true, queue: queueImported, dead: deadImported, dedup: dedupImported };
+      return {
+        migrated: true,
+        queue: queueImported,
+        dead: deadImported,
+        dedup: dedupImported,
+        overflow: overflowImported,
+      };
     });
   }
 
@@ -563,14 +578,21 @@ class SqliteQueueStore {
         }
       }
 
-      const dropped = [];
-      while (this._queueCount() >= MAX_QUEUE) {
-        const victim = this.db.prepare(
-          "SELECT id FROM queue WHERE status = 'PENDING' ORDER BY seq LIMIT 1"
-        ).get() || this.db.prepare('SELECT id FROM queue ORDER BY seq LIMIT 1').get();
-        if (!victim) break;
-        this.db.prepare('DELETE FROM queue WHERE id = ?').run(victim.id);
-        dropped.push(victim.id);
+      const queueLength = this._queueCount();
+      if (queueLength >= MAX_QUEUE) {
+        // Capacity is a hard backpressure boundary: never evict a durable task
+        // to make room for a newer one. The caller must leave the UA event
+        // unacknowledged so it can be replayed after the queue drains.
+        this._metricIncrement('enqueue_total', type, 'rejected', '', now);
+        return {
+          enqueued: false,
+          duplicate: false,
+          rejected: true,
+          reason: 'capacity',
+          dropped: [],
+          queueLength,
+          capacity: MAX_QUEUE,
+        };
       }
 
       const insertDedup = this.db.prepare(
@@ -587,7 +609,15 @@ class SqliteQueueStore {
       `).run(id, type, correlationId || '', url, bodyJson, createdAt || '', now);
       for (const entry of dedupKeys) this._pruneDedup(entry.kind);
       this._metricIncrement('enqueue_total', type, 'accepted', '', now);
-      return { enqueued: true, duplicate: false, reason: '', dropped, queueLength: this._queueCount() };
+      return {
+        enqueued: true,
+        duplicate: false,
+        rejected: false,
+        reason: '',
+        dropped: [],
+        queueLength: this._queueCount(),
+        capacity: MAX_QUEUE,
+      };
     });
   }
 

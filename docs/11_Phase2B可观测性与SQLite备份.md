@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：494/494，证据：`.tmp/regression-20261120-182355/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：496/496，证据：`.tmp/regression-20261121-003658/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -27,7 +27,7 @@ name, type, outcome, error_code, value, updated_at
 主键为 `(name, type, outcome, error_code)`。标签只允许低基数枚举：
 
 - `type`：`ng` / `complete`
-- `outcome`：`accepted` / `duplicate` / `success` / `retry` / `dead` / `recovered`
+- `outcome`：`accepted` / `duplicate` / `rejected` / `success` / `retry` / `dead` / `recovered`
 - `error_code`：代码内稳定的错误码，不使用 SN、工单号或 correlationId 作为标签；未知 MES 错误统一收敛为 `OTHER_ERROR`
 
 计数更新与队列状态迁移位于同一 SQLite 事务。例如入队、完成、退避或死信提交失败时，计数会一起回滚；Node-RED 重启后计数仍可恢复。
@@ -51,7 +51,7 @@ name, type, outcome, error_code, value, updated_at
 | `qc_event_outbox_status_age_seconds` | gauge | 最近一次成功读取 OutboxStatus 的年龄；-1 表示从未读取 |
 | `qc_uptime_seconds` | gauge | 本流程首次被状态接口观察到后的秒数 |
 | `qc_database_bytes{kind}` | gauge | SQLite 主库、WAL、SHM 文件体积 |
-| `qc_enqueue_total{type,outcome}` | counter | 入队成功/重复次数 |
+| `qc_enqueue_total{type,outcome}` | counter | 入队成功、重复与容量拒绝次数 |
 | `qc_delivery_total{type,outcome}` | counter | 成功、退避、死信次数 |
 | `qc_delivery_errors_total{type,error_code}` | counter | 按稳定错误码聚合的投递失败 |
 | `qc_watchdog_total{outcome}` | counter | 看门狗恢复/最终死信次数 |
@@ -67,7 +67,7 @@ name, type, outcome, error_code, value, updated_at
 curl -s http://127.0.0.1:1880/metrics | head -40
 ```
 
-`/qc/status` 的 `queue`、`deadLetters.last`、`dedup`、`lastRequest*` 等结构保持兼容；新增 `uaWriteback.pending/sending` 反映 UA 写回阶段，新增 `outbox` 对象反映 UA 事件积压、容量、高水位和最近一次心跳读取的新鲜度。MES 成功回执只把任务推进到写回阶段，两个目标变量都确认后才删除队列项。
+`/qc/status` 的 `queue`、`deadLetters.last`、`dedup`、`lastRequest*` 等结构保持兼容；新增 `uaWriteback.pending/sending` 反映 UA 写回阶段，新增 `outbox` 对象反映 UA 事件积压、容量、高水位和最近一次心跳读取的新鲜度。队列容量拒绝会记录 `lastEnqueueRejection`，且事件不会 ACK。MES 成功回执只把任务推进到写回阶段，两个目标变量都确认后才删除队列项。
 
 ### 2.3 安全边界
 
@@ -132,7 +132,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复与事件 outbox 容量测试后当前合并回归为 **494/494 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox 与队列容量处置后当前合并回归为 **496/496 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
@@ -140,7 +140,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 状态工具单测 | 5/5 |
 | 事件 outbox 单测 | 3/3 |
 | outbox 容量/导出单测 | 9/9 |
-| outbox 状态接口 | 8/8 |
+| outbox 状态接口 | 9/9 |
 | 工位状态重启 | 11/11 |
 | 事件 outbox 崩溃恢复 | 18/18 |
 | 健康探针 | 10/10 |
@@ -151,7 +151,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | Prometheus 指标 | 80/80 |
 | SQLite 备份 | 20/20 |
 | 离线恢复 | 20/20 |
-| 部署模板 | 22/22 |
+| 部署模板 | 23/23 |
 | 故障场景 | 52/52 |
 | MES 长断网 | 24/24 |
 | 周期 soak | 20/20 |
@@ -161,7 +161,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **494/494** |
+| **合计** | **496/496** |
 
 ## 5. 下一阶段
 
