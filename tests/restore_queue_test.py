@@ -236,6 +236,9 @@ def main() -> int:
         check("restore reports integrity checks",
               restored.get("sourceIntegrityCheck") == "ok" and
               restored.get("restoredIntegrityCheck") == "ok")
+        check("restore reports schema checks",
+              restored.get("sourceSchemaCheck") == "ok" and
+              restored.get("restoredSchemaCheck") == "ok")
         pre_restore = Path(str(restored.get("preRestore") or ""))
         check("pre-restore safety snapshot exists", pre_restore.is_file(), str(pre_restore))
         check("pre-restore snapshot preserves previous target", pre_restore.is_file() and
@@ -271,6 +274,24 @@ def main() -> int:
         completed, invalid = run_restore(corrupt, root / "invalid-target.sqlite")
         check("corrupt backup is rejected", completed.returncode != 0 and
               invalid.get("ok") is False)
+
+        schema_target = root / "schema-target" / "qc-queue.sqlite"
+        schema_target.parent.mkdir(parents=True)
+        node_eval(SEED_TARGET, schema_target)
+        schema_target_rows = queue_rows(schema_target)
+        schema_snapshots_before = set((schema_target.parent / "backups").glob("*.sqlite"))
+        empty_backup = root / "schema-less.sqlite"
+        empty_connection = sqlite3.connect(empty_backup)
+        empty_connection.close()
+        completed, incompatible = run_restore(empty_backup, schema_target, force=True)
+        check("valid SQLite without queue schema is rejected as a backup",
+              completed.returncode != 0 and
+              "queue schema check failed" in str(incompatible.get("error")),
+              str(incompatible.get("error") or ""))
+        check("schema-invalid backup leaves target unchanged",
+              queue_rows(schema_target) == schema_target_rows)
+        check("schema-invalid backup creates no pre-restore snapshot",
+              set((schema_target.parent / "backups").glob("*.sqlite")) == schema_snapshots_before)
 
         corrupt_target = root / "corrupt-target" / "qc-queue.sqlite"
         corrupt_target.parent.mkdir(parents=True)

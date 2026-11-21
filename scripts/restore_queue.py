@@ -84,6 +84,8 @@ def restore(backup: Path, target: Path, force: bool, dry_run: bool) -> dict:
             "target": str(target),
             "sourceIntegrityCheck": source_verification["integrityCheck"],
             "restoredIntegrityCheck": restored_verification["integrityCheck"],
+            "sourceSchemaCheck": source_verification["schemaCheck"],
+            "restoredSchemaCheck": restored_verification["schemaCheck"],
             "tables": restored_verification["tables"],
             "preRestore": None,
             "quarantined": None,

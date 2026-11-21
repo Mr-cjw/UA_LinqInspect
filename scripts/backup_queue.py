@@ -19,6 +19,28 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_KEEP = 7
 COUNTED_TABLES = ("queue", "dead_letters", "dedup", "metrics")
+REQUIRED_COLUMNS = {
+    "queue": (
+        "seq", "id", "type", "correlation_id", "url", "body_json", "created_at",
+        "attempts", "next_at", "status", "sent_at", "last_status",
+        "last_error_code", "enqueued_at",
+    ),
+    "dead_letters": (
+        "seq", "queue_id", "type", "correlation_id", "url", "body_json",
+        "created_at", "attempts", "next_at", "status", "sent_at", "last_status",
+        "last_error_code", "error_code", "failed_at",
+    ),
+    "dedup": ("id", "kind", "dedup_key", "created_at"),
+    "ua_writebacks": (
+        "queue_id", "status", "receipt", "attempts", "next_at", "started_at",
+        "last_error_code", "created_at", "updated_at",
+    ),
+    "ua_write_targets": (
+        "queue_id", "target", "expected_value", "confirmed", "updated_at",
+    ),
+    "meta": ("meta_key", "meta_value"),
+    "metrics": ("name", "type", "outcome", "error_code", "value", "updated_at"),
+}
 
 
 def resolve_source(value: str | None) -> Path:
@@ -52,6 +74,28 @@ def table_counts(connection: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+def schema_errors(connection: sqlite3.Connection) -> list[str]:
+    tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    errors: list[str] = []
+    for table, expected_columns in REQUIRED_COLUMNS.items():
+        if table not in tables:
+            errors.append(f"missing table {table}")
+            continue
+        columns = {
+            str(row[1])
+            for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+        }
+        missing = [column for column in expected_columns if column not in columns]
+        if missing:
+            errors.append(f"missing columns {table}: {', '.join(missing)}")
+    return errors
+
+
 def verify_backup(path: Path) -> dict:
     connection = sqlite3.connect(path)
     try:
@@ -61,9 +105,13 @@ def verify_backup(path: Path) -> dict:
         foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
         if foreign_key_errors:
             raise RuntimeError(f"foreign_key_check failed: {foreign_key_errors}")
+        errors = schema_errors(connection)
+        if errors:
+            raise RuntimeError(f"queue schema check failed: {errors}")
         return {
             "integrityCheck": "ok",
             "foreignKeyCheck": "ok",
+            "schemaCheck": "ok",
             "tables": table_counts(connection),
         }
     finally:
@@ -115,6 +163,9 @@ def write_metrics_file(path: Path, summary: dict) -> str:
         '# HELP qc_backup_integrity_ok Whether the last backup passed integrity checks.',
         '# TYPE qc_backup_integrity_ok gauge',
         'qc_backup_integrity_ok 1',
+        '# HELP qc_backup_schema_ok Whether the last backup contains the required queue schema.',
+        '# TYPE qc_backup_schema_ok gauge',
+        'qc_backup_schema_ok 1',
         '# HELP qc_backup_table_rows Rows copied per key table.',
         '# TYPE qc_backup_table_rows gauge',
     ]
@@ -171,6 +222,7 @@ def create_backup(source: Path, output_dir: Path, keep: int, metrics_file: Path 
         "sizeBytes": target.stat().st_size,
         "integrityCheck": verification["integrityCheck"],
         "foreignKeyCheck": verification["foreignKeyCheck"],
+        "schemaCheck": verification["schemaCheck"],
         "tables": verification["tables"],
         "retained": retained,
         "removed": removed,

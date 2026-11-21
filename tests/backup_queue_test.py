@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -70,10 +71,78 @@ def create_source(path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA wal_autocheckpoint = 0")
     connection.executescript(
         """
-        CREATE TABLE queue (id TEXT PRIMARY KEY, status TEXT NOT NULL, body_json TEXT NOT NULL);
-        CREATE TABLE dead_letters (queue_id TEXT PRIMARY KEY, error_code TEXT NOT NULL);
-        CREATE TABLE dedup (kind TEXT NOT NULL, dedup_key TEXT NOT NULL, PRIMARY KEY(kind, dedup_key));
-        CREATE TABLE metrics (name TEXT NOT NULL, value INTEGER NOT NULL);
+        CREATE TABLE queue (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            type TEXT NOT NULL DEFAULT '',
+            correlation_id TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            body_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_at INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            sent_at INTEGER,
+            last_status TEXT NOT NULL DEFAULT '',
+            last_error_code TEXT NOT NULL DEFAULT '',
+            enqueued_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE dead_letters (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_id TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT '',
+            correlation_id TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            body_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_at INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT '',
+            sent_at INTEGER,
+            last_status TEXT NOT NULL DEFAULT '',
+            last_error_code TEXT NOT NULL DEFAULT '',
+            error_code TEXT NOT NULL,
+            failed_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE dedup (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            dedup_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(kind, dedup_key)
+        );
+        CREATE TABLE ua_writebacks (
+            queue_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            receipt TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_at INTEGER NOT NULL DEFAULT 0,
+            started_at INTEGER,
+            last_error_code TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE ua_write_targets (
+            queue_id TEXT NOT NULL,
+            target TEXT NOT NULL,
+            expected_value TEXT NOT NULL DEFAULT '',
+            confirmed INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(queue_id, target)
+        );
+        CREATE TABLE meta (
+            meta_key TEXT PRIMARY KEY,
+            meta_value TEXT NOT NULL
+        );
+        CREATE TABLE metrics (
+            name TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT '',
+            error_code TEXT NOT NULL DEFAULT '',
+            value INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(name, type, outcome, error_code)
+        );
         """
     )
     connection.executemany(
@@ -117,6 +186,7 @@ def main() -> int:
             check("backup file exists", backup_path.is_file(), str(backup_path))
             check("backup reports integrity_check=ok", summary.get("integrityCheck") == "ok")
             check("backup reports empty foreign_key_check", summary.get("foreignKeyCheck") == "ok")
+            check("backup reports schema_check=ok", summary.get("schemaCheck") == "ok")
             check("backup includes committed WAL rows", backup_path.is_file() and
                   db_counts(backup_path) == expected_counts,
                   f"({db_counts(backup_path) if backup_path.is_file() else {}})")
@@ -132,6 +202,7 @@ def main() -> int:
                   "qc_backup_last_success_timestamp_seconds " in metrics_text)
             check("backup metrics expose integrity and row counts",
                   "qc_backup_integrity_ok 1" in metrics_text and
+                  "qc_backup_schema_ok 1" in metrics_text and
                   'qc_backup_table_rows{table="queue"} 3' in metrics_text)
 
             latest = summary
@@ -153,6 +224,28 @@ def main() -> int:
         check("missing source fails", completed.returncode != 0)
         check("missing source returns machine-readable error",
               summary.get("ok") is False and "does not exist" in str(summary.get("error")))
+
+        empty_source = root / "empty.sqlite"
+        empty_connection = sqlite3.connect(empty_source)
+        empty_connection.close()
+        completed, summary = run_backup(empty_source, root / "empty-backups")
+        check("schema-less SQLite source is rejected",
+              completed.returncode != 0 and "queue schema check failed" in str(summary.get("error")),
+              str(summary.get("error") or ""))
+        check("rejected schema backup leaves no backup file",
+              not any((root / "empty-backups").glob("qc-queue-*.sqlite")))
+
+        partial_source = root / "partial.sqlite"
+        shutil.copy2(backup_path, partial_source)
+        partial_connection = sqlite3.connect(partial_source)
+        partial_connection.execute("ALTER TABLE metrics DROP COLUMN updated_at")
+        partial_connection.commit()
+        partial_connection.close()
+        completed, summary = run_backup(partial_source, root / "partial-backups")
+        check("backup missing a required column is rejected",
+              completed.returncode != 0 and
+              "missing columns metrics: updated_at" in str(summary.get("error")),
+              str(summary.get("error") or ""))
 
         live_source = os.getenv("QC_DB_PATH")
         if live_source and Path(live_source).is_file():
