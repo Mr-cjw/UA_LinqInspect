@@ -16,7 +16,7 @@ Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调
 |---|---|---|
 | 质检数据源 | 虚拟 AI 质检循环 | 产生 OK/NG、缺陷类型、置信度、SN、图片 ID |
 | OPC UA Server | `server/qc_server.py`（asyncua） | QCStation 信息模型、工单状态机、Method、Event、审计与权限 |
-| 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读；管理员可调 Method 和写 MES 回执变量，工单控制变量只读 |
+| 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读；管理员可调 Method；工单控制与 MES 回执变量均外部只读，由服务端受控写入 |
 | 边缘网关 | Node-RED + `node-red-contrib-opcua` + SQLite | 订阅事件、事务去重/入队、单飞行发送、退避重试、死信、MES 调用、指标、健康探针与在线备份 |
 | 模拟 MES | Node-RED `http in` 节点 | 模拟 NG 开单、完工报工、回执与故障注入 |
 | 硬件扩展 | `hardware/` | 可选的树莓派 5 + open62541 + STM32 现场节点方案 |
@@ -69,7 +69,7 @@ OPC UA Server 默认把工位控制状态写到 `data/qc-state.json`；可用 `Q
 
 Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目录缺失/无效时
 会直接拒绝启动，不会回退到 `NoSecurity`。匿名客户端只能读；只有
-`UA_ADMIN_USER` / `UA_ADMIN_PASS` 对应的会话可以 Write 和调用 Method。若未配置
+`UA_ADMIN_USER` / `UA_ADMIN_PASS` 对应的会话可以调用 Method，但 QCStation 业务变量全部只读。若未配置
 管理员账号，Server 仍可启动，但所有客户端都只能只读。
 
 完整的证书生成、Server 启动参数、Node-RED 启动命令和测试步骤见下文
@@ -170,13 +170,13 @@ UA_LinqInspect/
 
 - **命名空间**：`ns=2`，NamespaceUri `urn:fde:linqinspect:qc`
 - **NodeId 风格**：全部 `ns=2;s=<可读名>`（如 `ns=2;s=QCStation.Inspection.NgRate`）
-- **模型骨架**：QCStation（工位）→ Inspection / Statistics / Events；22 变量（含 **CurrentPartSN 单件追溯**、拆分后的 MES 回执变量和 outbox 积压状态）、6 Method（StartInspection / CompleteWorkOrder / AcknowledgeEvent / ExportPendingEvents / PurgeOutbox / ResetCounters）、3 Event（均携带 SerialNumber）
+- **模型骨架**：QCStation（工位）→ Inspection / Statistics / Events；22 变量（含 **CurrentPartSN 单件追溯**、拆分后的 MES 回执变量和 outbox 积压状态）、7 Method（StartInspection / CompleteWorkOrder / RecordMesReceipt / AcknowledgeEvent / ExportPendingEvents / PurgeOutbox / ResetCounters）、3 Event（均携带 SerialNumber）
 - **可选扩展**（Phase0 §6）：M4 计划将 DeviceStatus 升级为 `QCDeviceStatus` 真枚举（Part 3 §8.42）；进阶讨论 OPC UA for Control + MQTT for Streaming 协同
 - **编码硬约束**（详见 Phase0 文档 §2.6）：
   - 自定义 Event 必须继承 `BaseEventType`
   - 服务端口不硬编码，经 `UA_ENDPOINT_PORT` 环境变量配置（默认 4840）
   - Method 先校验前置条件（工单一致性、设备状态），拒绝时返回原因
-  - 只读变量（`LastResult`/`LastDefectType`/`LastConfidence`/`LastImageId`/`LastTimestamp`、`NgRate`、统计项）不提供 Write 能力；三个 MES 回执变量为 ReadWrite
+  - QCStation 业务变量全部只读；`DeviceStatus`、工单号、SN 和三个 MES 回执变量由服务端 Method 或检测入口更新，客户端不能直接 Write
 - **交互范式**：只用 OPC UA 的 Variable 读写 / Method 调用 / Event 订阅；模拟 MES 用 Node-RED `http in` 假扮，仅是仿真道具
 - **关联追踪**：每次检测/完工生成 `corr-<uuid4>`，经 UA 事件、Node-RED 队列、MES 请求与回执全链路透传
 - **失败分类**：4xx 立即死信、429 按 `Retry-After` 退避、5xx/timeout 指数退避、非法 2xx 拒绝写回
@@ -274,8 +274,9 @@ QC_INSPECT_INTERVAL=1.0 \
 
 `QC_AUTO_INSPECT=0` 可关闭内置虚拟质检（后续接真实 YOLOv8 时使用）。
 Server 只启用 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目录缺失/无效时会
-拒绝启动，不会回退到 `NoSecurity`。`UA_ADMIN_USER` / `UA_ADMIN_PASS` 是唯一可写
-身份，匿名客户端即使携带受信任证书也只能只读。
+拒绝启动，不会回退到 `NoSecurity`。`UA_ADMIN_USER` / `UA_ADMIN_PASS` 是唯一可调用
+Method 的身份；匿名客户端即使携带受信任证书也只能只读，管理员也不能绕过 Method
+直接改写业务变量。
 
 ### 4. 启动 Node-RED
 

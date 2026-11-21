@@ -434,10 +434,10 @@ class QCStation:
         self.nd["work_order"] = await _ro(await root.add_variable(nid("QCStation.CurrentWorkOrderId"), "2:CurrentWorkOrderId", self.work_order_id))
         # Part Traceability：外部只读，服务端检测入口负责更新，避免绕过单件追溯状态。
         self.nd["part_sn"] = await _ro(await root.add_variable(nid("QCStation.CurrentPartSN"), "2:CurrentPartSN", self.current_part_sn))
-        # MES 回执落地：按业务语义拆分；LastMesOrderNo 仅作为最近回执的兼容镜像
-        self.nd["mes_order"] = await _rw(await root.add_variable(nid("QCStation.LastMesOrderNo"), "2:LastMesOrderNo", ""))
-        self.nd["ng_mes_order"] = await _rw(await root.add_variable(nid("QCStation.LastNgMesOrderNo"), "2:LastNgMesOrderNo", ""))
-        self.nd["completion_receipt"] = await _rw(await root.add_variable(nid("QCStation.LastCompletionReceiptNo"), "2:LastCompletionReceiptNo", ""))
+        # MES 回执落地：外部只读，仅 RecordMesReceipt Method 可更新。
+        self.nd["mes_order"] = await _ro(await root.add_variable(nid("QCStation.LastMesOrderNo"), "2:LastMesOrderNo", ""))
+        self.nd["ng_mes_order"] = await _ro(await root.add_variable(nid("QCStation.LastNgMesOrderNo"), "2:LastNgMesOrderNo", ""))
+        self.nd["completion_receipt"] = await _ro(await root.add_variable(nid("QCStation.LastCompletionReceiptNo"), "2:LastCompletionReceiptNo", ""))
 
         self.nd["last_result"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastResult"), "2:LastResult", self.last_result))
         self.nd["last_defect"] = await _ro(await insp.add_variable(nid("QCStation.Inspection.LastDefectType"), "2:LastDefectType", self.last_defect))
@@ -508,6 +508,9 @@ class QCStation:
                               [ua.VariantType.Boolean, ua.VariantType.String])
         await root.add_method(nid("QCStation.CompleteWorkOrder"), "2:CompleteWorkOrder", self._complete_work_order,
                               [ua.VariantType.String],
+                              [ua.VariantType.Boolean, ua.VariantType.String])
+        await root.add_method(nid("QCStation.RecordMesReceipt"), "2:RecordMesReceipt", self._record_mes_receipt,
+                              [ua.VariantType.String, ua.VariantType.String, ua.VariantType.String, ua.VariantType.String],
                               [ua.VariantType.Boolean, ua.VariantType.String])
         await root.add_method(nid("QCStation.AcknowledgeEvent"), "2:AcknowledgeEvent", self._acknowledge_event,
                               [ua.VariantType.String],
@@ -794,6 +797,61 @@ class QCStation:
         self.work_order_id = ""
         self.target_count = 0
         _log.info("CompleteWorkOrder: %s corr=%s", summary, correlation_id)
+        return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(summary, ua.VariantType.String)]
+
+    async def _record_mes_receipt(self, parent, receipt_type, receipt_no, work_order_id, correlation_id):
+        audit_args = {
+            "receiptType": _val(receipt_type),
+            "receiptNo": _val(receipt_no),
+            "workOrderId": _val(work_order_id),
+            "correlationId": _val(correlation_id),
+        }
+        try:
+            async with self._lock:
+                result = await self._record_mes_receipt_impl(
+                    receipt_type, receipt_no, work_order_id, correlation_id
+                )
+        except Exception as exc:
+            _audit_method_call("RecordMesReceipt", audit_args, f"error: {type(exc).__name__}: {exc}")
+            raise
+        _audit_method_call("RecordMesReceipt", audit_args, result)
+        return result
+
+    async def _record_mes_receipt_impl(self, receipt_type, receipt_no, work_order_id, correlation_id):
+        kind = str(_val(receipt_type) or "").strip().lower()
+        receipt = str(_val(receipt_no) or "").strip()
+        work_order = str(_val(work_order_id) or "").strip()
+        correlation = str(_val(correlation_id) or "").strip()
+        if kind not in ("ng", "complete"):
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: receiptType must be ng or complete", ua.VariantType.String)]
+        if not receipt:
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: empty receiptNo", ua.VariantType.String)]
+        if len(receipt) > 128:
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: receiptNo too long", ua.VariantType.String)]
+        if not work_order:
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: empty workOrderId", ua.VariantType.String)]
+        if not correlation:
+            return [ua.Variant(False, ua.VariantType.Boolean), ua.Variant("rejected: empty correlationId", ua.VariantType.String)]
+
+        specific_key = "ng_mes_order" if kind == "ng" else "completion_receipt"
+        specific_label = "LastNgMesOrderNo" if kind == "ng" else "LastCompletionReceiptNo"
+        await self.nd[specific_key].write_value(receipt)
+        await self.nd["mes_order"].write_value(receipt)
+
+        # Server-side readback keeps the Method contract honest: Node-RED only
+        # confirms the durable queue item after both variables are actually visible.
+        specific_value = str(await self.nd[specific_key].read_value() or "")
+        mirror_value = str(await self.nd["mes_order"].read_value() or "")
+        if specific_value != receipt or mirror_value != receipt:
+            raise RuntimeError(
+                f"receipt readback mismatch: {specific_label}={specific_value!r} "
+                f"LastMesOrderNo={mirror_value!r} expected={receipt!r}"
+            )
+        _log.info(
+            "RecordMesReceipt: type=%s receipt=%s workOrder=%s corr=%s",
+            kind, receipt, work_order, correlation,
+        )
+        summary = f"recorded {kind} receipt {receipt} for {work_order}"
         return [ua.Variant(True, ua.VariantType.Boolean), ua.Variant(summary, ua.VariantType.String)]
 
     async def _acknowledge_event(self, parent, event_id):

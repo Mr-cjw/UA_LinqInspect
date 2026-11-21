@@ -837,6 +837,23 @@ class SqliteQueueStore {
     });
   }
 
+  confirmUaWriteReceipt({ id, correlationId = '', now = Date.now() }) {
+    return this._transaction(() => {
+      const row = this._findInflight(id);
+      if (!row || (correlationId && row.correlation_id !== correlationId)) return null;
+      const writeback = this._uaWritebackRow(row.id);
+      if (!writeback || writeback.status !== UA_WRITE_SENDING) return null;
+      this.db.prepare(`
+        UPDATE ua_write_targets SET confirmed = 1, updated_at = ?
+        WHERE queue_id = ? AND confirmed = 0
+      `).run(now, row.id);
+      this._deleteUaWriteback(row.id);
+      this.db.prepare('DELETE FROM queue WHERE id = ?').run(row.id);
+      this._metricIncrement('ua_write_total', row.type, 'success', '', now);
+      return { outcome: 'complete', id: row.id, confirmed: 0 };
+    });
+  }
+
   failUaWrite({ id, correlationId = '', errorCode = 'UA_WRITE_FAILED', reason = '', now = Date.now() }) {
     return this._transaction(() => {
       const row = this._findInflight(id);

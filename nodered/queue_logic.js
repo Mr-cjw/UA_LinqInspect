@@ -35,23 +35,32 @@ function uaTargetsFor(item, receipt) {
 }
 
 function uaWriteMessages(item, targets) {
-  return (targets || []).map(entry => {
-    const topic = entry.topic || entry.target || '';
-    const value = entry.value == null ? entry.expectedValue : entry.value;
-    return {
-      topic,
-      action: 'write',
-      payload: String(value),
-      datatype: 'String',
-      _uaKind: 'write',
-      _qc: {
-        id: item.id,
-        type: item.type,
-        correlationId: item.correlationId || '',
-        uaTarget: topic,
-      },
-    };
-  });
+  const receipt = (targets || [])
+    .map(entry => entry.value == null ? entry.expectedValue : entry.value)
+    .find(value => value != null && String(value) !== '');
+  if (receipt == null) return [];
+  const methodId = 'ns=2;s=QCStation.RecordMesReceipt';
+  return [{
+    action: 'method',
+    _uaKind: 'write',
+    objectId: 'ns=2;s=QCStation',
+    methodId,
+    topic: methodId,
+    inputArguments: [
+      { dataType: 'String', value: String(item.type) },
+      { dataType: 'String', value: String(receipt) },
+      { dataType: 'String', value: String(item.body && item.body.workOrderId || '') },
+      { dataType: 'String', value: String(item.correlationId || '') },
+    ],
+    _qc: {
+      id: item.id,
+      type: item.type,
+      correlationId: item.correlationId || '',
+      uaTarget: 'RecordMesReceipt',
+      receiptMethod: true,
+      targets: targets || [],
+    },
+  }];
 }
 
 function pumpOutputs(result) {
@@ -589,6 +598,47 @@ function response(msg, flow, node, store) {
 function uaWriteSuccess(msg, flow, node, store) {
   const meta = msg._qc || {};
   if (!meta.id || !meta.uaTarget) return null;
+  if (meta.receiptMethod) {
+    const raw = msg.payload;
+    let outputs = null;
+    if (Array.isArray(raw)) outputs = raw;
+    else if (raw && Array.isArray(raw.OutputArguments)) outputs = raw.OutputArguments;
+    else if (raw && Array.isArray(raw.outputArguments)) outputs = raw.outputArguments;
+    else if (raw && Array.isArray(raw.value)) outputs = raw.value;
+    const accepted = outputs && outputs.length ? unwrapUaValue(outputs[0]) : null;
+    const summaryValue = outputs && outputs.length > 1 ? unwrapUaValue(outputs[1]) : '';
+    const summary = summaryValue == null ? '' : String(summaryValue);
+    if (accepted !== true) {
+      uaWriteFailure({
+        _qc: meta,
+        error: { message: summary || 'RECEIPT_METHOD_REJECTED' },
+      }, flow, node, store);
+      return null;
+    }
+    let receiptResult;
+    try {
+      receiptResult = store.confirmUaWriteReceipt({
+        id: meta.id,
+        correlationId: meta.correlationId || '',
+      });
+    } catch (error) {
+      node.error('[UA回执确认失败] ' + error.message);
+      return null;
+    }
+    if (!receiptResult || receiptResult.outcome !== 'complete') {
+      node.warn('[UA回执确认忽略] ' + meta.id);
+      return null;
+    }
+    flow.set('lastResponse', Object.assign({}, flow.get('lastResponse') || {}, {
+      status: 'SUCCESS',
+      uaWrite: 'confirmed',
+      at: timestamp(),
+    }));
+    node.warn('[UA写回完成][' + (meta.correlationId || '') + '] ' + meta.id +
+      ' RecordMesReceipt 已确认');
+    node.status({ fill: 'green', shape: 'dot', text: 'UA写回完成 ' + meta.id });
+    return null;
+  }
   let result;
   try {
     result = store.confirmUaWriteTarget({
@@ -946,6 +996,7 @@ module.exports = {
   pump,
   pumpOutputs,
   response,
+  uaWriteMessages,
   uaWriteSuccess,
   uaWriteFailure,
   status,

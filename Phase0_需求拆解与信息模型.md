@@ -62,12 +62,12 @@
 
 | NodeId | BrowseName | NodeClass | DataType | 读写权限 | 语义说明 |
 |---|---|---|---|---|---|
-| `...s=QCStation.DeviceStatus` | DeviceStatus | Variable | Int32 | ReadWrite | 数字枚举含义：**0=Idle（空闲）、1=Running（运行中）、2=Fault（故障）**。工程化做法是定义自定义 EnumDataType（Part 3 §8.42），教学期以 Int32 + 注释简化，后续可升级 |
-| `...s=QCStation.CurrentWorkOrderId` | CurrentWorkOrderId | Variable | String | ReadWrite | 当前工单号，Node-RED/MES 写入 |
-| `...s=QCStation.CurrentPartSN` | CurrentPartSN | Variable | String | ReadWrite | **单件序列号（Part Traceability）**：本次检测产品的唯一 SN，由数据源/Node-RED 写入，是跨系统质量追溯的基石（关联 imageId → SN → 工单） |
-| `...s=QCStation.LastMesOrderNo` | LastMesOrderNo | Variable | String | ReadWrite | **兼容镜像**：最近一次 MES 回执号，便于旧客户端继续读取；新逻辑不得依赖它区分开单与报工。绝不写回 CurrentWorkOrderId |
-| `...s=QCStation.LastNgMesOrderNo` | LastNgMesOrderNo | Variable | String | ReadWrite | **NG 开单回执落地**：最近一次 `mesOrderNo`（`MES-*`），与完工报工回执语义分离 |
-| `...s=QCStation.LastCompletionReceiptNo` | LastCompletionReceiptNo | Variable | String | ReadWrite | **完工报工回执落地**：最近一次 `receiptNo`（`RC-*`），不被后续 NG 开单覆盖 |
+| `...s=QCStation.DeviceStatus` | DeviceStatus | Variable | Int32 | ReadOnly | 数字枚举含义：**0=Idle（空闲）、1=Running（运行中）、2=Fault（故障）**。由 `StartInspection` / `CompleteWorkOrder` 更新。工程化做法是定义自定义 EnumDataType（Part 3 §8.42），教学期以 Int32 + 注释简化，后续可升级 |
+| `...s=QCStation.CurrentWorkOrderId` | CurrentWorkOrderId | Variable | String | ReadOnly | 当前工单号，由工单控制 Method 更新，客户端不可直接写 |
+| `...s=QCStation.CurrentPartSN` | CurrentPartSN | Variable | String | ReadOnly | **单件序列号（Part Traceability）**：本次检测产品的唯一 SN，由服务端检测入口写入，是跨系统质量追溯的基石（关联 imageId → SN → 工单） |
+| `...s=QCStation.LastMesOrderNo` | LastMesOrderNo | Variable | String | ReadOnly | **兼容镜像**：最近一次 MES 回执号，由 `RecordMesReceipt` 写入；新逻辑不得依赖它区分开单与报工。绝不写回 CurrentWorkOrderId |
+| `...s=QCStation.LastNgMesOrderNo` | LastNgMesOrderNo | Variable | String | ReadOnly | **NG 开单回执落地**：最近一次 `mesOrderNo`（`MES-*`），由 `RecordMesReceipt` 写入，与完工报工回执语义分离 |
+| `...s=QCStation.LastCompletionReceiptNo` | LastCompletionReceiptNo | Variable | String | ReadOnly | **完工报工回执落地**：最近一次 `receiptNo`（`RC-*`），由 `RecordMesReceipt` 写入，不被后续 NG 开单覆盖 |
 | `...s=QCStation.Inspection.LastResult` | LastResult | Variable | Boolean | ReadOnly | 最近一次判定：True=OK，False=NG |
 | `...s=QCStation.Inspection.LastDefectType` | LastDefectType | Variable | String | ReadOnly | 缺陷码（OK 时为空串），如 SCRATCH/DENT/STAIN |
 | `...s=QCStation.Inspection.LastConfidence` | LastConfidence | Variable | Double | ReadOnly | 置信度 0.0~1.0 |
@@ -84,9 +84,10 @@
 |---|---|---|---|---|---|
 | `...s=QCStation.StartInspection` | StartInspection | Method | workOrderId:String, targetCount:UInt32 | accepted:Boolean, summary:String | 开检：绑定工单号与目标数量，状态切 Running。**幂等/状态校验**：DeviceStatus=Running 且 CurrentWorkOrderId 与入参一致 → accepted=True 且 summary="already running"（幂等接受，状态不破坏）；工单不一致 → accepted=False 及原因（当前工单不被覆盖）；DeviceStatus=Fault → accepted=False 及原因 |
 | `...s=QCStation.CompleteWorkOrder` | CompleteWorkOrder | Method | workOrderId:String | accepted:Boolean, summary:String | 完工报工：**内部校验入参 workOrderId 与 CurrentWorkOrderId 一致性**，不一致返回 accepted=False；无活动工单（CurrentWorkOrderId 为空）或 DeviceStatus≠Running 时同样拒绝，summary 返回拒绝原因；成功时触发 WorkOrderCompleted 事件 |
+| `...s=QCStation.RecordMesReceipt` | RecordMesReceipt | Method | receiptType:String, receiptNo:String, workOrderId:String, correlationId:String | accepted:Boolean, summary:String | MES 回执单写者：`ng` 写 `LastNgMesOrderNo`，`complete` 写 `LastCompletionReceiptNo`，两者都更新 `LastMesOrderNo` 兼容镜像并读回确认；三个回执变量对外只读 |
 | `...s=QCStation.ResetCounters` | ResetCounters | Method | （无） | （无） | 班次清零 |
 
-> 2026-11-21 实现扩展：新增 `QCStation.AcknowledgeEvent(eventId:String)`，用于 Node-RED 在事件成功写入 SQLite 队列后确认服务端 outbox。它不改变原三个工单控制 Method 的契约。
+> 2026-11-21 实现扩展：新增 `QCStation.AcknowledgeEvent(eventId:String)`，用于 Node-RED 在事件成功写入 SQLite 队列后确认服务端 outbox；新增 `QCStation.RecordMesReceipt(...)`，作为三个 MES 回执变量的唯一外部写入入口。它们不改变原工单控制 Method 的契约。
 
 ### 2.4 Event 清单（IEC 62541 Part 5 §6.4，事件字段继承 BaseEventType 的 Message/Timestamp/SourceNode/SourceName/Severity）
 
@@ -105,7 +106,7 @@
 | 下发/绑定工单 | 调用 `StartInspection` Method | MES侧(Node-RED) → UA Server |
 | 读取实时判定 | 订阅 Inspection 变量 / 事件 | Node-RED ← UA Server |
 | NG 工单生成 | Node-RED 订阅 NgDetectedEvent 后 POST 模拟MES | Node-RED → 模拟MES |
-| 完工报工 | 调用 `CompleteWorkOrder`，模拟MES 回执后 Node-RED 将 `receiptNo` 写入 `LastCompletionReceiptNo`，并同步 `LastMesOrderNo` 兼容镜像（**不覆盖** `CurrentWorkOrderId`） | 双向闭环 |
+| 完工报工 | 调用 `CompleteWorkOrder`，模拟MES 回执后 Node-RED 调用 `RecordMesReceipt`，由服务端将 `receiptNo` 写入 `LastCompletionReceiptNo` 并同步 `LastMesOrderNo` 兼容镜像（**不覆盖** `CurrentWorkOrderId`） | 双向闭环 |
 
 ### 2.6 编码硬约束（全体成员遵守，评审依据）
 
@@ -135,7 +136,7 @@
 | 里程碑 | 交付物 | 前置依赖 | 责任成员 | 验收标准 |
 |---|---|---|---|---|
 | **M1** 业务口径 + UA Server 骨架（并行） | ① MES 消费契约表 ② asyncua Server 可运行代码 + requirements.txt | Phase 0 信息模型初稿（本文件） | 郝讲明 ＋ 苏跑通 | UaExpert 连上服务端口能读到全部变量、订阅到事件；**契约表必须含缺陷码枚举集合、NgRate 滑动窗口规则（含空窗口保护）、MES 调用契约细节三项，缺一不验收** |
-| **M2** Node-RED 流 + 模拟 MES | 可导入 flows.json（带状态的边缘节点，非透传管道）：事件解析/陈旧过滤 → 报警削峰 → 去重 → **缓冲队列状态机**（PENDING→SENDING→SUCCESS/FAILED，单飞行）→ 3次指数退避1s/2s/4s → 死信 → 按类型写回 `LastNgMesOrderNo` / `LastCompletionReceiptNo`，并同步兼容镜像；模拟MES 含故障注入（ok/5xx/timeout）+ 侧防重 | M1 确认后的节点名与事件字段 | 连得通 | **场景①~③自动化验证；④服务端拒绝自动化、流级日志人工验收**：①正常 NG 流（回执写回 `LastNgMesOrderNo`）②MES 超时流（3 次退避后成功）③MES 5xx 流（转 FAILED 死信 + 红灯）④UA Method 拒绝流（原因打印且阻断报工）；报文与 M1 契约 §3.1 字段完全一致，occurredAt 为 ISO8601 UTC；报工仅由 WorkOrderCompletedEvent 驱动 |
+| **M2** Node-RED 流 + 模拟 MES | 可导入 flows.json（带状态的边缘节点，非透传管道）：事件解析/陈旧过滤 → 报警削峰 → 去重 → **缓冲队列状态机**（PENDING→SENDING→SUCCESS/FAILED，单飞行）→ 3次指数退避1s/2s/4s → 死信 → 调用 `RecordMesReceipt` 写回分类回执与兼容镜像；模拟MES 含故障注入（ok/5xx/timeout）+ 侧防重 | M1 确认后的节点名与事件字段 | 连得通 | **场景①~③自动化验证；④服务端拒绝自动化、流级日志人工验收**：①正常 NG 流（Method 写回 `LastNgMesOrderNo`）②MES 超时流（3 次退避后成功）③MES 5xx 流（转 FAILED 死信 + 红灯）④UA Method 拒绝流（原因打印且阻断报工）；报文与 M1 契约 §3.1 字段完全一致，occurredAt 为 ISO8601 UTC；报工仅由 WorkOrderCompletedEvent 驱动 |
 | **M3** 测试验证 + 评审 | 测试用例集 + 抓包要点 + 评审意见 | M2 完整链路 | 查分明 | 连通性/异常状态码/负面用例（RO 写入、错误工单、Idle 完工、**重复开检幂等**）全部有结论；**断网重连拆两子场景验收**：① 短时断网——ActivateSession 原会话恢复、订阅不重建即续推；② 长时断网/Server 重启——检测订阅失效并主动重建、不误处理 overflow 陈旧事件（transferSubscriptions 为进阶项）；**抓包重点：CreateMonitoredItems 与 Publish 请求-响应流（Part 4 §5.12~5.13）** |
 | **M4** 汇编交付包 | 交付包五件套 + FDE 简历话术 | M1~M3 | 主理人 | 文档齐备、链路可复现、简历话术含量化结果与追问预判 |
 | （后置）M5 硬件扩展 | open62541 裁剪配置、移植文档 | 用户明确提出 | 崔裁峰 | 默认不启动 |

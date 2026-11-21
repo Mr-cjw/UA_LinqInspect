@@ -39,7 +39,7 @@ UA_ENDPOINT_PORT=4840 .venv/bin/python tests/fault_scenarios.py
 
 | 测试 | 结果 | 覆盖重点 |
 |---|---|---|
-| M1 冒烟 | **36/36 PASS** | 信息模型、22 变量（含 outbox 状态）、6 Method、3 Event、RO/RW 权限、SN 追溯、关联 ID、幂等开检、完工校验 |
+| M1 冒烟 | **36/36 PASS** | 信息模型、22 变量（含 outbox 状态）、7 Method、3 Event、业务变量全 RO、回执 Method 单写、SN 追溯、关联 ID、幂等开检、完工校验 |
 | M2 端到端 | **15/15 PASS** | NG 事件 → MES 开单 → UA 双回执；完工报工 → UA 双回执；关联 ID 贯通；工单号不被覆盖 |
 | 故障场景 | **52/52 PASS** | 5xx、timeout、4xx、429、非法 2xx、Method 服务端拒绝、状态接口可观察、恢复 MES 后链路可用 |
 | 重启恢复 | **18/18 PASS** | 非空队列 context 恢复、NG/完工回执续写、无新增死信 |

@@ -48,7 +48,7 @@
 
 `correlationId` 由 UA Server 在每次检测/完工时生成（`corr-<uuid4>`）。一次 NG 检测的 `InspectionFinishedEvent` 与 `NgDetectedEvent` 共用同一个 ID；`WorkOrderCompletedEvent` 使用独立 ID。Node-RED 原样透传到 MES，并在 `/qc/status` 的 `lastRequest`、`lastRequestByType`、`lastResponse` 中暴露，用于把 UA 事件、HTTP 请求、MES 回执和死信串成一条可追溯链。
 
-**回执写回目标（M2 红线 4 修订）**：回执按业务语义拆分，NG 开单的 `mesOrderNo` 写入 **`LastNgMesOrderNo`**，完工报工的 `receiptNo` 写入 **`LastCompletionReceiptNo`**；两者同时写 **`LastMesOrderNo`** 作为最近回执的兼容镜像。原设计"写回 CurrentWorkOrderId"会覆盖派工单号、破坏工单状态机——派工单号（我方经 StartInspection 下发）与 MES 回执号（对方受理凭证）语义分离，禁止混写。
+**回执写回目标（M2 红线 4 修订）**：回执按业务语义拆分，Node-RED 只能调用 **`RecordMesReceipt(receiptType, receiptNo, workOrderId, correlationId)`**。NG 开单的 `mesOrderNo` 由 Method 写入 **`LastNgMesOrderNo`**，完工报工的 `receiptNo` 写入 **`LastCompletionReceiptNo`**；两者同时写 **`LastMesOrderNo`** 作为最近回执的兼容镜像。三个回执变量对外只读，直接 Write 会被拒绝。原设计"写回 CurrentWorkOrderId"会覆盖派工单号、破坏工单状态机——派工单号（我方经 StartInspection 下发）与 MES 回执号（对方受理凭证）语义分离，禁止混写。
 
 ### 3.2 时序约定
 
@@ -59,14 +59,16 @@ UA Server                    Node-RED                     模拟MES
    │                            │ body/header: corr-X        │
    │                            │───────────────────────────>│ 校验 schema + corr-X
    │                            │<───────────────────────────│ 回执 mesOrderNo + corr-X
-   │ 写 LastNgMesOrderNo + 镜像   │                            │
+   │ RecordMesReceipt("ng")       │                            │
+   │ → LastNgMesOrderNo + 镜像    │                            │
    │<───────────────────────────│                            │
    │ WorkOrderCompleted(corr-Y) │                            │
    │──────────────────────────>│ POST /mes/complete         │
    │                            │ body/header: corr-Y        │
    │                            │───────────────────────────>│ 校验 schema + corr-Y
    │                            │<───────────────────────────│ 回执 receiptNo + corr-Y
-   │<───────────────────────────│ 写 LastCompletionReceiptNo  │
+   │<───────────────────────────│ RecordMesReceipt("complete")│
+   │                             │ → LastCompletionReceiptNo  │
 ```
 
 ### 3.3 错误处理约定

@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-003658/summary.json` ｜ 当前结果：496/496 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-005716/summary.json` ｜ 当前结果：496/496 PASS
 
 ## 1. 阶段目标
 
@@ -80,7 +80,7 @@ sudo systemctl enable --now ua-linqinspect-backup.timer
 至少替换环境文件中的 `UA_ADMIN_PASS`、`NODERED_*_PASSWORD`、
 `NODERED_CREDENTIAL_SECRET`、证书路径、私钥路径、数据库路径和备份目录。
 `UA_ADMIN_USER/PASS` 必须与 `NODERED_OPCUA_USER/PASSWORD` 一致，否则 Node-RED
-无法以管理员身份订阅事件和写回执。安全初始化脚本会按环境变量生成
+无法以管理员身份订阅事件和调用 `RecordMesReceipt`。安全初始化脚本会按环境变量生成
 `.node-red/settings.js`、加密的 `flows_cred.json` 和本地 `.secure-env`。
 
 `EnvironmentFile` 在 unit 中标记为可选，缺失时进程可能启动但配置不完整；部署检查不应把“能启动”当作“配置正确”。
@@ -308,7 +308,7 @@ Phase 2C 新增专项：
 ```
 
 2026-11-21 综合回归共 29 个测试模块、**496/496 PASS**，摘要为
-`.tmp/regression-20261121-003658/summary.json`。单独运行备份测试且没有活跃
+`.tmp/regression-20261121-005716/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

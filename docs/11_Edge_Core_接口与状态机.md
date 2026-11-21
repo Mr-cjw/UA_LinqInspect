@@ -106,7 +106,7 @@ PENDING ──claimed──> SENDING ──valid receipt──> ACKED
 
 ### 4.2 关键不变量
 
-1. MES 回执验证通过前不得写 UA 回执变量。
+1. MES 回执验证通过前不得调用 `RecordMesReceipt` 写 UA 回执变量。
 2. UA 写回成功前不得将任务标记为 `DONE`。
 3. 发送中的任务必须有租约；租约过期后才能被恢复线程重新取得。
 4. 同一幂等键最多存在一个业务任务。

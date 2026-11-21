@@ -67,15 +67,36 @@ async def main() -> int:
     admin = await create_secure_client(admin=True)
     async with admin:
         idx, root = await station_nodes(admin)
-        receipt = await root.get_child([f"{idx}:LastMesOrderNo"])
-        previous = str(await receipt.read_value() or "")
-        marker = "SECURITY-ADMIN-WRITE"
-        await receipt.write_value(marker)
-        check("admin write is accepted", str(await receipt.read_value() or "") == marker)
-        await receipt.write_value(previous)
+        receipt_names = ("LastMesOrderNo", "LastNgMesOrderNo", "LastCompletionReceiptNo")
+        direct_writes = []
+        for name in receipt_names:
+            receipt = await root.get_child([f"{idx}:{name}"])
+            original = str(await receipt.read_value() or "")
+            try:
+                await receipt.write_value("SECURITY-RECEIPT-BYPASS")
+                direct_writes.append((name, False, False))
+            except Exception:
+                direct_writes.append((name, True, str(await receipt.read_value() or "") == original))
+        check("admin direct writes to receipt variables are rejected without mutation",
+              all(rejected and preserved for _, rejected, preserved in direct_writes),
+              f"({direct_writes})")
 
-        await root.call_method(f"{idx}:ResetCounters")
-        check("admin Method call is accepted", True)
+        original_wo = str(await (await root.get_child([f"{idx}:CurrentWorkOrderId"])).read_value() or "")
+        ng_result = await root.call_method(
+            f"{idx}:RecordMesReceipt", "ng", "MES-SECURITY-0001", original_wo or "WO-SECURITY", "corr-security-ng"
+        )
+        completion_result = await root.call_method(
+            f"{idx}:RecordMesReceipt", "complete", "RC-SECURITY-0001", original_wo or "WO-SECURITY", "corr-security-rc"
+        )
+        last_mes = str(await (await root.get_child([f"{idx}:LastMesOrderNo"])).read_value() or "")
+        last_ng = str(await (await root.get_child([f"{idx}:LastNgMesOrderNo"])).read_value() or "")
+        last_rc = str(await (await root.get_child([f"{idx}:LastCompletionReceiptNo"])).read_value() or "")
+        wo_after = str(await (await root.get_child([f"{idx}:CurrentWorkOrderId"])).read_value() or "")
+        check("admin RecordMesReceipt updates readonly variables without changing work order",
+              ng_result[0] is True and completion_result[0] is True and
+              last_ng == "MES-SECURITY-0001" and last_rc == "RC-SECURITY-0001" and
+              last_mes == "RC-SECURITY-0001" and wo_after == original_wo,
+              f"(ng={last_ng}, rc={last_rc}, mirror={last_mes}, wo={wo_after})")
 
     admin = await create_secure_client(admin=True)
     async with admin:

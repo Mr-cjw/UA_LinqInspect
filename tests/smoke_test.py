@@ -149,21 +149,33 @@ async def main():
         check("InspectionFinishedEvent carries CorrelationId", insp_corr.startswith("corr-"), f"({insp_corr})")
         check("NgDetectedEvent carries CorrelationId", ng_corr.startswith("corr-"), f"({ng_corr})")
 
-        # MES 回执变量：语义拆分后三个变量都存在且可写
+        # MES 回执变量：外部只读，必须经 RecordMesReceipt Method 写入
         mes_node = await root.get_child([f"{idx}:LastMesOrderNo"])
         ng_mes_node = await root.get_child([f"{idx}:LastNgMesOrderNo"])
         completion_rc_node = await root.get_child([f"{idx}:LastCompletionReceiptNo"])
-        await mes_node.write_value("MES-20261109-0001")
-        await ng_mes_node.write_value("MES-20261109-0002")
-        await completion_rc_node.write_value("RC-20261109-0003")
+        try:
+            await mes_node.write_value("MES-FORGED")
+            check("receipt variable direct write is rejected", False, "(no exception raised)")
+        except Exception as exc:
+            check("receipt variable direct write is rejected", True, f"({type(exc).__name__})")
+        ng_receipt = await root.call_method(
+            f"{idx}:RecordMesReceipt", "ng", "MES-20261109-0001", WO, "corr-smoke-ng"
+        )
         mes_val = await mes_node.read_value()
-        check("LastMesOrderNo writable and readable", mes_val == "MES-20261109-0001", f"({mes_val})")
-        check("LastNgMesOrderNo writable and readable",
-              await ng_mes_node.read_value() == "MES-20261109-0002")
-        check("LastCompletionReceiptNo writable and readable",
-              await completion_rc_node.read_value() == "RC-20261109-0003")
+        ng_mes_val = await ng_mes_node.read_value()
+        check("RecordMesReceipt updates NG receipt and mirror",
+              ng_receipt[0] is True and ng_mes_val == "MES-20261109-0001" and mes_val == "MES-20261109-0001",
+              f"(ng={ng_mes_val}, mirror={mes_val})")
+        completion_receipt = await root.call_method(
+            f"{idx}:RecordMesReceipt", "complete", "RC-20261109-0003", WO, "corr-smoke-rc"
+        )
+        completion_val = await completion_rc_node.read_value()
+        mes_val = await mes_node.read_value()
+        check("RecordMesReceipt updates completion receipt and mirror",
+              completion_receipt[0] is True and completion_val == "RC-20261109-0003" and mes_val == "RC-20261109-0003",
+              f"(rc={completion_val}, mirror={mes_val})")
         wo_now = await (await root.get_child([f"{idx}:CurrentWorkOrderId"])).read_value()
-        check("receipt var does not clobber CurrentWorkOrderId", wo_now == WO, f"(got {wo_now})")
+        check("receipt Method does not clobber CurrentWorkOrderId", wo_now == WO, f"(got {wo_now})")
 
         # N3) 负面用例：向 ReadOnly 变量写入必须被拒（硬约束 5）
         ro_node = await insp.get_child([f"{idx}:LastResult"])

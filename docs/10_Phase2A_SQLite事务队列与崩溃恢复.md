@@ -53,7 +53,7 @@ Node-RED flow context 只保留 `mesMode`、最近请求/响应等运行态信�
 | `status` | `PENDING` / `SENDING` |
 | `sent_at` | 进入在途状态的时间，用于 15 秒看门狗 |
 
-`id` 为唯一约束，队列上限 100；溢出时优先丢弃最旧的 `PENDING` 项，与旧行为一致。
+`id` 为唯一约束，队列上限 100；队列满时拒绝新任务并保留全部现有任务，UA outbox 事件不 ACK，等待队列排空后重放。
 
 MES 成功回执不会立即删除 `queue` 行。任务保持 `SENDING`，并在独立的 UA 写回表中推进；
 这样可以避免“MES 已受理，但回执变量尚未写成功时进程崩溃”造成业务状态丢失。
@@ -79,6 +79,8 @@ MES 成功回执不会立即删除 `queue` 行。任务保持 `SENDING`，并在
 `ua_write_targets` 保存本次需要写入的每个 OPC UA 目标和预期值。NG 需要确认
 `LastNgMesOrderNo` 与兼容镜像 `LastMesOrderNo`，完工需要确认
 `LastCompletionReceiptNo` 与 `LastMesOrderNo`。
+
+Node-RED 不再逐变量直接 Write，而是调用一次 `RecordMesReceipt`。服务端完成具体回执变量和兼容镜像的写入与读回确认后，Node-RED 才在 SQLite 中将全部目标标记为已确认。
 
 写回策略：
 

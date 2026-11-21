@@ -223,6 +223,28 @@ check('capacity rejection keeps the event unacknowledged for UA replay', () => {
   assert.equal(duplicate.action, 'method');
   assert.equal(duplicate.methodId, 'ns=2;s=QCStation.AcknowledgeEvent');
   assert.equal(duplicate.inputArguments[0].value, 'evt-capacity');
+
+  const messages = qlogic.uaWriteMessages(
+    {
+      id: 'ng|SN-CAPACITY|2026-11-21T00:00:00.000Z',
+      type: 'ng',
+      correlationId: 'corr-capacity',
+      body: { workOrderId: 'WO-CAPACITY' },
+    },
+    [
+      { topic: 'ns=2;s=QCStation.LastNgMesOrderNo', value: 'MES-CAPACITY-0001' },
+      { topic: 'ns=2;s=QCStation.LastMesOrderNo', value: 'MES-CAPACITY-0001' },
+    ],
+  );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].action, 'method');
+  assert.equal(messages[0].methodId, 'ns=2;s=QCStation.RecordMesReceipt');
+  assert.deepEqual(messages[0].inputArguments.map(item => item.value), [
+    'ng',
+    'MES-CAPACITY-0001',
+    'WO-CAPACITY',
+    'corr-capacity',
+  ]);
 });
 
 console.log(`\n===== OUTBOX STATUS: ${passed}/${passed + failures.length} passed =====`);

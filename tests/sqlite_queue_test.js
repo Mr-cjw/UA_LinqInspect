@@ -470,6 +470,19 @@ try {
       assert.equal(store.status().queue.total, 0);
       assert.equal(store.status().uaWriteback.pending + store.status().uaWriteback.sending, 0);
       assert.equal(metricValue(store, 'ua_write_total', 'ng', 'success'), 1);
+
+      enqueueNg(store, 'SN-UA-RECEIPT', '2026-11-20T12:00:01.000Z', 3000);
+      const receiptSent = store.claimNext(4000);
+      startUaWriteback(store, receiptSent, 4001, 'MES-UA-RECEIPT');
+      const receiptResult = store.confirmUaWriteReceipt({
+        id: receiptSent.item.id,
+        correlationId: receiptSent.item.correlationId,
+        now: 4002,
+      });
+      assert.equal(receiptResult.outcome, 'complete');
+      assert.equal(store.status().queue.total, 0);
+      assert.equal(store.status().uaWriteback.pending + store.status().uaWriteback.sending, 0);
+      assert.equal(metricValue(store, 'ua_write_total', 'ng', 'success'), 2);
     } finally {
       store.close();
     }

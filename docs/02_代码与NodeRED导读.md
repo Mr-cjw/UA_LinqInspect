@@ -38,14 +38,14 @@
 1. 注册命名空间，取得索引 `ns`。
 2. 创建 `QCStation`、`Inspection`、`Statistics`、`Events`。
 3. 对 `Events` 设置 `SubscribeToEvents`。
-4. 创建 3 个根层只读控制变量和 3 个 MES 回执 ReadWrite 变量。
+4. 创建 3 个根层只读控制变量和 3 个只读 MES 回执变量。
 5. 创建 6 个 Inspection 只读变量。
 6. 创建 3 个 Statistics 只读变量。
 7. 在 `Events` 下创建 7 个 outbox 只读状态变量。
 8. 创建 3 个继承 `BaseEventType` 的 EventType。
-9. 创建 6 个 Method（控制、ACK、导出、清空）。
+9. 创建 7 个 Method（控制、回执单写者、ACK、导出、清空、计数清零）。
 
-理解点：`_ro(node)` 和 `_rw(node)` 不是装饰，它们直接影响客户端能否写入。Node-RED 写三个 MES 回执变量失败时，应先检查 AccessLevel。
+理解点：`_ro(node)` 和 `_rw(node)` 不是装饰，它们直接影响客户端能否写入。Node-RED 不能直接写 MES 回执变量，必须调用 `RecordMesReceipt`；若回执未更新，应先检查 Method 参数和响应，而不是绕过权限写变量。
 
 ### 2.3 事件触发
 
@@ -59,13 +59,14 @@
 
 ### 2.4 Method 校验
 
-阅读：`server/qc_server.py` 的六个 Method 包装与实现。
+阅读：`server/qc_server.py` 的七个 Method 包装与实现。
 
 必须记住：
 
-- 六个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工、ACK、清空与迟到检测交错。
+- 七个 Method 和 `record_inspection()` 共用同一把 `asyncio.Lock`，避免完工、回执写入、ACK、清空与迟到检测交错。
 - `StartInspection` 先判断空工单、Running、Fault、目标数，最后才改状态。
 - `CompleteWorkOrder` 先判断无活动工单、工单不一致、状态不对，最后才发事件并回 Idle。
+- `RecordMesReceipt` 只接受 `ng` / `complete`，校验回执号、工单号和关联 ID 后写具体变量与兼容镜像，并读回确认；三个回执变量对外只读。
 - `AcknowledgeEvent` 只在 Node-RED 已成功持久化事件后删除对应 outbox 项；未知或重复 ID 幂等接受。
 - `ExportPendingEvents` 分页导出待确认事件并返回当前快照令牌；`PurgeOutbox` 必须携带匹配令牌才能人工清空。
 - outbox 达到高水位时拒绝新开检，达到硬上限时拒绝 NG 检测和完工，不会静默删除业务事件。
@@ -159,7 +160,7 @@ stateDiagram-v2
 - 看门狗在 `sentAt` 超过 15 秒时把任务恢复/转死信，防止 HTTP 节点异常导致永久卡死。
 - `fn_resp` 收到 4xx 或非法 2xx 时按终态失败处理，不重试；5xx/timeout 最多 4 次尝试后死信。
 - 每个请求同时携带 `body.correlationId` 和 `X-Correlation-Id`，响应必须原样回显；只有匹配成功才允许写回 UA。
-- 成功时根据队列项类型写具体回执变量，并同步写 `LastMesOrderNo` 兼容镜像。
+- 成功时根据队列项类型调用 `RecordMesReceipt`，由服务端单写具体回执变量和 `LastMesOrderNo` 兼容镜像。
 
 ## 6. 一条 NG 消息的完整字段流转
 
@@ -196,12 +197,12 @@ workOrderId, serialNumber, defectType, confidence, imageId, occurredAt, correlat
 { "schemaVersion": "1.0", "correlationId": "corr-...", "accepted": true, "mesOrderNo": "MES-20261111-0001" }
 ```
 
-`fn_resp` 最终写两个层次：
+`fn_resp` 成功后调用一次 `RecordMesReceipt`，由服务端写两个层次：
 
 ```text
-NG 开单:  ns=2;s=QCStation.LastNgMesOrderNo,          payload = MES-...
-完工报工: ns=2;s=QCStation.LastCompletionReceiptNo,   payload = RC-...
-兼容镜像: ns=2;s=QCStation.LastMesOrderNo,            payload = 最近一次回执
+NG 开单:  RecordMesReceipt("ng", "MES-...", workOrderId, correlationId)
+完工报工: RecordMesReceipt("complete", "RC-...", workOrderId, correlationId)
+服务端同时写: LastNgMesOrderNo / LastCompletionReceiptNo 和 LastMesOrderNo 兼容镜像
 ```
 
 `fn_status` 通过 `GET http://127.0.0.1:1880/qc/status` 返回 `mesMode`、`queue`、`deadLetters`、`lastRequest`、`lastRequestByType`、`lastResponse`、`heartbeatFailures` 和去重计数。
@@ -218,7 +219,7 @@ NG 开单:  ns=2;s=QCStation.LastNgMesOrderNo,          payload = MES-...
 | Node-RED 收不到事件 | `opcea`/`opcea_done` 是否已部署；自定义 EventType 是否正确；Server 上 `Events` 是否可订阅 |
 | 收到事件但无 MES 请求 | `fn_parse` 是否丢弃；`fn_dedup_ng` 是否命中；SQLite `queue` 是否有 PENDING |
 | 队列一直 SENDING | `http1` 是否 3 秒超时；`n_catch_http`/`fn_resp` 是否连接；看门狗是否应触发 |
-| MES 收到请求但 UA 无回执 | `fn_resp` 成功分支是否返回两条写回消息；`opcua` 是否执行；具体回执变量与兼容镜像是否可写 |
+| MES 收到请求但 UA 无回执 | `fn_resp` 成功分支是否产生 `RecordMesReceipt` Method 消息；`opcua` 是否执行；Method 参数和响应是否被拒绝 |
 | Method 调用没有效果 | `opcua` 的 `inputArguments` 格式；Server 返回的 `accepted` 和 `summary` |
 | 完工无报工 | 是否订阅了 `WorkOrderCompletedEventType`；`fn_dedup_done` 是否已见过同一工单 |
 

@@ -16,7 +16,7 @@ cd ~/UA_LinqInspect
 3. `tests/state_persistence_test.py`：状态快照往返、非法 Running 回退和损坏 JSON 回退。
 4. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证运行中工单、计数和 SN 序列恢复，并完成恢复后的工单。
 5. `tests/edge_core_test.py`：Edge Core 控制面契约、幂等冲突、重试/死信和 UA 写回确认。
-6. `tests/security_test.py`：UA 传输安全、匿名只读、管理员写/Method、控制变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
+6. `tests/security_test.py`：UA 传输安全、匿名只读、管理员 Method、控制/追溯/回执变量直接写拒绝、Node-RED HTTP 认证和死信重放鉴权。
 7. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
 8. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
 9. `tests/metrics_test.py`：Prometheus 指标格式、UA 写回、SQLite/WAL/SHM 体积和 correlationId 契约。
@@ -92,7 +92,7 @@ cd ~/UA_LinqInspect
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
 | **合计** | **496/496 PASS** | 29 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-003658/summary.json`。
+实际产物：`.tmp/regression-20261121-005716/summary.json`。
 
 ## 4. 手工执行单个测试
 
