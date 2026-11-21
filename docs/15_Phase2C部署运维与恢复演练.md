@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-035354/summary.json` ｜ 当前结果：531/531 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-040609/summary.json` ｜ 当前结果：545/545 PASS
 
 ## 1. 阶段目标
 
@@ -296,8 +296,8 @@ Phase 2C 新增专项：
 | `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
 | `tests/deploy_templates_test.py` | 23/23 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、认证配置 |
 | `tests/storage_failure_test.js` | 3/3 PASS | 页数封顶模拟写满、入队/完工事务回滚、损坏库启动失败 |
-| `tests/restore_queue_test.py` | 32/32 PASS | dry-run、--force、安全快照、损坏目标隔离、schema-less 备份拒绝、WAL/SHM 清理、业务继续消费 |
-| `tests/backup_queue_test.py` | 24/24 PASS | 在线备份、指标 textfile、完整性、schema 合同、空库/缺列拒绝、保留策略、活跃库备份 |
+| `tests/restore_queue_test.py` | 39/39 PASS | dry-run、--force、安全快照、损坏目标隔离、schema-less 备份拒绝、只读目标拒绝、WAL/SHM 清理、业务继续消费 |
+| `tests/backup_queue_test.py` | 31/31 PASS | 在线备份、指标 textfile、完整性、schema 合同、空库/缺列拒绝、只读源/输出演练、保留策略、活跃库备份 |
 | `tests/long_outage_recovery.py` | 24/24 PASS | 长断网建压、重试耗尽死信、恢复排空、RTO、按 ID 重放 |
 | `tests/soak_test.py` | 20/20 PASS | 6 个工单循环、回执唯一、无队列/死信漂移、单周期耗时 |
 | `tests/state_persistence_test.py` | 5/5 PASS | 状态快照往返、非法 Running 回退、损坏 JSON 回退、outbox 往返与坏事件隔离 |
@@ -310,9 +310,9 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 31 个测试模块、**531/531 PASS**，摘要为
-`.tmp/regression-20261121-035354/summary.json`。单独运行备份测试且没有活跃
-`QC_DB_PATH` 时为 23/23；一键回归包含运行中的 Node-RED 数据库，因此为 24/24。
+2026-11-21 综合回归共 31 个测试模块、**545/545 PASS**，摘要为
+`.tmp/regression-20261121-040609/summary.json`。单独运行备份测试且没有活跃
+`QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：
 

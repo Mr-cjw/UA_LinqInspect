@@ -21,8 +21,8 @@ cd ~/UA_LinqInspect
 8. `tests/smoke_test.py`：M1/M2 信息模型、状态机、事件和负面用例。
 9. `tests/nodered_e2e.py`：UA 事件 → SQLite 队列 → 模拟 MES → UA 回执。
 10. `tests/metrics_test.py`：Prometheus 指标格式、UA 写回、SQLite/WAL/SHM 体积和 correlationId 契约。
-11. `tests/backup_queue_test.py`：WAL 在线备份、完整性检查、行数一致、保留策略和 Prometheus textfile。
-12. `tests/restore_queue_test.py`：dry-run、`--force`、恢复前快照、损坏目标隔离、WAL/SHM 清理和恢复后继续消费。
+11. `tests/backup_queue_test.py`：WAL 在线备份、完整性检查、行数一致、保留策略、Prometheus textfile、只读源库备份与只读输出目录拒绝。
+12. `tests/restore_queue_test.py`：dry-run、`--force`、恢复前快照、损坏目标隔离、WAL/SHM 清理、只读目标拒绝和恢复后继续消费。
 13. `tests/deploy_templates_test.py`：模板渲染、systemd verify、Alertmanager、logrotate、告警规则和环境变量。
 14. `tests/fault_scenarios.py`：5xx/timeout/4xx/429/非法 2xx 分类、退避与死信、Method 拒绝。
 15. `tests/long_outage_recovery.py`：MES 长断网、死信重放和恢复 RTO。
@@ -82,8 +82,8 @@ cd ~/UA_LinqInspect
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
 | Node-RED E2E | 21/21 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通、MES 重复/冲突 HTTP 契约 |
 | Prometheus 指标 | 80/80 PASS | 文本格式、HELP/TYPE、gauge 一致性、UA 写回计数、outbox 积压指标、SQLite/WAL/SHM 体积、响应契约 |
-| SQLite 备份 | 24/24 PASS | WAL 热备、完整性/外键/schema 校验、空库与缺列拒绝、行数一致、保留策略、运行中数据库、textfile 指标 |
-| 离线恢复 | 28/28 PASS | dry-run、`--force`、安全快照、损坏目标隔离、WAL/SHM 清理、恢复后继续消费 |
+| SQLite 备份 | 31/31 PASS | WAL 热备、完整性/外键/schema 校验、空库/缺列拒绝、只读源/输出演练、行数一致、保留策略、运行中数据库、textfile 指标 |
+| 离线恢复 | 39/39 PASS | dry-run、`--force`、安全快照、损坏目标隔离、只读目标拒绝、WAL/SHM 清理、恢复后继续消费 |
 | 部署模板 | 23/23 PASS | 模板渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、Node-RED 认证配置 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、冲突工单拒绝 |
 | MES 长断网 | 24/24 PASS | 重试耗尽死信、积压保留、恢复排空、实测 RTO、受鉴权重放 |
@@ -94,9 +94,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **531/531 PASS** | 31 个测试模块 |
+| **合计** | **545/545 PASS** | 31 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-035354/summary.json`。
+实际产物：`.tmp/regression-20261121-040609/summary.json`。
 
 ## 4. 手工执行单个测试
 

@@ -17,22 +17,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backup_queue import readonly_connection, verify_backup
+from backup_queue import copy_database, ensure_writable_directory, verify_backup
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def copy_database(source: Path, target: Path) -> None:
-    source_connection = readonly_connection(source)
-    try:
-        destination_connection = sqlite3.connect(target)
-        try:
-            source_connection.backup(destination_connection, pages=256, sleep=0.05)
-        finally:
-            destination_connection.close()
-    finally:
-        source_connection.close()
-
 
 def unique_path(directory: Path, prefix: str) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -69,6 +56,7 @@ def restore(backup: Path, target: Path, force: bool, dry_run: bool) -> dict:
 
     source_verification = verify_backup(backup)
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_writable_directory(target.parent, "restore target")
     temporary = target.with_name(f".{target.name}.{os.getpid()}.restore.tmp")
     if temporary.exists():
         temporary.unlink()

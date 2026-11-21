@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,10 +53,43 @@ def resolve_source(value: str | None) -> Path:
     return (REPO_ROOT / "data" / "qc-queue.sqlite").resolve()
 
 
-def readonly_connection(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=10.0)
+def readonly_connection(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    uri = f"{path.as_uri()}?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    connection = sqlite3.connect(uri, uri=True, timeout=10.0)
     connection.execute("PRAGMA busy_timeout = 5000")
     return connection
+
+
+def _copy_database(source: Path, target: Path, *, immutable: bool = False) -> None:
+    source_connection = readonly_connection(source, immutable=immutable)
+    try:
+        destination_connection = sqlite3.connect(target)
+        try:
+            source_connection.backup(destination_connection, pages=256, sleep=0.05)
+        finally:
+            destination_connection.close()
+    finally:
+        source_connection.close()
+
+
+def copy_database(source: Path, target: Path) -> None:
+    try:
+        _copy_database(source, target)
+        return
+    except sqlite3.OperationalError as exc:
+        if "readonly" not in str(exc).lower():
+            raise
+        sidecars = [Path(str(source) + suffix) for suffix in ("-wal", "-shm")]
+        if any(path.exists() for path in sidecars):
+            raise RuntimeError(
+                "read-only source has WAL/SHM sidecars; use a writable source volume "
+                "or checkpoint before taking the backup"
+            ) from exc
+        if target.exists():
+            target.unlink()
+        _copy_database(source, target, immutable=True)
 
 
 def table_counts(connection: sqlite3.Connection) -> dict[str, int]:
@@ -97,25 +131,41 @@ def schema_errors(connection: sqlite3.Connection) -> list[str]:
 
 
 def verify_backup(path: Path) -> dict:
-    connection = sqlite3.connect(path)
-    try:
-        integrity_rows = [str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()]
-        if integrity_rows != ["ok"]:
-            raise RuntimeError(f"integrity_check failed: {integrity_rows}")
-        foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
-        if foreign_key_errors:
-            raise RuntimeError(f"foreign_key_check failed: {foreign_key_errors}")
-        errors = schema_errors(connection)
-        if errors:
-            raise RuntimeError(f"queue schema check failed: {errors}")
-        return {
-            "integrityCheck": "ok",
-            "foreignKeyCheck": "ok",
-            "schemaCheck": "ok",
-            "tables": table_counts(connection),
-        }
-    finally:
-        connection.close()
+    immutable = False
+    while True:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = readonly_connection(path, immutable=immutable)
+            integrity_rows = [
+                str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()
+            ]
+            if integrity_rows != ["ok"]:
+                raise RuntimeError(f"integrity_check failed: {integrity_rows}")
+            foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_key_errors:
+                raise RuntimeError(f"foreign_key_check failed: {foreign_key_errors}")
+            errors = schema_errors(connection)
+            if errors:
+                raise RuntimeError(f"queue schema check failed: {errors}")
+            return {
+                "integrityCheck": "ok",
+                "foreignKeyCheck": "ok",
+                "schemaCheck": "ok",
+                "tables": table_counts(connection),
+            }
+        except sqlite3.OperationalError as exc:
+            if immutable or "readonly" not in str(exc).lower():
+                raise
+            sidecars = [Path(str(path) + suffix) for suffix in ("-wal", "-shm")]
+            if any(sidecar.exists() for sidecar in sidecars):
+                raise RuntimeError(
+                    "read-only backup has WAL/SHM sidecars; make its directory writable "
+                    "or copy the complete WAL/SHM set before verification"
+                ) from exc
+            immutable = True
+        finally:
+            if connection is not None:
+                connection.close()
 
 
 def choose_target(output_dir: Path) -> Path:
@@ -126,6 +176,19 @@ def choose_target(output_dir: Path) -> Path:
         target = output_dir / f"qc-queue-{stamp}-{index:02d}.sqlite"
         index += 1
     return target
+
+
+def ensure_writable_directory(directory: Path, purpose: str) -> None:
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=f".qc-{purpose.replace(' ', '-')}-probe-", delete=True
+        ):
+            pass
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise PermissionError(
+            f"{purpose} directory is not writable: {directory}: {detail}"
+        ) from exc
 
 
 def prune_backups(
@@ -185,10 +248,7 @@ def create_backup(source: Path, output_dir: Path, keep: int, metrics_file: Path 
     if not source.is_file():
         raise FileNotFoundError(f"source database does not exist: {source}")
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        os.chmod(output_dir, 0o700)
-    except OSError:
-        pass
+    ensure_writable_directory(output_dir, "backup output")
 
     target = choose_target(output_dir)
     temporary = output_dir / f".{target.name}.{os.getpid()}.tmp"
@@ -196,16 +256,7 @@ def create_backup(source: Path, output_dir: Path, keep: int, metrics_file: Path 
         temporary.unlink()
 
     try:
-        source_connection = readonly_connection(source)
-        try:
-            destination_connection = sqlite3.connect(temporary)
-            try:
-                source_connection.backup(destination_connection, pages=256, sleep=0.05)
-            finally:
-                destination_connection.close()
-        finally:
-            source_connection.close()
-
+        copy_database(source, temporary)
         verification = verify_backup(temporary)
         os.chmod(temporary, 0o600)
         os.replace(temporary, target)

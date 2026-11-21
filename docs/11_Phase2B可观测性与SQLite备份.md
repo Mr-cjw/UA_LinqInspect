@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：531/531，证据：`.tmp/regression-20261121-035354/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：545/545，证据：`.tmp/regression-20261121-040609/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -121,7 +121,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 新增：
 
 - `tests/metrics_test.py`：80 项断言，验证 Content-Type、HELP/TYPE、指标解析、gauge 与 `/qc/status` 一致、UA 写回计数、outbox 积压指标、SQLite/WAL/SHM 体积、NG/完工闭环计数增量、correlationId 与响应契约仍可观察。
-- `tests/backup_queue_test.py`：24 项断言，验证活跃 WAL 库在线备份、完整性检查、必需表/列合同、空库与缺列拒绝、关键行数一致、保留策略、缺失源文件错误，以及运行中的 Node-RED 数据库备份。
+- `tests/backup_queue_test.py`：一键回归 31 项断言（独立运行 30 项），验证活跃 WAL 库在线备份、完整性检查、必需表/列合同、空库与缺列拒绝、只读源库备份、只读输出目录拒绝、只读指标目录降级、关键行数一致、保留策略、缺失源文件错误，以及运行中的 Node-RED 数据库备份。
 
 扩展：
 
@@ -133,7 +133,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置、模拟 MES 幂等合同、SQLite 存储故障恢复与备份 schema 合同后当前合并回归为 **531/531 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置、模拟 MES 幂等合同、SQLite 存储故障恢复、备份 schema 合同与只读目录演练后当前合并回归为 **545/545 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
@@ -152,8 +152,8 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | UA 冒烟 | 36/36 |
 | Node-RED E2E | 21/21 |
 | Prometheus 指标 | 80/80 |
-| SQLite 备份 | 24/24 |
-| 离线恢复 | 32/32 |
+| SQLite 备份 | 31/31 |
+| 离线恢复 | 39/39 |
 | 部署模板 | 23/23 |
 | 故障场景 | 52/52 |
 | MES 长断网 | 24/24 |
@@ -164,7 +164,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **531/531** |
+| **合计** | **545/545** |
 
 ## 5. 下一阶段
 

@@ -155,8 +155,8 @@ UA_LinqInspect/
     ├── metrics_test.py        # Prometheus 指标、outbox、UA 写回与状态一致性（80 项断言）
     ├── health_test.js         # /healthz ready/degraded/unavailable（10 项断言）
     ├── outbox_status_test.js  # OutboxStatus 解析、队列拒收 ACK、健康降级与指标（9 项断言）
-    ├── backup_queue_test.py   # WAL 在线备份、完整性、schema 合同与保留策略（23 项断言；活跃库回归时 24）
-    ├── restore_queue_test.py  # dry-run、安全快照、损坏库隔离、schema 拒绝与继续消费（32 项断言）
+    ├── backup_queue_test.py   # WAL 在线备份、schema 合同、只读源/目录与保留策略（30 项断言；活跃库回归时 31）
+    ├── restore_queue_test.py  # dry-run、安全快照、损坏库隔离、schema/只读目标拒绝与继续消费（39 项断言）
     ├── deploy_templates_test.py # 模板渲染、systemd/Alertmanager/logrotate 与告警（23 项断言）
     ├── fault_scenarios.py     # 可靠性故障矩阵（52 项断言）
     ├── long_outage_recovery.py # MES 长断网、死信重放与实测 RTO（24 项断言）
@@ -187,9 +187,9 @@ UA_LinqInspect/
 - **可观测性**：`GET /metrics` 暴露队列深度、死信、去重、入队/投递、UA 写回、看门狗和 UA outbox 积压；计数与队列状态同事务持久化
 - **outbox 容量保护**：NG/完工事件积压达到高水位时拒绝新开检，达到硬上限时拒绝新检测与完工，不静默丢弃业务事件；管理员可分页导出并用一次性令牌清空
 - **队列容量保护**：SQLite 队列达到 100 条时拒绝新事件且不 ACK，保留 UA outbox 等待重试，不驱逐已有任务；`lastEnqueueRejection`、`qc_enqueue_total{outcome="rejected"}` 与 `QcQueueEnqueueRejected` 告警提供诊断
-- **在线备份**：`scripts/backup_queue.py` 使用 SQLite backup API，先校验完整性、外键、必需表和关键列，再原子落盘；空库或错 schema 不会被当成有效备份
+- **在线备份**：`scripts/backup_queue.py` 使用 SQLite backup API，先校验完整性、外键、必需表和关键列，再原子落盘；空库或错 schema 不会被当成有效备份。只读源库可在无 WAL/SHM 残留时走 immutable 快照路径；只读输出目录会明确拒绝且不修改目录权限
 - **健康探针**：`GET /healthz` 在 SQLite 不可用时返回 503 `unavailable`；连续 UA 心跳失败达到 3 次或 outbox 进入背压时返回 503 `degraded`
-- **部署与恢复**：systemd unit/timer、Prometheus 告警和 `restore_queue.py` 形成可重复的运维路径；恢复前必须停止 Node-RED。损坏目标不会静默覆盖，而是先移入同目录 `qc-queue-corrupt-*.sqlite` 审计隔离文件
+- **部署与恢复**：systemd unit/timer、Prometheus 告警和 `restore_queue.py` 形成可重复的运维路径；恢复前必须停止 Node-RED。损坏目标不会静默覆盖，而是先移入同目录 `qc-queue-corrupt-*.sqlite` 审计隔离文件；只读恢复目录会在替换前失败，目标库与快照均保持不变
 
 ## 快速开始（Ubuntu / Linux）
 
@@ -479,7 +479,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 - `GET /metrics` 提供 Prometheus 文本指标；`GET /qc/status` 保持原有 JSON 契约。运维接口当前依赖网络边界保护，生产部署应在反向代理/防火墙限制来源。
 - `/metrics` 额外暴露 `qc_database_bytes{kind="main|wal|shm"}`；Prometheus 模板包含 WAL 超过 256 MiB 与文件系统剩余空间低于 10% 的告警。
 - UA 写回阶段暴露 `qc_ua_write_pending`、`qc_ua_write_total{type,outcome}` 与 `qc_ua_write_errors_total{type,error_code}`；`/qc/status` 同时返回 `uaWriteback` 计数。
-- 在线备份使用 `.venv/bin/python scripts/backup_queue.py`。WAL 模式下不要只复制主 `.sqlite` 文件；脚本会校验 `integrity_check`、`foreign_key_check` 和关键表行数。
+- 在线备份使用 `.venv/bin/python scripts/backup_queue.py`。WAL 模式下不要只复制主 `.sqlite` 文件；脚本会校验 `integrity_check`、`foreign_key_check` 和关键表行数。只读源库允许在无 WAL/SHM 残留时备份，只读备份输出目录会被拒绝。
 - 死信可通过受 HTTP Basic Auth 保护的 `POST /qc/dead-letters/replay` 重放：请求体传 `{"id":"..."}` 精确重放，或传 `{"all":true}` 批量重放；重放复用原队列 ID 和去重键。
 - 就绪探针使用 `GET /healthz`；systemd 模板通过 `scripts/render_deploy.py` 渲染；恢复时先停 Node-RED，再用 `scripts/restore_queue.py --dry-run` 验证备份、以 `--force` 替换。完整步骤见 [Phase 2C 运维文档](docs/15_Phase2C部署运维与恢复演练.md)。
 
@@ -490,11 +490,11 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 531/531 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 531/531 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 531/531 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 531/531 PASS） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 531/531 PASS；与投递队列尚未同事务） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 545/545 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 545/545 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 545/545 PASS，含只读源/目录演练） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 545/545 PASS，含只读恢复目标拒绝） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 545/545 PASS；与投递队列尚未同事务） |
 | MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |

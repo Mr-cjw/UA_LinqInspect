@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -268,6 +270,59 @@ def main() -> int:
               verified["claimed"] == "send" and verified["completed"] is True)
         check("restored queue drains after one dispatch",
               verified["after"]["queue"]["total"] == 1)
+
+        read_only_backup_dir = root / "read-only-backup-source"
+        read_only_backup_dir.mkdir()
+        read_only_backup = read_only_backup_dir / "qc-queue.sqlite"
+        shutil.copy2(backup, read_only_backup)
+        os.chmod(read_only_backup, 0o444)
+        os.chmod(read_only_backup_dir, 0o500)
+        try:
+            completed, from_read_only = run_restore(
+                read_only_backup, root / "read-only-backup-target.sqlite"
+            )
+            check("read-only backup file can be restored",
+                  completed.returncode == 0 and from_read_only.get("ok") is True and
+                  queue_rows(root / "read-only-backup-target.sqlite") == 2,
+                  str(from_read_only.get("error") or ""))
+        finally:
+            os.chmod(read_only_backup_dir, 0o700)
+
+        read_only_target_dir = root / "read-only-target"
+        read_only_target_dir.mkdir()
+        read_only_target = read_only_target_dir / "qc-queue.sqlite"
+        node_eval(SEED_TARGET, read_only_target)
+        target_bytes = read_only_target.read_bytes()
+        os.chmod(read_only_target_dir, 0o500)
+        try:
+            completed, blocked = run_restore(backup, read_only_target, force=True)
+            check("read-only restore target directory is rejected",
+                  completed.returncode != 0 and
+                  "restore target directory is not writable" in str(blocked.get("error")),
+                  str(blocked.get("error") or ""))
+            check("read-only target directory leaves database bytes unchanged",
+                  read_only_target.read_bytes() == target_bytes)
+            check("read-only target directory creates no pre-restore snapshot",
+                  not (read_only_target_dir / "backups").exists())
+            check("read-only target directory mode is preserved",
+                  stat.S_IMODE(read_only_target_dir.stat().st_mode) == 0o500)
+        finally:
+            os.chmod(read_only_target_dir, 0o700)
+
+        read_only_empty_dir = root / "read-only-empty-target"
+        read_only_empty_dir.mkdir()
+        os.chmod(read_only_empty_dir, 0o500)
+        missing_target = read_only_empty_dir / "qc-queue.sqlite"
+        try:
+            completed, blocked = run_restore(backup, missing_target)
+            check("restore cannot create a target in a read-only directory",
+                  completed.returncode != 0 and
+                  "restore target directory is not writable" in str(blocked.get("error")),
+                  str(blocked.get("error") or ""))
+            check("read-only directory remains empty after rejected restore",
+                  not missing_target.exists() and not any(read_only_empty_dir.iterdir()))
+        finally:
+            os.chmod(read_only_empty_dir, 0o700)
 
         corrupt = root / "corrupt.sqlite"
         corrupt.write_text("not a sqlite database\n", encoding="utf-8")

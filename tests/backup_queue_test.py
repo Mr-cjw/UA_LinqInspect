@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -218,6 +219,58 @@ def main() -> int:
                   len(latest.get("removed") or []) >= 1)
         finally:
             source_connection.close()
+
+        read_only_source_dir = root / "read-only-source"
+        read_only_source_dir.mkdir()
+        read_only_source = read_only_source_dir / "qc-queue.sqlite"
+        shutil.copy2(source, read_only_source)
+        os.chmod(read_only_source, 0o444)
+        os.chmod(read_only_source_dir, 0o500)
+        try:
+            completed, summary = run_backup(
+                read_only_source, root / "read-only-source-backups"
+            )
+            check("read-only source database can be backed up",
+                  completed.returncode == 0 and summary.get("schemaCheck") == "ok",
+                  str(summary.get("error") or ""))
+        finally:
+            os.chmod(read_only_source_dir, 0o700)
+
+        read_only_output = root / "read-only-output"
+        read_only_output.mkdir()
+        os.chmod(read_only_output, 0o500)
+        try:
+            completed, summary = run_backup(source, read_only_output)
+            check("read-only backup directory is rejected",
+                  completed.returncode != 0 and
+                  "backup output directory is not writable" in str(summary.get("error")),
+                  str(summary.get("error") or ""))
+            check("read-only backup directory mode is preserved",
+                  stat.S_IMODE(read_only_output.stat().st_mode) == 0o500)
+            check("read-only backup directory receives no backup file",
+                  not any(read_only_output.glob("qc-queue-*.sqlite")))
+        finally:
+            os.chmod(read_only_output, 0o700)
+
+        read_only_metrics = root / "read-only-metrics"
+        read_only_metrics.mkdir()
+        os.chmod(read_only_metrics, 0o500)
+        metrics_path = read_only_metrics / "qc-backup.prom"
+        try:
+            completed, summary = run_backup(
+                source, root / "read-only-metrics-backups", metrics_file=metrics_path
+            )
+            check("backup succeeds when metrics directory is read-only",
+                  completed.returncode == 0 and summary.get("ok") is True and
+                  Path(str(summary.get("backup") or "")).is_file(),
+                  str(summary.get("error") or ""))
+            check("read-only metrics directory is reported",
+                  "PermissionError" in str(summary.get("metricsError")) and
+                  "read-only-metrics" in str(summary.get("metricsError")),
+                  str(summary.get("metricsError") or ""))
+            check("read-only metrics directory receives no textfile", not metrics_path.exists())
+        finally:
+            os.chmod(read_only_metrics, 0o700)
 
         missing = root / "missing.sqlite"
         completed, summary = run_backup(missing, root / "missing-backups")
