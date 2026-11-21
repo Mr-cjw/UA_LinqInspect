@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .contract import ContractError, validate_inspection_event
 from .store import (
     ConflictError,
     DeliveryStore,
@@ -20,7 +21,7 @@ _DEAD_PATH = re.compile(r"^/v1/dead-letters/([0-9a-fA-F-]{36})/(replay|acknowled
 
 
 class EdgeApiHandler(BaseHTTPRequestHandler):
-    server_version = "EdgeCore/0.1"
+    server_version = "EdgeCore/0.2"
 
     @property
     def store(self) -> DeliveryStore:
@@ -65,7 +66,7 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/v1/health":
-            self._send_json(200, {"status": "ok", "database": "ok", "version": "0.1.0"})
+            self._send_json(200, {"status": "ok", "database": "ok", "version": "0.2.0"})
             return
         if not self._authorized():
             self._error(401, "UNAUTHORIZED", "missing or invalid bearer token")
@@ -118,6 +119,8 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
                 self._dead_action(match.group(1), match.group(2), body)
                 return
             self._error(404, "NOT_FOUND", "route not found")
+        except ContractError as exc:
+            self._error(400, exc.code, str(exc))
         except ValueError as exc:
             self._error(400, "INVALID_REQUEST", str(exc))
         except KeyError as exc:
@@ -131,29 +134,11 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
 
     def _ingest(self, body: dict[str, Any]) -> None:
         correlation_id = self.headers.get("X-Correlation-Id", "").strip()
-        idempotency_key = self.headers.get("Idempotency-Key", "").strip()
-        required = ("schemaVersion", "sourceEventId", "stationId", "eventType", "occurredAt", "correlationId")
-        missing = [name for name in required if not body.get(name)]
-        if missing:
-            raise ValueError("missing fields: " + ", ".join(missing))
-        if correlation_id != body["correlationId"]:
-            raise ValueError("X-Correlation-Id must match body.correlationId")
-        if not idempotency_key:
-            raise ValueError("Idempotency-Key is required")
-        if not re.fullmatch(r"[0-9a-fA-F-]{36}", idempotency_key):
-            raise ValueError("Idempotency-Key must be a UUID for this API version")
-        if body["eventType"] not in ("NG_ORDER", "COMPLETION_REPORT"):
-            raise ValueError("eventType must be NG_ORDER or COMPLETION_REPORT")
-        if body["eventType"] == "NG_ORDER":
-            if body.get("result") != "NG":
-                raise ValueError("NG_ORDER requires result=NG")
-            for name in ("workOrderId", "serialNumber", "defectType"):
-                if not body.get(name):
-                    raise ValueError(f"{name} is required for NG_ORDER")
-        else:
-            for name in ("workOrderId", "inspectCount", "okCount", "ngCount", "ngRate"):
-                if name not in body:
-                    raise ValueError(f"{name} is required for COMPLETION_REPORT")
+        idempotency_key = validate_inspection_event(
+            body,
+            correlation_header=correlation_id,
+            idempotency_key=self.headers.get("Idempotency-Key", "").strip(),
+        )
         endpoint = "/mes/ng-order" if body["eventType"] == "NG_ORDER" else "/mes/complete"
         url = self.server.mes_base_url + endpoint  # type: ignore[attr-defined]
         delivery, duplicate = self.store.enqueue(
@@ -197,7 +182,7 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
         metrics = self.store.metrics_snapshot()
         counts = metrics["counts"]
         return {
-            "health": {"status": "ok", "database": "ok", "version": "0.1.0"},
+            "health": {"status": "ok", "database": "ok", "version": "0.2.0"},
             "queue": {
                 "total": metrics["queueTotal"],
                 "pending": counts.get("PENDING", 0),

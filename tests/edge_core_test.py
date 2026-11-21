@@ -7,6 +7,7 @@ import tempfile
 import time
 import threading
 import unittest
+import urllib.error
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,6 +43,24 @@ def make_event(*, source_event_id: str | None = None, defect: str = "SCRATCH") -
     }
 
 
+def make_completion(*, source_event_id: str | None = None, inspect_count: int = 5) -> dict:
+    correlation_id = f"corr-{uuid.uuid4()}"
+    return {
+        "schemaVersion": "1.0",
+        "sourceEventId": source_event_id or f"evt-{uuid.uuid4()}",
+        "stationId": "STATION-01",
+        "eventType": "COMPLETION_REPORT",
+        "occurredAt": "2026-11-20T12:35:56.789Z",
+        "workOrderId": "WO-20261120-001",
+        "inspectCount": inspect_count,
+        "okCount": max(0, inspect_count - 1),
+        "ngCount": 1 if inspect_count else 0,
+        "ngRate": round(1 / inspect_count, 3) if inspect_count else -1.0,
+        "correlationId": correlation_id,
+        "metadata": {"source": "unit-test"},
+    }
+
+
 class FakeMesHandler(BaseHTTPRequestHandler):
     mode = "ok"
     requests: list[dict] = []
@@ -64,12 +83,30 @@ class FakeMesHandler(BaseHTTPRequestHandler):
         if cls.mode == "invalid":
             self._send(200, {"accepted": True, "schemaVersion": "0.9", "correlationId": "wrong", "receiptNo": "BAD"})
             return
+        if cls.mode == "missing-ng-receipt":
+            self._send(200, {
+                "accepted": True,
+                "schemaVersion": "1.0",
+                "correlationId": body["correlationId"],
+                "receiptNo": "MES-WRONG-FIELD",
+            })
+            return
+        if cls.mode == "missing-completion-receipt":
+            self._send(200, {
+                "accepted": True,
+                "schemaVersion": "1.0",
+                "correlationId": body["correlationId"],
+                "mesOrderNo": "RC-WRONG-FIELD",
+            })
+            return
         cls.receipt_seq += 1
+        receipt_field = "mesOrderNo" if self.path == "/mes/ng-order" else "receiptNo"
+        prefix = "MES" if receipt_field == "mesOrderNo" else "RC"
         self._send(200, {
             "accepted": True,
             "schemaVersion": "1.0",
             "correlationId": body["correlationId"],
-            "receiptNo": f"MES-20261120-{cls.receipt_seq:04d}",
+            receipt_field: f"{prefix}-20261120-{cls.receipt_seq:04d}",
         })
 
     def _send(self, status: int, payload: dict) -> None:
@@ -103,6 +140,29 @@ class EdgeCoreTests(unittest.TestCase):
             request_timeout=2,
             retry_delays=(0.01, 0.01, 0.01),
         )
+
+    @staticmethod
+    def api_post(api, token: str, event: dict, key: str, correlation_id: str | None = None):
+        body = json.dumps(event).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{api.server_address[1]}/v1/inspection-events",
+            data=body,
+            headers={
+                "content-type": "application/json",
+                "authorization": f"Bearer {token}",
+                "x-correlation-id": correlation_id or event["correlationId"],
+                "idempotency-key": key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read())
+            finally:
+                exc.close()
 
     def test_duplicate_is_idempotent_and_payload_conflict_is_rejected(self):
         event = make_event(source_event_id="evt-001")
@@ -145,8 +205,14 @@ class EdgeCoreTests(unittest.TestCase):
         current = self.store.get(delivery["deliveryId"])
         self.assertEqual(current["state"], STATE_UA_WRITE_PENDING)
         self.assertTrue(current["mesReceipt"]["receiptNo"].startswith("MES-"))
+        self.assertEqual(current["mesReceipt"]["receiptType"], "MES_ORDER")
+        self.assertIn("receivedAt", current["mesReceipt"])
         self.assertEqual(FakeMesHandler.requests[0]["path"], "/mes/ng-order")
         self.assertEqual(FakeMesHandler.requests[0]["headers"]["X-Correlation-Id"], event["correlationId"])
+        self.assertEqual(
+            FakeMesHandler.requests[0]["headers"]["Idempotency-Key"],
+            event["sourceEventId"],
+        )
 
         done = self.store.mark_ua_write_result(
             delivery["deliveryId"],
@@ -227,6 +293,95 @@ class EdgeCoreTests(unittest.TestCase):
         )
         self.assertTrue(duplicate)
         self.assertEqual(first["deliveryId"], again["deliveryId"])
+
+    def test_api_rejects_contract_violations_with_stable_codes(self):
+        token = "test-token"
+        api = create_api_server("127.0.0.1", 0, self.store, token, self.mes_url)
+        thread = threading.Thread(target=api.serve_forever, daemon=True)
+        thread.start()
+        try:
+            ng = make_event()
+            bad_schema = dict(ng, schemaVersion="0.9")
+            unknown = dict(ng, unexpectedField=True)
+            bad_corr = dict(make_event())
+            completion = make_completion(inspect_count=5)
+            bad_counts = dict(completion, okCount=4, ngCount=2)
+            bad_rate = dict(make_completion(inspect_count=0), ngRate=0.0)
+            cases = [
+                (bad_schema, "UNSUPPORTED_SCHEMA_VERSION"),
+                (unknown, "UNKNOWN_FIELD"),
+                (bad_corr, "CORRELATION_MISMATCH"),
+                (bad_counts, "INVALID_COUNT"),
+                (bad_rate, "INVALID_NG_RATE"),
+            ]
+            for event, expected_code in cases:
+                with self.subTest(code=expected_code):
+                    status, payload = self.api_post(
+                        api,
+                        token,
+                        event,
+                        str(uuid.uuid4()),
+                        "corr-other-client-0001" if expected_code == "CORRELATION_MISMATCH" else None,
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertEqual(payload["code"], expected_code)
+        finally:
+            api.shutdown()
+            api.server_close()
+            thread.join(timeout=5)
+
+    def test_completion_receipt_is_validated_and_normalized(self):
+        token = "test-token"
+        api = create_api_server("127.0.0.1", 0, self.store, token, self.mes_url)
+        thread = threading.Thread(target=api.serve_forever, daemon=True)
+        thread.start()
+        try:
+            event = make_completion()
+            key = str(uuid.uuid4())
+            status, created = self.api_post(api, token, event, key)
+            self.assertEqual(status, 202)
+            self.worker().run_once()
+            current = self.store.get(created["deliveryId"])
+            self.assertEqual(current["state"], STATE_UA_WRITE_PENDING)
+            self.assertEqual(current["mesReceipt"]["receiptType"], "COMPLETION_RECEIPT")
+            self.assertTrue(current["mesReceipt"]["receiptNo"].startswith("RC-"))
+            self.assertEqual(FakeMesHandler.requests[-1]["path"], "/mes/complete")
+        finally:
+            api.shutdown()
+            api.server_close()
+            thread.join(timeout=5)
+
+    def test_ng_success_without_mes_order_no_is_a_contract_dead_letter(self):
+        event = make_event()
+        delivery, _ = self.store.enqueue(
+            event,
+            url=self.mes_url + "/mes/ng-order",
+            idempotency_key=str(uuid.uuid4()),
+            correlation_id=event["correlationId"],
+        )
+        FakeMesHandler.mode = "missing-ng-receipt"
+        self.worker().run_once()
+        dead = self.store.get(delivery["deliveryId"])
+        self.assertEqual(dead["state"], STATE_DEAD)
+        self.assertEqual(dead["lastErrorCode"], "MISSING_MES_ORDER_NO")
+
+    def test_completion_success_without_receipt_no_is_a_contract_dead_letter(self):
+        event = make_completion()
+        delivery, _ = self.store.enqueue(
+            event,
+            url=self.mes_url + "/mes/complete",
+            idempotency_key=str(uuid.uuid4()),
+            correlation_id=event["correlationId"],
+        )
+        FakeMesHandler.mode = "missing-completion-receipt"
+        self.worker().run_once()
+        dead = self.store.get(delivery["deliveryId"])
+        self.assertEqual(dead["state"], STATE_DEAD)
+        self.assertEqual(dead["lastErrorCode"], "MISSING_RECEIPT_NO")
+
+    def test_retry_after_is_clamped_to_contract_minimum(self):
+        self.assertEqual(DeliveryWorker._retry_after_seconds({"Retry-After": "0"}), 0.1)
+        self.assertEqual(DeliveryWorker._retry_after_seconds({"Retry-After": "999"}), 30.0)
 
     def test_api_ingest_and_query(self):
         token = "test-token"

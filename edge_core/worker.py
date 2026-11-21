@@ -11,7 +11,8 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from .store import STATE_DEAD, DeliveryStore
+from .contract import ContractError, validate_mes_success
+from .store import STATE_DEAD, DeliveryStore, utc_now
 
 
 class DeliveryWorker:
@@ -81,19 +82,25 @@ class DeliveryWorker:
 
         if 200 <= status < 300:
             try:
-                self._validate_success(body, delivery["correlationId"])
-            except ValueError as exc:
+                receipt = self._validate_success(
+                    body,
+                    delivery["correlationId"],
+                    str(payload.get("eventType") or ""),
+                )
+            except ContractError as exc:
                 self.store.mark_dead(
                     delivery_id,
-                    error_code="INVALID_RESPONSE_SCHEMA",
+                    error_code=exc.code,
                     error_message=str(exc),
                 )
                 return True
-            self.store.mark_acked(delivery_id, body)
+            receipt["receivedAt"] = utc_now()
+            self.store.mark_acked(delivery_id, receipt)
             self.logger("info", "MES receipt accepted; waiting for UA write", {
                 "deliveryId": delivery_id,
                 "correlationId": delivery["correlationId"],
-                "receiptNo": body.get("receiptNo"),
+                "receiptNo": receipt["receiptNo"],
+                "receiptType": receipt["receiptType"],
             })
             return True
 
@@ -149,16 +156,16 @@ class DeliveryWorker:
         return value if isinstance(value, dict) else {}
 
     @staticmethod
-    def _validate_success(body: dict[str, Any], correlation_id: str) -> None:
-        if body.get("accepted") is not True:
-            raise ValueError("accepted must be true")
-        if body.get("schemaVersion") != "1.0":
-            raise ValueError("schemaVersion must be 1.0")
-        if body.get("correlationId") != correlation_id:
-            raise ValueError("correlationId does not match request")
-        receipt_no = body.get("receiptNo")
-        if not isinstance(receipt_no, str) or not receipt_no.strip():
-            raise ValueError("receiptNo is required")
+    def _validate_success(
+        body: dict[str, Any],
+        correlation_id: str,
+        event_type: str,
+    ) -> dict[str, Any]:
+        return validate_mes_success(
+            body,
+            correlation_id=correlation_id,
+            event_type=event_type,
+        )
 
     @staticmethod
     def _retry_after_seconds(headers) -> float:
@@ -166,11 +173,11 @@ class DeliveryWorker:
         if not value:
             return 1.0
         try:
-            return max(0.0, min(30.0, float(value)))
+            return max(0.1, min(30.0, float(value)))
         except ValueError:
             try:
                 when = parsedate_to_datetime(str(value))
-                return max(0.0, min(30.0, when.timestamp() - time.time()))
+                return max(0.1, min(30.0, when.timestamp() - time.time()))
             except Exception:
                 return 1.0
 
