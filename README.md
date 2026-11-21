@@ -113,6 +113,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [Phase 2B：可观测性与 SQLite 在线备份](docs/11_Phase2B可观测性与SQLite备份.md)
 - [Phase 2C：部署运维与恢复演练](docs/15_Phase2C部署运维与恢复演练.md)
 - [五分钟软件体验：没有硬件先验证可靠性](docs/17_五分钟软件体验演示.md)
+- [双项目联合架构：质量闭环 + 设备上下文](docs/18_双项目联合架构.md)
 
 ## 项目结构
 
@@ -164,6 +165,7 @@ UA_LinqInspect/
 │   ├── 15_Phase2C部署运维与恢复演练.md
 │   ├── 16_状态源重构与持久化恢复.md
 │   ├── 17_五分钟软件体验演示.md
+│   ├── 18_双项目联合架构.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）

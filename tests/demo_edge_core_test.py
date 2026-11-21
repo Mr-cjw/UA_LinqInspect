@@ -49,6 +49,11 @@ class DemoEdgeCoreTests(unittest.TestCase):
         self.assertEqual(self.result.steps[-1]["state"], "DONE")
         self.assertIn("correlationId", self.result.steps[0]["facts"])
         self.assertIn("businessKey", self.result.steps[6]["facts"])
+        html = self.demo._DASHBOARD
+        self.assertIn("Node-RED 原始工作流仍在仓库并通过回归", html)
+        self.assertIn("质检交付主线", html)
+        self.assertIn("设备上下文", html)
+        self.assertIn("OEE / RCA", html)
 
     def test_same_business_key_and_receipt_are_preserved(self):
         self.assertEqual(self.result.businessKey, "NG_ORDER:JX-LINQIN-STATION-01:QC-JX-DEMO-0001")
