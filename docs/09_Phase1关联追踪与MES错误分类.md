@@ -3,7 +3,7 @@
 > 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
 > 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A/2B/2C 完成后，
-> 当前一键回归为 559/559，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
+> 当前一键回归为 586/586，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -104,6 +104,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列、UA 写回确认、MES 成功后写回前 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，M3 自动化补上 MES 长断网、死信重放和周期 soak，事件 outbox 补上稳定事件 ID、ACK、重启重发、容量背压、受控处置和队列满时失败关闭，模拟 MES 补上稳定 payload 指纹、重复回执和冲突拒绝，存储故障测试补上写满回滚、损坏库失败关闭与隔离恢复，备份合同补上空库/错 schema 拒绝及只读源/输出/恢复目录演练，状态源补上 SQLite 状态+Outbox 同事务、保存失败回滚内存与 UA 重同步、JSON 兼容路径失败保护，当前 559 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在真实 MES 沙箱验证同一幂等合同和端到端 RTO。
+> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列、UA 写回确认、MES 成功后写回前 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，M3 自动化补上 MES 长断网、死信重放和周期 soak，事件 outbox 补上稳定事件 ID、ACK、重启重发、容量背压、受控处置和队列满时失败关闭，模拟 MES 补上稳定 payload 指纹、重复回执和冲突拒绝，存储故障测试补上写满回滚、损坏库失败关闭与隔离恢复，备份合同补上空库/错 schema 拒绝及只读源/输出/恢复目录演练，状态源补上 SQLite 状态+Outbox 同事务、保存失败回滚内存与 UA 重同步、JSON 兼容路径失败保护，并通过受限 tmpfs 真实挂载验证 EROFS/ENOSPC，当前 586 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在真实 MES 沙箱验证同一幂等合同和端到端 RTO。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

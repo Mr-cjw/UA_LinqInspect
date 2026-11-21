@@ -13,6 +13,7 @@ cd ~/UA_LinqInspect
 
 1. `tests/sqlite_queue_test.js`：SQLite 唯一约束、事务原子性、UA 写回确认、指标持久化、单飞行、退避/看门狗、死信重放和旧 context 导入。
 2. `tests/storage_failure_test.js`：页数封顶模拟磁盘写满，验证入队/完工完整回滚；损坏库启动显式失败且不被重建。
+   另有 `tests/mount_storage_test.py`：在 Docker `--privileged` 的受限 tmpfs 上执行真实内核 `EROFS`/`ENOSPC`、状态回滚、临时文件清理与释放容量后的恢复；同一日志包含 SQLite 队列挂载演练。
 3. `tests/health_test.js`：`/healthz` 的 ready/degraded/unavailable、响应头和 flow 接线。
 4. `tests/state_persistence_test.py`：JSON/SQLite 状态与 Outbox 往返、SQLite 事务回滚、旧 JSON 迁移、损坏回退、写入失败保护，以及保存失败后回滚内存状态并重同步 UA 变量。
 5. `tests/qc_state_restart_test.py`：`SIGKILL` 后验证 SQLite 工单、计数、SN 与 Outbox 恢复，并完成恢复后的工单。
@@ -69,6 +70,7 @@ cd ~/UA_LinqInspect
 |---|---:|---|
 | SQLite 队列单测 | 19/19 PASS | 唯一约束、事务回滚、UA 写回确认、单飞行、退避、看门狗、迁移、上限、死信重放 |
 | SQLite 存储故障 | 3/3 PASS | 写满时入队/完工回滚、损坏库启动失败、恢复后继续可用 |
+| 真实挂载存储 | 25/25 PASS | 受限 tmpfs 的 `EROFS`/`ENOSPC`、状态回滚、SQLite 事务保持、临时文件清理与恢复 |
 | MES 接收端幂等 | 10/10 PASS | 稳定指纹、重复返回原回执、冲突 409、旧回执迁移、原型污染防护 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | outbox 状态接口 | 9/9 PASS | `OutboxStatus` 解析、容量拒收不 ACK、背压健康降级、`/qc/status` 与 Prometheus 指标 |
@@ -94,9 +96,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **559/559 PASS** | 31 个测试模块 |
+| **合计** | **586/586 PASS** | 32 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-045602/summary.json`。
+实际产物：`.tmp/regression-20261121-050341/summary.json`。
 
 ## 4. 手工执行单个测试
 
