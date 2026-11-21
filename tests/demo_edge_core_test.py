@@ -55,6 +55,15 @@ class DemoEdgeCoreTests(unittest.TestCase):
         self.assertIn("设备上下文", html)
         self.assertIn("OEE / RCA", html)
 
+        from investor_pitch import INVESTOR_DASHBOARD
+
+        self.assertIn("陈总投资评审版", INVESTOR_DASHBOARD)
+        self.assertIn("不丢、不重、可解释", INVESTOR_DASHBOARD)
+        self.assertIn("今天真实跑通", INVESTOR_DASHBOARD)
+        self.assertIn("还不能对外宣称", INVESTOR_DASHBOARD)
+        self.assertIn("付费试点", INVESTOR_DASHBOARD)
+        self.assertIn("不是生产集成", INVESTOR_DASHBOARD)
+
     def test_same_business_key_and_receipt_are_preserved(self):
         self.assertEqual(self.result.businessKey, "NG_ORDER:JX-LINQIN-STATION-01:QC-JX-DEMO-0001")
         self.assertTrue(self.result.mesReceiptNo.startswith("MES-JX-DEMO-"))
