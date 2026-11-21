@@ -687,7 +687,7 @@ _DASHBOARD = r"""<!doctype html>
 .wrap{max-width:1180px;margin:0 auto;padding:38px 24px 64px}.eyebrow{color:var(--cyan);font-size:13px;letter-spacing:.16em;text-transform:uppercase}.hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:24px}
 h1{font-size:42px;line-height:1.08;margin:10px 0 12px;letter-spacing:-.03em}.hero p{color:var(--muted);font-size:16px;line-height:1.75;max-width:760px;margin:0}.badge{border:1px solid #2b5d85;background:#0b2740;color:var(--cyan);border-radius:999px;padding:8px 13px;font-size:13px;white-space:nowrap}
 .workflow{margin:0 0 24px;border:1px solid var(--line);border-radius:16px;padding:20px;background:linear-gradient(180deg,#0d2035cc,#091727cc)}.workflow-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:15px}.workflow-head h2{margin:5px 0 0;font-size:20px;letter-spacing:-.02em}.workflow-state{border:1px solid #28664d;background:#0b2a20;color:#7cf0ba;border-radius:999px;padding:6px 10px;font-size:11px;white-space:nowrap}.lanes{display:grid;grid-template-columns:1fr 1fr;gap:13px}.lane{border:1px solid #1d3a58;border-radius:12px;padding:14px;background:#091a2b}.lane.primary{border-color:#2b5d85;box-shadow:inset 0 0 0 1px #163b5c}.lane.context{border-style:dashed}.lane-tag{font-size:11px;font-weight:800;color:var(--cyan);letter-spacing:.05em;margin-bottom:11px}.lane.context .lane-tag{color:var(--warn)}.chain{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.chain span{border:1px solid #27445f;background:#0d2137;border-radius:7px;padding:6px 8px;font-size:11px;font-weight:700}.chain small{display:block;color:var(--muted);font-size:9px;font-weight:400;margin-top:2px}.chain i{color:#4d7da8;font-style:normal;font-size:12px}.lane p{color:var(--muted);font-size:11px;line-height:1.65;margin:11px 0 0}.join{display:flex;align-items:center;gap:10px;margin-top:13px;border-top:1px solid #1b3550;padding-top:12px;color:var(--muted);font-size:11px;line-height:1.6}.join b{color:var(--text);white-space:nowrap}.join span{color:var(--cyan)}
-.toolbar{display:flex;align-items:center;gap:14px;margin-bottom:22px}.run{border:0;border-radius:10px;background:linear-gradient(135deg,#2d8cff,#43d8c0);color:#03111e;padding:13px 20px;font-weight:800;font-size:15px;cursor:pointer;box-shadow:0 8px 30px #1973c855}.run:disabled{opacity:.55;cursor:wait}.hint{color:var(--muted);font-size:13px}
+.toolbar{display:flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap}.run{border:0;border-radius:10px;background:linear-gradient(135deg,#2d8cff,#43d8c0);color:#03111e;padding:13px 20px;font-weight:800;font-size:15px;cursor:pointer;box-shadow:0 8px 30px #1973c855}.run:disabled{opacity:.55;cursor:wait}.jointlink{border:1px solid #336a96;background:#0a2137;color:var(--cyan);border-radius:10px;padding:12px 16px;text-decoration:none;font-size:13px;font-weight:700}.hint{color:var(--muted);font-size:13px}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:24px 0}.stat{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:16px 18px}.stat .label{color:var(--muted);font-size:12px;margin-bottom:8px}.stat .value{font-size:26px;font-weight:800;letter-spacing:-.02em}.stat .sub{color:var(--muted);font-size:11px;margin-top:5px}
 .layout{display:grid;grid-template-columns:1.55fr .9fr;gap:20px}.panel{background:#0a1829cc;border:1px solid var(--line);border-radius:16px;padding:22px;backdrop-filter:blur(8px)}.panel h2{margin:0 0 18px;font-size:18px}.timeline{position:relative}.timeline:before{content:"";position:absolute;left:16px;top:8px;bottom:8px;width:2px;background:linear-gradient(var(--blue),var(--ok))}.step{position:relative;padding:0 0 20px 48px}.step:last-child{padding-bottom:0}.dot{position:absolute;left:7px;top:4px;width:20px;height:20px;border-radius:50%;background:var(--panel);border:2px solid var(--blue);display:grid;place-items:center;font-size:10px;font-weight:800;z-index:1}.step.ok .dot{border-color:var(--ok);color:var(--ok)}.step.warn .dot{border-color:var(--warn);color:var(--warn)}.step.dead .dot{border-color:var(--dead);color:var(--dead)}.step.done .dot{border-color:var(--ok);background:var(--ok);color:#04121c}.step h3{margin:0 0 6px;font-size:15px}.step p{margin:0;color:var(--muted);line-height:1.65;font-size:13px}.facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.fact{font-size:11px;border:1px solid var(--line);background:#0c1d2f;border-radius:6px;padding:4px 7px;color:#bcd0e4}.pill{display:inline-block;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:800;margin-bottom:7px;background:#102f48;color:var(--cyan)}
 .side .card{border-bottom:1px solid var(--line);padding:0 0 16px;margin-bottom:16px}.side .card:last-child{border-bottom:0;margin-bottom:0;padding-bottom:0}.side h3{margin:0 0 9px;font-size:14px}.side p{color:var(--muted);font-size:12px;line-height:1.7;margin:0}.kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed #1a3149;font-size:12px}.kv:last-child{border-bottom:0}.kv span:first-child{color:var(--muted)}.kv span:last-child{text-align:right;word-break:break-all}.audit{max-height:330px;overflow:auto}.audit-row{font-size:11px;line-height:1.55;padding:7px 0;border-bottom:1px solid #172b41;color:#b7cce0}.audit-row b{color:var(--text)}.empty{color:var(--muted);font-size:12px;padding:18px 0}.value{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}.value div{border:1px solid var(--line);border-radius:12px;padding:16px;background:linear-gradient(180deg,#0c2035,#0a1727)}.value b{display:block;margin-bottom:7px;font-size:14px}.value span{color:var(--muted);font-size:12px;line-height:1.6}.foot{color:var(--muted);font-size:11px;line-height:1.7;margin-top:22px}.error{color:var(--dead);white-space:pre-wrap}.spin{animation:pulse 1s infinite}@keyframes pulse{50%{opacity:.35}}
@@ -704,7 +704,7 @@ h1{font-size:42px;line-height:1.08;margin:10px 0 12px;letter-spacing:-.03em}.her
  </div>
  <div class="join"><b>联合价值</b><span>质量事件 + 设备上下文 → 一次对账说清“这批 NG 与哪次停机/温度异常同时发生，MES 是否已收到”。</span></div>
 </section>
-<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
+<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/joint">运行双项目联合演示 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
 <div class="stats">
  <div class="stat"><div class="label">最终业务状态</div><div id="final" class="value">待运行</div><div class="sub">MES 回执 + UA 写回都完成才 DONE</div></div>
  <div class="stat"><div class="label">未完成任务</div><div id="queue" class="value">-</div><div class="sub">PENDING / SENDING / RETRY_WAIT</div></div>
@@ -767,9 +767,37 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/joint":
+            from demo_joint_oee_rca import JOINT_DASHBOARD
+
+            body = JOINT_DASHBOARD.encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        if self.path == "/api/joint":
+            lock: threading.Lock = self.server.joint_lock  # type: ignore[attr-defined]
+            if not lock.acquire(blocking=False):
+                self._json(409, {"error": "已有联合演示正在运行"})
+                return
+            try:
+                from demo_joint_oee_rca import JointDemoUnavailable, run_joint_demo
+
+                result = run_joint_demo()
+                self._json(200, asdict(result))
+            except JointDemoUnavailable as exc:
+                self._json(503, {"error": str(exc)})
+            except Exception as exc:
+                self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                lock.release()
+            return
         if self.path != "/api/run":
             self._json(404, {"error": "not found"})
             return
@@ -799,6 +827,7 @@ def run_ui(port: int, open_browser: bool) -> int:
     server = ThreadingHTTPServer(("127.0.0.1", port), _DashboardHandler)
     server.daemon_threads = True
     server.demo_lock = threading.Lock()  # type: ignore[attr-defined]
+    server.joint_lock = threading.Lock()  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, name="demo-dashboard", daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}/"
