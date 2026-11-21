@@ -74,6 +74,8 @@ def main() -> int:
     values.setdefault("QC_REPO_ROOT", str(ROOT))
     values.setdefault("QC_DB_PATH", str(ROOT / "data" / "qc-queue.sqlite3"))
     values.setdefault("QC_STATE_PATH", str(ROOT / "data" / "qc-state.json"))
+    values.setdefault("QC_STATE_BACKEND", "sqlite")
+    values.setdefault("QC_STATE_DB_PATH", values["QC_DB_PATH"])
 
     lines = ["# Generated local-only Node-RED secrets. Never commit this file."]
     for key in (
@@ -87,6 +89,8 @@ def main() -> int:
         "QC_REPO_ROOT",
         "QC_DB_PATH",
         "QC_STATE_PATH",
+        "QC_STATE_BACKEND",
+        "QC_STATE_DB_PATH",
     ):
         value = values[key].replace("'", "'\\''")
         lines.append(f"export {key}='{value}'")

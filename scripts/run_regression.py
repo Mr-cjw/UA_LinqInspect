@@ -298,6 +298,8 @@ def main() -> int:
             "QC_REPO_ROOT": str(REPO_ROOT),
             "QC_DB_PATH": str(artifact_dir / "qc-queue.sqlite"),
             "QC_STATE_PATH": str(artifact_dir / "qc-state.json"),
+            "QC_STATE_BACKEND": "sqlite",
+            "QC_STATE_DB_PATH": str(artifact_dir / "qc-queue.sqlite"),
         }
     )
     http_auth_headers = {"authorization": basic_auth}

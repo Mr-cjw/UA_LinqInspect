@@ -180,6 +180,7 @@ async def main() -> int:
             "UA_TRUSTED_CLIENT_CERTS_DIR": str(REPO_ROOT / "certs/trusted_clients"),
             "UA_AUDIT_LOG": str(root / "ua-audit.log"),
             "QC_STATE_PATH": str(state_path),
+            "QC_STATE_BACKEND": "json",
             "QC_AUTO_INSPECT": "0",
             "QC_OUTBOX_REPLAY_INTERVAL": "0.2",
             "QC_OUTBOX_MAX_PENDING": "2",
