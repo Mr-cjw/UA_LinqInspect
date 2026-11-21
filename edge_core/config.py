@@ -19,6 +19,8 @@ class EdgeConfig:
     worker_timeout: float
     max_attempts: int
     lease_seconds: float
+    delivery_authority: str
+    sender_lock_dir: Path
 
 
 def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
@@ -26,6 +28,9 @@ def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
     token = values.get("EDGE_API_TOKEN", "").strip()
     if not token:
         raise ValueError("EDGE_API_TOKEN is required")
+    authority = values.get("QC_DELIVERY_AUTHORITY", "node-red").strip().lower()
+    if authority not in ("node-red", "edge-core"):
+        raise ValueError("QC_DELIVERY_AUTHORITY must be node-red or edge-core")
     return EdgeConfig(
         db_path=Path(values.get("EDGE_DB_PATH", "data/edge_core.sqlite3")).expanduser(),
         api_host=values.get("EDGE_API_HOST", "127.0.0.1"),
@@ -37,4 +42,8 @@ def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
         worker_timeout=max(0.2, float(values.get("EDGE_MES_TIMEOUT_SECONDS", "3"))),
         max_attempts=max(1, int(values.get("EDGE_MAX_ATTEMPTS", "4"))),
         lease_seconds=max(5.0, float(values.get("EDGE_LEASE_SECONDS", "30"))),
+        delivery_authority=authority,
+        sender_lock_dir=Path(
+            values.get("QC_SENDER_LOCK_DIR", "data/.sender-authority")
+        ).expanduser(),
     )

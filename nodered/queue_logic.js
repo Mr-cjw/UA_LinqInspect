@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { SenderAuthorityGuard } = require('./authority_lock');
 
 const RETRY_DELAYS = [1000, 2000, 4000];
 
@@ -15,6 +16,147 @@ function timestamp() {
 
 function fallbackCorrelationId() {
   return 'corr-fallback-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+function deliveryAuthority() {
+  const value = String(process.env.QC_DELIVERY_AUTHORITY || 'node-red').trim().toLowerCase();
+  if (value !== 'node-red' && value !== 'edge-core') {
+    throw new Error('QC_DELIVERY_AUTHORITY must be node-red or edge-core');
+  }
+  return value;
+}
+
+let senderGuard = null;
+let senderGuardWarnedFor = '';
+
+function ensureNodeRedSenderLease(flow, node) {
+  const authority = deliveryAuthority();
+  if (authority !== 'node-red') {
+    if (senderGuard) {
+      senderGuard.release();
+      senderGuard = null;
+    }
+    flow.set('senderAuthority', { owner: 'edge-core', held: false, currentOwner: 'edge-core', leaseFresh: true });
+    return false;
+  }
+  if (!senderGuard) senderGuard = new SenderAuthorityGuard({ owner: 'node-red' });
+  let result = senderGuard.tryAcquire();
+  if (!result.ok) {
+    flow.set('senderAuthority', senderGuard.status());
+    const key = String(result.owner || 'unknown');
+    if (key !== senderGuardWarnedFor) {
+      node.error('[发送泵互锁] Node-RED 未获得发送权，当前持有者=' + key);
+      senderGuardWarnedFor = key;
+    }
+    return false;
+  }
+  senderGuard.heartbeat();
+  flow.set('senderAuthority', senderGuard.status());
+  senderGuardWarnedFor = '';
+  return true;
+}
+
+process.once('exit', () => {
+  if (senderGuard) senderGuard.release();
+});
+
+function deterministicUuid(value) {
+  const hex = crypto.createHash('sha256').update(String(value)).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function edgeCoreSettings(flow) {
+  const baseUrl = String(flow.get('edgeCoreBaseUrl') || process.env.EDGE_API_BASE_URL || 'http://127.0.0.1:8770')
+    .replace(/\/+$/, '');
+  const token = String(flow.get('edgeCoreToken') || process.env.EDGE_API_TOKEN || '').trim();
+  const stationId = String(flow.get('stationId') || process.env.QC_STATION_ID || 'QCStation').trim();
+  if (!token) throw new Error('EDGE_API_TOKEN is required for edge-core delivery authority');
+  return { baseUrl, token, stationId };
+}
+
+async function postEdgeCoreIngress(flow, event, sourceEventId) {
+  const settings = edgeCoreSettings(flow);
+  const idempotencyKey = deterministicUuid(`${settings.stationId}:${sourceEventId}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(settings.baseUrl + '/v1/inspection-events', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer ' + settings.token,
+        'x-correlation-id': event.correlationId,
+        'idempotency-key': idempotencyKey,
+      },
+      body: JSON.stringify(event),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    let payload = {};
+    try { payload = raw ? JSON.parse(raw) : {}; } catch (_) { payload = {}; }
+    if (response.status !== 202) {
+      throw new Error('Edge Core ingest HTTP ' + response.status + ': ' +
+        String(payload.error || payload.message || raw || 'rejected'));
+    }
+    if (!payload.deliveryId) throw new Error('Edge Core ingest response missing deliveryId');
+    if (payload.correlationId && payload.correlationId !== event.correlationId) {
+      throw new Error('Edge Core ingest correlationId mismatch');
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function edgeCoreIngressNg(msg, flow, node) {
+  if (deliveryAuthority() !== 'edge-core') return null;
+  const correlationId = String(msg.correlationId || fallbackCorrelationId()).trim();
+  const sourceEventId = String(msg.sourceEventId || correlationId).trim();
+  const settings = edgeCoreSettings(flow);
+  const event = {
+    schemaVersion: '1.0',
+    sourceEventId,
+    stationId: settings.stationId,
+    eventType: 'NG_ORDER',
+    occurredAt: String(msg.occurredAt || new Date().toISOString()),
+    result: 'NG',
+    serialNumber: String(msg.serialNumber || '').trim(),
+    workOrderId: String(msg.workOrderId || '').trim(),
+    defectType: String(msg.defectType || '').trim(),
+    confidence: msg.confidence,
+    imageId: String(msg.imageId || '').trim(),
+    correlationId,
+    metadata: { adapter: 'node-red', source: 'NgDetectedEvent' },
+  };
+  const delivery = await postEdgeCoreIngress(flow, event, sourceEventId);
+  node.warn('[Edge Core入队][' + correlationId + '] NG ' + event.serialNumber +
+    ' delivery=' + delivery.deliveryId);
+  return eventAckMessage(msg, node);
+}
+
+async function edgeCoreIngressDone(msg, flow, node) {
+  if (deliveryAuthority() !== 'edge-core') return null;
+  const correlationId = String(msg.correlationId || fallbackCorrelationId()).trim();
+  const sourceEventId = String(msg.sourceEventId || correlationId).trim();
+  const settings = edgeCoreSettings(flow);
+  const event = {
+    schemaVersion: '1.0',
+    sourceEventId,
+    stationId: settings.stationId,
+    eventType: 'COMPLETION_REPORT',
+    occurredAt: String(msg.occurredAt || new Date().toISOString()),
+    workOrderId: String(msg.workOrderId || '').trim(),
+    inspectCount: Number(msg.inspectCount || 0),
+    okCount: Number(msg.okCount || 0),
+    ngCount: Number(msg.ngCount || 0),
+    ngRate: Number(msg.ngRate == null ? -1 : msg.ngRate),
+    correlationId,
+    metadata: { adapter: 'node-red', source: 'WorkOrderCompletedEvent' },
+  };
+  const delivery = await postEdgeCoreIngress(flow, event, sourceEventId);
+  node.warn('[Edge Core入队][' + correlationId + '] 报工 ' + event.workOrderId +
+    ' delivery=' + delivery.deliveryId);
+  return eventAckMessage(msg, node);
 }
 
 function ngKeys(serialNumber, occurredAt) {
@@ -633,6 +775,10 @@ function enqueueDone(msg, flow, node, store) {
 }
 
 function pump(msg, flow, node, store) {
+  if (!ensureNodeRedSenderLease(flow, node)) {
+    node.status({ fill: 'blue', shape: 'ring', text: '发送泵未持有发送权' });
+    return null;
+  }
   let result;
   try {
     result = store.claimNext(Date.now());
@@ -1230,6 +1376,8 @@ function status(msg, flow, store) {
     service: 'ua-linqinspect-edge',
     uptimeSec: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
     mesMode: flow.get('mesMode') || 'ok',
+    deliveryAuthority: deliveryAuthority(),
+    senderAuthority: flow.get('senderAuthority') || (senderGuard ? senderGuard.status() : null),
     heartbeatFailures: flow.get('hbFails') || 0,
     outbox: outboxSnapshot(flow),
     queue: snapshot.queue,
@@ -1318,6 +1466,9 @@ module.exports = {
   validateDone,
   enqueueNg,
   enqueueDone,
+  deliveryAuthority,
+  edgeCoreIngressNg,
+  edgeCoreIngressDone,
   pump,
   pumpOutputs,
   response,

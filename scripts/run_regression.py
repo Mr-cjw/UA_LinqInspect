@@ -31,12 +31,14 @@ NODE_TESTS = (
     ("mes_idempotency", "tests/mes_idempotency_test.js", 30),
     ("health", "tests/health_test.js", 30),
     ("outbox_status", "tests/outbox_status_test.js", 30),
+    ("edge_core_ingress", "tests/edge_core_ingress_test.js", 30),
 )
 
 TESTS = (
     ("edge_demo", "tests/demo_edge_core_test.py", 30),
     ("edge_migration", "tests/edge_core_migration_test.py", 30),
     ("ua_writeback_adapter", "tests/ua_writeback_adapter_test.py", 30),
+    ("sender_authority", "tests/sender_authority_test.py", 30),
     ("mount_storage", "tests/mount_storage_test.py", 120),
     ("state_persistence", "tests/state_persistence_test.py", 30),
     ("event_outbox", "tests/outbox_test.py", 30),
@@ -304,6 +306,7 @@ def main() -> int:
             "QC_STATE_PATH": str(artifact_dir / "qc-state.json"),
             "QC_STATE_BACKEND": "sqlite",
             "QC_STATE_DB_PATH": str(artifact_dir / "qc-queue.sqlite"),
+            "QC_SENDER_LOCK_DIR": str(artifact_dir / "sender-authority"),
         }
     )
     http_auth_headers = {"authorization": basic_auth}
