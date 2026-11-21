@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-154011/summary.json` ｜ 当前结果：647/647 PASS
+> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261121-163110/summary.json` ｜ 当前结果：42 个测试模块、664/664 PASS
 
 ## 1. 阶段目标
 
@@ -305,6 +305,7 @@ Phase 2C 新增专项：
 | `tests/mes_contract_doctor_test.py` | 5/5 PASS | dry-run、严格回执、非幂等警告、非法 2xx 失败、写入确认保护 |
 | `tests/operator_console_test.py` | 7/7 PASS | Basic 鉴权、CSRF、开检/完工、死信处置、快照下载 |
 | `tests/edge_core_online_flow_test.py` | 17/17 PASS | Node-RED 在线直写、Edge Core 权威、MES Basic、真实 UA 写回、回滚与审计持久化 |
+| `tests/vision_demo_test.py` | 17/17 PASS | 图像质量门禁、本地真实推理、类别级模型卡、低置信度 OK/NG 复核、上传边界与 NG 输入一致性 |
 | `tests/deploy_templates_test.py` | 24/24 PASS | 渲染、systemd verify、Prometheus/Alertmanager/outbox/队列容量告警、logrotate、环境变量、认证配置 |
 | `tests/storage_failure_test.js` | 3/3 PASS | 页数封顶模拟写满、入队/完工事务回滚、损坏库启动失败 |
 | `tests/mount_storage_test.py` | 25/25 PASS | 受限 tmpfs 的真实内核 `EROFS`/`ENOSPC`、状态回滚、SQLite 队列事务保持与恢复 |
@@ -317,7 +318,7 @@ Phase 2C 新增专项：
 | `tests/demo_edge_core_test.py` | 4/4 PASS | 无硬件演示超时、服务重启、死信重放、MES 唯一回执与 UA 写回确认 |
 | `tests/edge_core_migration_test.py` | 5/5 PASS | Node-RED 队列 dry-run、幂等迁移、状态/回执/死信保留与冲突拒绝 |
 | `tests/edge_core_ingress_test.js` | 7/7 PASS | Node-RED 直写 Edge Core、仅在 202 后 ACK、失败保留、跨语言发送权租约 |
-| `tests/sender_authority_test.py` | 2/2 PASS | Python/Node-RED 共享租约互斥、释放与进程退出恢复 |
+| `tests/sender_authority_test.py` | 3/3 PASS | Python/Node-RED 共享租约互斥、释放与进程退出恢复 |
 | `tests/ua_writeback_adapter_test.py` | 3/3 PASS | 真实安全 OPC UA `RecordMesReceipt`、成功 `DONE`、失败回报与缺失回执拒绝 |
 | `tests/ua_write_crash_recovery.py` | 27/27 PASS | UA 冻结时注入 NG/完工、MES 成功后 SIGKILL、重启后完成 UA 写回 |
 
@@ -327,7 +328,7 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 共享投递读模型、MES 契约体检、本地操作台、无硬件演示、迁移工具、UA 写回适配器、发送权并发、受控切换/回滚与真实 Node-RED 在线全链路演练接入后的综合回归共 41 个测试模块、**647/647 PASS**，摘要为 `.tmp/regression-20261121-154011/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 共享投递读模型、AI 质检最小闭环、MES 契约体检、本地操作台、无硬件演示、迁移工具、UA 写回适配器、发送权并发、受控切换/回滚与真实 Node-RED 在线全链路演练接入后的综合回归共 42 个测试模块、**664/664 PASS**，摘要为 `.tmp/regression-20261121-163110/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

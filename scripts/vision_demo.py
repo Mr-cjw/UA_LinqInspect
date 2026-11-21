@@ -13,7 +13,7 @@ import hashlib
 import io
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
@@ -39,6 +39,13 @@ REVIEW_THRESHOLD = 0.60
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 ALLOWED_IMAGE_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
+QUALITY_GATE_VERSION = "image-quality-gate-v1"
+MIN_IMAGE_DIMENSION = 64
+MIN_MEAN_BRIGHTNESS = 0.08
+MAX_MEAN_BRIGHTNESS = 0.92
+MIN_CONTRAST = 0.015
+MIN_SHARPNESS = 0.008
+MAX_CLIPPED_FRACTION = 0.35
 
 _LIMITATIONS = [
     "训练和验证图像均由程序合成，不代表真实工厂图像分布。",
@@ -150,6 +157,93 @@ class Prediction:
     probabilities: dict[str, float]
     decision: str
     decision_reason: str
+
+
+@dataclass(frozen=True)
+class ImageQualityAssessment:
+    """Input-image checks that must pass before a classification is trusted."""
+
+    status: str
+    reason: str
+    metrics: dict[str, float]
+    checks: list[dict[str, Any]]
+
+
+def assess_image_quality(image: Image.Image) -> ImageQualityAssessment:
+    """Reject unusable input before the model gets a chance to guess.
+
+    These thresholds are deliberately simple and explicit for the synthetic
+    demonstration. They are not a substitute for a real camera, lighting,
+    fixture and image-quality validation plan.
+    """
+    oriented = ImageOps.exif_transpose(image)
+    width, height = oriented.size
+    gray = oriented.convert("L").resize(
+        (IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.BILINEAR
+    )
+    data = np.asarray(gray, dtype=np.float32) / 255.0
+    gx = np.zeros_like(data)
+    gy = np.zeros_like(data)
+    gx[:, 1:-1] = np.abs(data[:, 2:] - data[:, :-2])
+    gy[1:-1, :] = np.abs(data[2:, :] - data[:-2, :])
+    metrics = {
+        "width": float(width),
+        "height": float(height),
+        "meanBrightness": round(float(data.mean()), 6),
+        "contrast": round(float(data.std()), 6),
+        "sharpness": round(float((gx + gy).mean()), 6),
+        "overexposedFraction": round(float((data > 0.98).mean()), 6),
+        "underexposedFraction": round(float((data < 0.02).mean()), 6),
+    }
+    clipped_fraction = max(
+        metrics["overexposedFraction"], metrics["underexposedFraction"]
+    )
+    checks = [
+        {
+            "name": "分辨率",
+            "passed": width >= MIN_IMAGE_DIMENSION and height >= MIN_IMAGE_DIMENSION,
+            "value": f"{width}x{height}",
+            "threshold": f">={MIN_IMAGE_DIMENSION}x{MIN_IMAGE_DIMENSION}",
+        },
+        {
+            "name": "平均亮度",
+            "passed": MIN_MEAN_BRIGHTNESS <= metrics["meanBrightness"] <= MAX_MEAN_BRIGHTNESS,
+            "value": metrics["meanBrightness"],
+            "threshold": f"{MIN_MEAN_BRIGHTNESS:.2f}~{MAX_MEAN_BRIGHTNESS:.2f}",
+        },
+        {
+            "name": "对比度",
+            "passed": metrics["contrast"] >= MIN_CONTRAST,
+            "value": metrics["contrast"],
+            "threshold": f">={MIN_CONTRAST:.3f}",
+        },
+        {
+            "name": "清晰度",
+            "passed": metrics["sharpness"] >= MIN_SHARPNESS,
+            "value": metrics["sharpness"],
+            "threshold": f">={MIN_SHARPNESS:.3f}",
+        },
+        {
+            "name": "过曝/欠曝",
+            "passed": clipped_fraction <= MAX_CLIPPED_FRACTION,
+            "value": clipped_fraction,
+            "threshold": f"<={MAX_CLIPPED_FRACTION:.2f}",
+        },
+    ]
+    failed = [check["name"] for check in checks if not check["passed"]]
+    if failed:
+        return ImageQualityAssessment(
+            status="REVIEW",
+            reason=f"图像质量门禁未通过（{'、'.join(failed)}），不执行自动分类。",
+            metrics=metrics,
+            checks=checks,
+        )
+    return ImageQualityAssessment(
+        status="PASS",
+        reason="图像质量门禁通过。",
+        metrics=metrics,
+        checks=checks,
+    )
 
 
 class SyntheticVisionModel:
@@ -332,6 +426,17 @@ class SyntheticVisionModel:
             },
             "validationScope": "合成留出集，不是生产现场数据",
             "reviewThreshold": REVIEW_THRESHOLD,
+            "inputQualityGate": {
+                "version": QUALITY_GATE_VERSION,
+                "thresholds": {
+                    "minDimension": MIN_IMAGE_DIMENSION,
+                    "meanBrightness": [MIN_MEAN_BRIGHTNESS, MAX_MEAN_BRIGHTNESS],
+                    "minContrast": MIN_CONTRAST,
+                    "minSharpness": MIN_SHARPNESS,
+                    "maxClippedFraction": MAX_CLIPPED_FRACTION,
+                },
+                "scope": "仅用于拦截明显不可用输入，不替代真实采图与光源验收",
+            },
             "modelSha256": self.model_hash,
             "classes": [
                 {"code": code, "label": DISPLAY_NAMES[code]} for code in CLASSES
@@ -361,16 +466,35 @@ def classify_image(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_model()
-    prediction = model.predict(image)
+    model.ensure_ready()
+    quality = assess_image_quality(image)
     data_url, canonical_hash = _png_data_url(image)
     image_hash = source_sha256 or canonical_hash
-    result = {
+    common = {
         "sample": sample,
         "imageDataUrl": data_url,
         "imageSha256": image_hash,
         "imageHashScope": "original-upload-bytes" if source_sha256 else "canonical-png-bytes",
         "imageWidth": image.width,
         "imageHeight": image.height,
+        "qualityGate": asdict(quality),
+        "modelCard": model.model_card(),
+    }
+    if quality.status != "PASS":
+        return {
+            **common,
+            "predictedClass": None,
+            "predictedLabel": "无法判定",
+            "confidence": 0.0,
+            "decision": "REVIEW",
+            "decisionReason": f"{quality.reason} 已转人工复核，不自动放行或开单。",
+            "probabilities": [],
+            "inferenceMs": round((time.perf_counter() - started) * 1000, 2),
+        }
+
+    prediction = model.predict(image)
+    result = {
+        **common,
         "predictedClass": prediction.label,
         "predictedLabel": DISPLAY_NAMES[prediction.label],
         "confidence": round(prediction.confidence, 6),
@@ -384,7 +508,6 @@ def classify_image(
             }
             for code in CLASSES
         ],
-        "modelCard": model.model_card(),
         "inferenceMs": round((time.perf_counter() - started) * 1000, 2),
     }
     return result
@@ -442,7 +565,7 @@ VISION_DASHBOARD = r"""<!doctype html>
 <header class="top"><div class="brand"><span class="mark">UL</span>UA_LinqInspect · Vision</div><nav class="nav"><a href="/overview">项目总览</a><a href="/vision">AI 质检</a><a href="/joint">联合时间线</a><a href="/">交付演示</a></nav></header>
 <section class="hero"><div><div class="eyebrow">AI 质检最小闭环 · 真实推理，合成数据边界可见</div><h1>AI 先看见缺陷，<em>质量闭环</em>再让结果产生业务作用</h1><p class="lede">这张页面不是预录的“AI 效果图”。图片会进入本地神经网络，输出缺陷类别、置信度和完整概率分布；达到阈值后才允许进入 Edge Core、MES 回执与设备解释链路，低置信度只转人工复核。</p></div><div class="warn"><b>边界先行：</b>模型训练与验证均使用程序合成图像，留出集指标不等于真实产线精度；没有真实相机、客户样本和现场验收。本页用于证明推理链路与决策门禁可运行，不用于宣称生产 AI 能力。</div></section>
 <div class="main">
- <section class="panel"><h2>1. 选择或上传一张检测图片</h2><div id="samples" class="samples"></div><div class="upload"><input id="file" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-btn" class="sample">上传图片并推理</button></div><div class="imagebox"><div id="image-empty" class="empty">选择内置样本或上传图片后，模型会在这里显示输入证据。</div><img id="image" alt="待检测图片" hidden><span id="image-tag" class="tag" hidden>等待推理</span></div><div id="decision" class="decision"><div class="head"><div><span id="decision-pill" class="pill">等待推理</span><h3 id="decision-title">尚未分类</h3></div><div id="decision-meta" class="meta">模型版本：--<br>推理耗时：--</div></div><p id="decision-reason">点击任意内置样本，真实模型会在本机训练一次并执行推理。</p><button id="deliver" class="run" disabled>把这条 NG 送入质量闭环</button></div></section>
+<section class="panel"><h2>1. 选择或上传一张检测图片</h2><div id="samples" class="samples"></div><div class="upload"><input id="file" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-btn" class="sample">上传图片并推理</button></div><div class="imagebox"><div id="image-empty" class="empty">选择内置样本或上传图片后，模型会在这里显示输入证据。</div><img id="image" alt="待检测图片" hidden><span id="image-tag" class="tag" hidden>等待推理</span></div><div id="decision" class="decision"><div class="head"><div><span id="decision-pill" class="pill">等待推理</span><h3 id="decision-title">尚未分类</h3></div><div id="decision-meta" class="meta">模型版本：--<br>处理耗时：--</div></div><p id="decision-reason">点击任意内置样本，真实模型会在本机训练一次并执行推理。</p><button id="deliver" class="run" disabled>把这条 NG 送入质量闭环</button></div></section>
  <aside class="panel"><h2>2. 模型输出与可信边界</h2><div id="bars" class="bars"><div class="error">尚未运行模型。</div></div><div class="cardgrid"><div class="stat"><span>留出集准确率</span><b id="accuracy">--</b></div><div class="stat"><span>验证样本</span><b id="validation">--</b></div><div class="stat"><span>模型版本</span><b id="version" style="font-size:10px">--</b></div><div class="stat"><span>训练数据</span><b style="font-size:11px">程序合成</b></div></div><div class="modelcard"><h3>模型卡：必须一起展示</h3><div id="model-meta" class="modelcard"><div class="error">模型尚未初始化。</div></div><ul id="limitations"></ul></div><div id="delivery" class="delivery"><h3>质量闭环结果</h3><div id="delivery-summary"></div><div id="delivery-steps" class="steps"></div></div></aside>
 </div>
 <p class="foot">真实执行：本机图片解码、神经网络推理、缺陷分类、置信度门禁、Edge Core API、SQLite Outbox、Worker、MES 回执与设备上下文。模拟部分：图像来自程序合成，下游 MES 与 OPC UA 写回为本地模拟。当前是 PoC+，不是生产视觉验收，也不承诺未知缺陷零漏检。</p>
@@ -452,7 +575,7 @@ const $=id=>document.getElementById(id);let currentPayload={sample:'SCRATCH'},cu
 const samples=[['OK','正常'],['SCRATCH','划痕'],['DENT','凹坑'],['STAIN','污渍'],['MISSING','缺件']];
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function pct(v){return (Number(v)*100).toFixed(1)+'%';}
 for(const [code,label] of samples){const b=document.createElement('button');b.className='sample'+(code==='SCRATCH'?' active':'');b.textContent=label;b.onclick=()=>{document.querySelectorAll('.sample').forEach(x=>x.classList.remove('active'));b.classList.add('active');currentPayload={sample:code};classify();};$('samples').appendChild(b);}
-function setDecision(result){currentResult=result;const pill=$('decision-pill');pill.className='pill '+(result.decision==='NG'?'ng':result.decision==='OK'?'ok':'review');pill.textContent=result.decision;$('decision-title').textContent=result.predictedLabel;$('decision-reason').textContent=result.decisionReason;$('decision-meta').innerHTML='模型版本：'+esc(result.modelCard.modelVersion)+'<br>推理耗时：'+esc(result.inferenceMs)+' ms<br>图像 SHA-256：'+esc(String(result.imageSha256||'').slice(0,16))+'…<br>哈希口径：'+esc(result.imageHashScope);$('image').src=result.imageDataUrl;$('image').hidden=false;$('image-empty').hidden=true;$('image-tag').hidden=false;$('image-tag').textContent=result.decision+' · '+result.predictedLabel;$('deliver').disabled=result.decision!=='NG';$('deliver').textContent=result.decision==='NG'?'把这条 NG 送入质量闭环':result.decision==='OK'?'OK 样本不生成 MES 工单':'低置信度：转人工复核';$('accuracy').textContent=pct(result.modelCard.validationAccuracy);$('validation').textContent=result.modelCard.validationSamples;$('version').textContent=result.modelCard.modelVersion;const bars=$('bars');bars.innerHTML='';for(const item of result.probabilities){const row=document.createElement('div');row.className='barrow';const n=document.createElement('span');n.textContent=item.label;const t=document.createElement('div');t.className='track';const f=document.createElement('div');f.className='fill';f.style.width=Math.max(0,Math.min(100,item.probability*100))+'%';t.appendChild(f);const v=document.createElement('span');v.textContent=pct(item.probability);row.append(n,t,v);bars.appendChild(row);}const metrics=result.modelCard.validationMetrics||{};const recalls=(metrics.perClass||[]).map(x=>esc(x.label)+' '+pct(x.recall)).join(' · ');const meta=$('model-meta');meta.innerHTML='<div class="modelcard"><h3>'+esc(result.modelCard.modelVersion)+'</h3><div style="font-size:10px;color:var(--muted)">'+esc(result.modelCard.modelType)+'<br>'+esc(result.modelCard.validationScope)+'<br>合成留出集宏平均召回 '+pct(result.modelCard.validationMacroRecall)+'<br>类别召回：'+recalls+'<br>自动判定阈值 '+pct(result.modelCard.reviewThreshold)+'<br>模型哈希：'+esc(String(result.modelCard.modelSha256||'').slice(0,12))+'…</div></div>';const ul=$('limitations');ul.innerHTML='';for(const text of result.modelCard.limitations){const li=document.createElement('li');li.textContent=text;ul.appendChild(li);}}
+function setDecision(result){currentResult=result;const qualityPassed=result.qualityGate?.status==='PASS';const pill=$('decision-pill');pill.className='pill '+(result.decision==='NG'?'ng':result.decision==='OK'?'ok':'review');pill.textContent=result.decision;$('decision-title').textContent=result.predictedLabel;$('decision-reason').textContent=result.decisionReason;$('decision-meta').innerHTML='模型版本：'+esc(result.modelCard.modelVersion)+'<br>处理耗时：'+esc(result.inferenceMs)+' ms<br>质量门禁：'+esc(result.qualityGate?.status||'--')+'<br>图像 SHA-256：'+esc(String(result.imageSha256||'').slice(0,16))+'…<br>哈希口径：'+esc(result.imageHashScope);$('image').src=result.imageDataUrl;$('image').hidden=false;$('image-empty').hidden=true;$('image-tag').hidden=false;$('image-tag').textContent=qualityPassed?result.decision+' · '+result.predictedLabel:'REVIEW · 图像质量';$('deliver').disabled=result.decision!=='NG';$('deliver').textContent=result.decision==='NG'?'把这条 NG 送入质量闭环':result.decision==='OK'?'OK 样本不生成 MES 工单':qualityPassed?'低置信度：转人工复核':'图像质量不合格：转人工复核';$('accuracy').textContent=pct(result.modelCard.validationAccuracy);$('validation').textContent=result.modelCard.validationSamples;$('version').textContent=result.modelCard.modelVersion;const bars=$('bars');bars.innerHTML='';if(!result.probabilities.length){bars.innerHTML='<div class="error">图像质量门禁未通过，未执行分类推理。请改善采图条件后重试。</div>';}for(const item of result.probabilities){const row=document.createElement('div');row.className='barrow';const n=document.createElement('span');n.textContent=item.label;const t=document.createElement('div');t.className='track';const f=document.createElement('div');f.className='fill';f.style.width=Math.max(0,Math.min(100,item.probability*100))+'%';t.appendChild(f);const v=document.createElement('span');v.textContent=pct(item.probability);row.append(n,t,v);bars.appendChild(row);}const metrics=result.modelCard.validationMetrics||{};const recalls=(metrics.perClass||[]).map(x=>esc(x.label)+' '+pct(x.recall)).join(' · ');const gate=result.modelCard.inputQualityGate||{};const qm=result.qualityGate?.metrics||{};const qualityText=qm.width?`${qm.width}x${qm.height} · 亮度 ${Number(qm.meanBrightness).toFixed(3)} · 对比度 ${Number(qm.contrast).toFixed(3)} · 清晰度 ${Number(qm.sharpness).toFixed(3)} · 过曝 ${pct(qm.overexposedFraction)} · 欠曝 ${pct(qm.underexposedFraction)}`:'--';const meta=$('model-meta');meta.innerHTML='<div class="modelcard"><h3>'+esc(result.modelCard.modelVersion)+'</h3><div style="font-size:10px;color:var(--muted)">'+esc(result.modelCard.modelType)+'<br>'+esc(result.modelCard.validationScope)+'<br>合成留出集宏平均召回 '+pct(result.modelCard.validationMacroRecall)+'<br>类别召回：'+recalls+'<br>自动判定阈值 '+pct(result.modelCard.reviewThreshold)+'<br>质量指标：'+esc(qualityText)+'<br>输入质量门禁：'+esc(gate.version||'--')+'（分辨率、亮度、对比度、清晰度、过曝/欠曝），不通过时不执行自动分类<br>模型哈希：'+esc(String(result.modelCard.modelSha256||'').slice(0,12))+'…</div></div>';const ul=$('limitations');ul.innerHTML='';for(const text of result.modelCard.limitations){const li=document.createElement('li');li.textContent=text;ul.appendChild(li);}}
 async function classify(){const button=$('deliver');button.disabled=true;button.textContent='真实推理中…';$('decision-pill').className='pill';$('decision-pill').textContent='推理中';$('decision-title').textContent='模型正在运行';$('decision-reason').textContent='第一次运行会训练小型模型，之后使用内存中的参数。';$('bars').innerHTML='<div class="error spin">神经网络推理中…</div>';try{const res=await fetch('/api/vision/classify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(currentPayload)});const data=await res.json();if(!res.ok)throw new Error(data.error||('HTTP '+res.status));setDecision(data);}catch(e){$('decision-pill').className='pill';$('decision-pill').textContent='失败';$('decision-title').textContent='推理失败';$('decision-reason').textContent=e.message;button.disabled=true;}}
 async function runDelivery(){if(!currentResult||currentResult.decision!=='NG')return;const button=$('deliver');button.disabled=true;button.textContent='正在启动设备上下文与 MES 链路…';$('delivery').style.display='block';$('delivery-summary').innerHTML='<div class="error spin">正在运行联合质量闭环…</div>';$('delivery-steps').innerHTML='';try{const res=await fetch('/api/vision/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(currentPayload)});const data=await res.json();if(!res.ok)throw new Error(data.error||('HTTP '+res.status));if(!data.delivery){$('delivery-summary').textContent=data.message||'本次没有生成 MES 工单。';button.disabled=false;button.textContent='重新运行推理';return;}$('delivery-summary').innerHTML='<span class="pill ok">DONE</span> MES 回执 <b>'+esc(data.delivery.mesReceiptNo)+'</b><br><span style="font-size:10px;color:var(--muted)">correlationId='+esc(data.delivery.correlationId)+'</span>';const box=$('delivery-steps');for(const step of data.delivery.steps){const row=document.createElement('div');row.className='step';row.innerHTML='<b>'+esc(step.number)+'. '+esc(step.title)+'</b><br>'+esc(step.detail);box.appendChild(row);}button.disabled=false;button.textContent='↻ 再运行一次质量闭环';}catch(e){$('delivery-summary').innerHTML='<div class="error">质量闭环失败：'+esc(e.message)+'</div>';button.disabled=false;button.textContent='重新运行质量闭环';}}
 $('upload-btn').onclick=()=>{const file=$('file').files[0];if(!file)return;$('decision-pill').textContent='读取图片';const reader=new FileReader();reader.onload=()=>{currentPayload={imageBase64:String(reader.result)};classify();};reader.readAsDataURL(file);};

@@ -1,12 +1,12 @@
-# UA_LinqInspect — 工业质检 OPC UA OT-IT 闭环原型
+# UA_LinqInspect — 工业 AI 质检与 OPC UA OT-IT 闭环原型
 
-零成本软件仿真环境下的工业质检原型：**AI 质检（虚拟） → OPC UA Server → Node-RED → 模拟 MES 工单闭环**。
+零成本软件仿真环境下的工业质检原型：**AI 质检发现缺陷 → OPC UA Server → Node-RED/Edge Core → MES 工单闭环**。
 
 设计与排期依据：[Phase0_需求拆解与信息模型.md](Phase0_需求拆解与信息模型.md)（已冻结，含信息模型表、编码硬约束、里程碑 M1~M4）。
 
 ## 项目简介
 
-UA_LinqInspect 演示的是“质检结果如何安全、可追溯地进入 MES”，不是训练视觉模型本身。
+UA_LinqInspect 演示的是从“发现缺陷”到“质检结果安全、可追溯地进入 MES”的完整链路。视觉模型在本机真实训练和推理，但训练/验证图像由程序合成，因此证明的是推理链路、置信度门禁和业务闭环可运行，**不是生产视觉精度**。
 
 它把产线质检结果表达为标准 OPC UA 对象模型，通过事件通知把 NG/完工信息送到
 Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调用模拟 MES 完成
@@ -14,19 +14,23 @@ Node-RED；Node-RED 负责去重、削峰、缓冲、重试和死信处理，调
 
 | 层次 | 当前实现 | 负责什么 |
 |---|---|---|
-| 质检数据源 | 虚拟 AI 质检循环 | 产生 OK/NG、缺陷类型、置信度、SN、图片 ID |
+| AI 质检入口 | `scripts/vision_demo.py`（NumPy + Pillow） | 本机真实推理，输出 OK/NG、缺陷类别、置信度、概率分布和模型卡 |
+| 质检数据源 | 合成图像与本地模型 | 五类合成样本；训练/验证数据不代表客户现场分布 |
 | OPC UA Server | `server/qc_server.py`（asyncua） | QCStation 信息模型、工单状态机、Method、Event、审计与权限 |
 | 安全通道 | 本地 Root CA + `Basic256Sha256_SignAndEncrypt` | 服务端/客户端证书校验；匿名只读；管理员可调 Method；工单控制与 MES 回执变量均外部只读，由服务端受控写入 |
 | 边缘网关 | Node-RED + `node-red-contrib-opcua` + SQLite | 订阅事件、事务去重/入队、单飞行发送、退避重试、死信、MES 调用、指标、健康探针与在线备份 |
+| Edge Core 交付主线 | API + SQLite Outbox + Worker + 状态机 | 承接可靠投递、重试、死信、人工重放、回执校验与 UA 写回确认 |
+| 设备上下文 | 同级 `rpi4-opcua-oee-rca-gateway` | 采集 PLC 状态、产量、温度和报警，计算 OEE 并给出 RCA 候选 |
 | 模拟 MES | Node-RED `http in` 节点 | 模拟 NG 开单、完工报工、回执与故障注入 |
 | 硬件扩展 | `hardware/` | 可选的树莓派 5 + open62541 + STM32 现场节点方案 |
 
-一句话理解：**虚拟质检产生数据，OPC UA 定义语义和权限，Node-RED 保证可靠传输，MES 完成工单闭环。**
+一句话理解：**AI 质检发现缺陷，质量闭环让结果不丢、不重、可对账，设备上下文解释损失。**
 
 当前边界：
 
-- 真实实现：OPC UA 信息模型、Method 业务校验、事件订阅、证书与账号权限、Node-RED 队列与重试。
-- 仿真实现：AI 视觉推理和 MES HTTP 服务，二者都是零成本替代品。
+- 真实实现：本地视觉模型训练与推理、置信度门禁、Edge Core 状态机、SQLite Outbox、重试/死信/重放、OPC UA 信息模型、证书与账号权限。
+- 仿真实现：视觉训练/验证图像为程序合成；下游 MES 与 OPC UA 回执写回为本地模拟。
+- 尚未验证：真实相机、客户样本、未知缺陷漏检率、现场精度、真实 PLC/MES 和生产网络。
 - 未纳入主链路：树莓派/STM32 硬件版本，仅在 `hardware/` 中提供架构和骨架。
 
 ## 先体验：五分钟软件演示（无需硬件）
@@ -57,6 +61,18 @@ MES 超时、服务重启、持续 503、死信、人工重放、MES 回执和 U
 
 联合场景会启动真实 Mock PLC，触发停机和温度异常，再把 NG 送入真实 Edge Core，
 完成 MES 回执与 UA 确认，并输出 OEE 分解和 RCA 候选原因。
+
+AI 质检最小闭环（真实推理，合成数据边界可见）：
+
+```bash
+.venv/bin/python scripts/demo_edge_core.py --ui --no-open
+# 浏览器打开 http://127.0.0.1:8899/vision
+```
+
+首次执行推理时会训练一个 850 张合成样本的小型神经网络（当前环境约十几秒到数十秒），之后执行真实推理。首次请求的处理耗时包含训练时间，不等同于稳态推理延迟。页面同时展示
+图像质量门禁、缺陷类别、置信度、五类概率分布、类别级指标、模型哈希和推理/门禁处理耗时；空白、模糊、
+过曝、欠曝或过小的图片会在分类前转人工复核，只有图像质量合格且达到阈值的 NG 才能进入质量闭环。
+OK 也必须过置信度门禁，低置信度的 OK/NG 都转人工复核。合成留出集指标不是现场精度，未知缺陷可能误分。
 
 项目总览与现场演示（推荐现场演示从这个页面开始）：
 
@@ -143,10 +159,11 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [零客户阶段：痛点验证与融资前证据包](docs/23_零客户阶段痛点验证与融资前证据包.md)
 - [产品扩展与 MES 契约体检](docs/24_产品扩展与MES契约体检.md)
 - [本地操作台使用说明](docs/25_本地操作台使用说明.md)
+- [AI 质检最小闭环](docs/26_AI质检最小闭环.md)
 
 ## 商业现状
 
-截至 2026-11-21，技术验证已覆盖安全、SQLite Outbox、MES 错误分类、真实 OPC UA 写回和 Node-RED 在线切换；但**还没有真实客户、付费试点、真实 MES 沙箱或投资承诺**。模拟 MES 和本地在线演练只能证明工程能力，不能证明需求、采购意愿或现场价值。当前优先事项是完成客户访谈、真实故障样本收集和付费诊断/试点验证，详见 [零客户阶段验证方案](docs/23_零客户阶段痛点验证与融资前证据包.md)。
+截至 2026-11-21，技术验证已覆盖安全、SQLite Outbox、MES 错误分类、真实 OPC UA 写回、发送权在线切换、MES 契约体检、本地操作台和 AI 质检门禁；但**还没有真实客户、付费试点、真实 MES 沙箱或投资承诺**。模拟 MES 和本地在线演练只能证明工程能力，不能证明需求、采购意愿或现场价值。当前优先事项是完成客户访谈、真实故障样本收集和付费诊断/试点验证，详见 [零客户阶段验证方案](docs/23_零客户阶段痛点验证与融资前证据包.md)。
 
 ## 项目结构
 
@@ -154,7 +171,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 UA_LinqInspect/
 ├── README.md                  # 本文件：项目入口
 ├── Phase0_需求拆解与信息模型.md  # 设计基准（NodeId/变量/Method/Event 全部以此为准）
-├── server/                    # asyncua OPC UA Server + 虚拟 AI 质检数据源
+├── server/                    # asyncua OPC UA Server + 质检数据源
 │   ├── qc_server.py           # M1：Server 主体（信息模型 §2 全量落地）
 │   ├── qc_state.py            # 状态 schema、校验、JSON 兼容与 Outbox 序列化
 │   ├── qc_sqlite_state.py     # SQLite 状态 + Outbox 原子事务
@@ -165,6 +182,7 @@ UA_LinqInspect/
 │   ├── queue_logic.js         # 入队、发送泵、模拟MES幂等/冲突校验、状态接口与指标
 │   └── settings.js            # 注入 qstore/qlogic 的 Node-RED 配置模板
 ├── scripts/
+│   ├── vision_demo.py         # AI 质检最小闭环：本地模型、模型卡、置信度门禁
 │   ├── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
 │   ├── backup_queue.py        # SQLite 在线备份、完整性校验与保留策略
 │   ├── restore_queue.py       # 离线恢复、恢复前快照与原子替换
@@ -212,6 +230,7 @@ UA_LinqInspect/
 │   ├── 23_零客户阶段痛点验证与融资前证据包.md
 │   ├── 24_产品扩展与MES契约体检.md
 │   ├── 25_本地操作台使用说明.md
+│   ├── 26_AI质检最小闭环.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
@@ -582,15 +601,16 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 647/647 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 647/647 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 647/647 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 647/647 PASS，含只读恢复目标拒绝） |
-| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（647/647 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 664/664 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 664/664 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 664/664 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 664/664 PASS，含只读恢复目标拒绝） |
+| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（664/664 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
+| AI 质检 | 图像质量门禁 + 本地模型真实训练/推理 + 类别级模型卡 + 置信度门禁 + NG 进入联合交付 | ✅ 完成（17 项专项测试，含空白/模糊/过曝/欠曝/过小图片拦截、低置信度 OK/NG 复核、哈希追溯、NG 输入一致性与上传边界） |
 | MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同事务持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
-| Edge Core 0.2 | 外部控制面 OpenAPI、共享请求/回执校验、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 14 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
+| Edge Core 0.4 | 外部控制面 OpenAPI、共享请求/回执校验、SQLite 状态机、死信重放、UA 写回确认与真实在线切换 | ✅ 14 项 API/状态机 + 17 项 Node-RED 在线全链路 PASS；真实 MES 沙箱待做 |
 | MES 契约体检 0.1 | 对真实/沙箱 MES 做同步回执、重复请求、业务键冲突、非法请求和鉴权预检，输出 JSON/Markdown 报告 | ✅ 5/5 PASS；默认 dry-run，真实写入需双重确认 |
 | 本地操作台 0.1 | 单工位 Web 控制台，支持 UA 开检/完工、队列/回执/死信、快照导出与 Basic/CSRF 防护 | ✅ 7/7 PASS；真实在线链路 17/17 PASS |
 | 投递读模型 0.1 | Node-RED 与 Edge Core 共用 `delivery-record.schema.json`，统一投递字段、状态映射和回执结构 | 🟡 读模型已统一；物理表和发送泵仍待收敛 |

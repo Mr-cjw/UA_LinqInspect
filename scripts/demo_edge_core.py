@@ -862,11 +862,12 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             try:
                 vision = _classify_vision_request(self._read_json_body())
                 if vision["decision"] != "NG":
-                    message = (
-                        "本次推理为 OK，未生成 MES 工单。"
-                        if vision["decision"] == "OK"
-                        else "本次置信度低于自动开单阈值，已转人工复核，未生成 MES 工单。"
-                    )
+                    if vision.get("qualityGate", {}).get("status") != "PASS":
+                        message = "本次图像质量门禁未通过，已转人工复核，未生成 MES 工单。"
+                    elif vision["decision"] == "OK":
+                        message = "本次推理为 OK，未生成 MES 工单。"
+                    else:
+                        message = "本次置信度低于自动开单阈值，已转人工复核，未生成 MES 工单。"
                     self._json(200, {"vision": vision, "delivery": None, "message": message})
                     return
                 from demo_joint_oee_rca import JointDemoUnavailable, run_joint_demo

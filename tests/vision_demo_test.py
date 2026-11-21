@@ -15,6 +15,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image, ImageFilter
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = REPO_ROOT / "scripts"
 RPI_ROOT = REPO_ROOT.parent / "rpi4-opcua-oee-rca-gateway"
@@ -69,6 +71,10 @@ class VisionModelTests(unittest.TestCase):
         self.assertIn("高置信度不等于真实产线正确率", limitations)
         self.assertIn("未知缺陷", limitations)
         self.assertIn("人工复核", limitations)
+        quality_gate = self.card["inputQualityGate"]
+        self.assertEqual(quality_gate["version"], vision_demo.QUALITY_GATE_VERSION)
+        self.assertEqual(quality_gate["thresholds"]["minDimension"], 64)
+        self.assertIn("不替代真实采图", quality_gate["scope"])
 
     def test_all_builtin_samples_are_classified_with_real_inference(self) -> None:
         for label in vision_demo.CLASSES:
@@ -96,6 +102,62 @@ class VisionModelTests(unittest.TestCase):
                 self.assertEqual(result["decision"], "REVIEW")
                 self.assertIn("人工复核", result["decisionReason"])
                 self.assertIn("不自动开单", result["decisionReason"])
+
+    def test_quality_gate_rejects_unusable_images_before_classification(self) -> None:
+        cases = {
+            "blank": Image.new("RGB", (128, 128), (128, 128, 128)),
+            "blurred": vision_demo.make_sample_image("SCRATCH", 7001).filter(
+                ImageFilter.GaussianBlur(12)
+            ),
+            "overexposed": Image.new("RGB", (128, 128), (255, 255, 255)),
+            "underexposed": Image.new("RGB", (128, 128), (0, 0, 0)),
+            "too-small": vision_demo.make_sample_image("OK", 7001).resize((32, 32)),
+        }
+        for name, image in cases.items():
+            with self.subTest(name=name):
+                result = vision_demo.classify_image(image)
+                self.assertEqual(result["qualityGate"]["status"], "REVIEW")
+                self.assertEqual(result["decision"], "REVIEW")
+                self.assertIsNone(result["predictedClass"])
+                self.assertEqual(result["probabilities"], [])
+                self.assertIn("图像质量门禁未通过", result["decisionReason"])
+                self.assertIn("不执行自动分类", result["decisionReason"])
+                self.assertIn("不自动放行或开单", result["decisionReason"])
+
+    def test_quality_gate_does_not_invoke_classifier(self) -> None:
+        model = vision_demo.get_model()
+        blank = Image.new("RGB", (128, 128), (128, 128, 128))
+        with mock.patch.object(
+            model,
+            "predict",
+            side_effect=AssertionError("quality gate must not invoke prediction"),
+        ) as predict:
+            result = vision_demo.classify_image(blank)
+        predict.assert_not_called()
+        self.assertEqual(result["qualityGate"]["status"], "REVIEW")
+        self.assertEqual(result["decision"], "REVIEW")
+        self.assertIsNone(result["predictedClass"])
+        self.assertEqual(result["probabilities"], [])
+
+    def test_quality_gate_passes_valid_samples_and_exposes_metrics(self) -> None:
+        result = vision_demo.classify_sample("OK")
+        gate = result["qualityGate"]
+        self.assertEqual(gate["status"], "PASS")
+        self.assertEqual(len(gate["checks"]), 5)
+        for key in (
+            "width",
+            "height",
+            "meanBrightness",
+            "contrast",
+            "sharpness",
+            "overexposedFraction",
+            "underexposedFraction",
+        ):
+            self.assertIn(key, gate["metrics"])
+        self.assertEqual(
+            result["modelCard"]["inputQualityGate"]["version"],
+            vision_demo.QUALITY_GATE_VERSION,
+        )
 
     def test_data_url_upload_is_decoded_and_classified(self) -> None:
         buffer = io.BytesIO()
@@ -138,6 +200,9 @@ class VisionModelTests(unittest.TestCase):
         self.assertIn("人工复核", html)
         self.assertIn("合成", html)
         self.assertIn("类别召回", html)
+        self.assertIn("图像质量", html)
+        self.assertIn("质量指标", html)
+        self.assertIn("不执行自动分类", html)
         self.assertIn("图像 SHA-256", html)
         self.assertIn("不是生产视觉验收", html)
         self.assertIn("未知缺陷零漏检", html)
@@ -183,6 +248,21 @@ class VisionHttpTests(unittest.TestCase):
         self.assertEqual(result["vision"]["decision"], "OK")
         self.assertIsNone(result["delivery"])
         self.assertIn("未生成 MES 工单", result["message"])
+
+    def test_quality_gate_failure_never_creates_a_mes_order(self) -> None:
+        buffer = io.BytesIO()
+        Image.new("RGB", (128, 128), (128, 128, 128)).save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        status, result = post_json(
+            self.base_url,
+            "/api/vision/run",
+            {"imageBase64": "data:image/png;base64," + encoded},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["vision"]["qualityGate"]["status"], "REVIEW")
+        self.assertEqual(result["vision"]["decision"], "REVIEW")
+        self.assertIsNone(result["delivery"])
+        self.assertIn("图像质量门禁未通过", result["message"])
 
     def test_invalid_sample_is_a_bad_request(self) -> None:
         status, result = post_json(self.base_url, "/api/vision/classify", {"sample": "UNKNOWN"})
