@@ -1,2 +1,5 @@
 # OPC UA Server 依赖（M1 已验证版本）
 asyncua==2.1.0
+# AI 质检最小闭环依赖（合成数据 PoC）
+numpy==2.2.6
+Pillow==11.3.0

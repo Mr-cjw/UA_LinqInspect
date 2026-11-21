@@ -354,7 +354,7 @@ Node-RED 继续作为在线执行器、Edge Core 仅做外部控制面，还是�
 - 死信查询、确认和重放；
 - Bearer token 保护的控制面 API；
 - 轻量队列、死信、MES 和 UA 写回指标；
-- `tests/edge_core_test.py` 12 项自动化测试，覆盖输入约束、事件类型专属回执、稳定错误码、`Idempotency-Key` 透传和 `Retry-After` 最小值夹紧。
+- `tests/edge_core_test.py` 14 项自动化测试，覆盖输入约束、事件类型专属回执、稳定错误码、`Idempotency-Key` 透传、在线切换控制面和 `Retry-After` 最小值夹紧。
 - Node-RED 与 Edge Core 的投递读模型共同校验 `contracts/delivery-record.schema.json`。
 
 **当前限制：** 在线 Node-RED 链路仍默认使用自己的 SQLite WAL 队列（`nodered/sqlite_store.js`），但 Edge Core 已具备离线迁移、新事件直写、跨进程单发送权、systemd 条件启动、真实 Node-RED 在线流量演练、MES HTTP Basic、真实 UA 写回和回滚准备。下一步是在真实 MES 沙箱与工厂网络执行同一演练，并补齐 Edge Core 专用指标、告警和长期备份策略。

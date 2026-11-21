@@ -36,6 +36,20 @@ from edge_core.store import STATE_DONE, DeliveryStore
 from edge_core.worker import DeliveryWorker
 
 DEMO_STEP_COUNT = 9
+MAX_VISION_REQUEST_BYTES = 12 * 1024 * 1024
+
+
+def _classify_vision_request(body: dict[str, Any]) -> dict[str, Any]:
+    """Run the real local vision model against one API request."""
+    from vision_demo import classify_base64, classify_sample
+
+    sample = body.get("sample")
+    if isinstance(sample, str) and sample.strip():
+        return classify_sample(sample.strip())
+    encoded = body.get("imageBase64")
+    if isinstance(encoded, str) and encoded.strip():
+        return classify_base64(encoded)
+    raise ValueError("请提供 sample 或 imageBase64")
 
 
 @dataclass
@@ -707,7 +721,7 @@ h1{font-size:42px;line-height:1.08;margin:10px 0 12px;letter-spacing:-.03em}.her
  </div>
  <div class="join"><b>联合价值</b><span>质量事件 + 设备上下文 → 一次对账说清“这批 NG 与哪次停机/温度异常同时发生，MES 是否已收到”。</span></div>
 </section>
-<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/joint">运行双项目联合演示 →</a><a class="jointlink" href="/overview" style="border-color:#7c622f;color:#f1c56f">项目总览与现场演示 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
+<div class="toolbar"><button id="run" class="run">▶ 运行五分钟演示</button><a class="jointlink" href="/vision" style="border-color:#2a6952;color:#8ce9c2">AI 质检真实推理 →</a><a class="jointlink" href="/joint">运行双项目联合演示 →</a><a class="jointlink" href="/overview" style="border-color:#7c622f;color:#f1c56f">项目总览与现场演示 →</a><span id="hint" class="hint">点击后自动跑完 9 个真实状态迁移</span></div>
 <div class="stats">
  <div class="stat"><div class="label">最终业务状态</div><div id="final" class="value">待运行</div><div class="sub">MES 回执 + UA 写回都完成才 DONE</div></div>
  <div class="stat"><div class="label">未完成任务</div><div id="queue" class="value">-</div><div class="sub">PENDING / SENDING / RETRY_WAIT</div></div>
@@ -793,10 +807,22 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if path == "/vision":
+            from vision_demo import VISION_DASHBOARD
+
+            body = VISION_DASHBOARD.encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path in {"/api/joint", "/api/overview"}:
+        path = self.path.split("?", 1)[0]
+        if path in {"/api/joint", "/api/overview"}:
             lock: threading.Lock = self.server.joint_lock  # type: ignore[attr-defined]
             if not lock.acquire(blocking=False):
                 self._json(409, {"error": "已有联合演示正在运行"})
@@ -813,7 +839,50 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             finally:
                 lock.release()
             return
-        if self.path != "/api/run":
+        if path == "/api/vision/classify":
+            lock = self.server.vision_lock  # type: ignore[attr-defined]
+            if not lock.acquire(blocking=False):
+                self._json(409, {"error": "已有视觉推理正在运行"})
+                return
+            try:
+                vision = _classify_vision_request(self._read_json_body())
+                self._json(200, vision)
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+            except Exception as exc:
+                self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                lock.release()
+            return
+        if path == "/api/vision/run":
+            lock = self.server.joint_lock  # type: ignore[attr-defined]
+            if not lock.acquire(blocking=False):
+                self._json(409, {"error": "已有联合演示正在运行"})
+                return
+            try:
+                vision = _classify_vision_request(self._read_json_body())
+                if vision["decision"] != "NG":
+                    message = (
+                        "本次推理为 OK，未生成 MES 工单。"
+                        if vision["decision"] == "OK"
+                        else "本次置信度低于自动开单阈值，已转人工复核，未生成 MES 工单。"
+                    )
+                    self._json(200, {"vision": vision, "delivery": None, "message": message})
+                    return
+                from demo_joint_oee_rca import JointDemoUnavailable, run_joint_demo
+
+                result = run_joint_demo(vision_result=vision)
+                self._json(200, {"vision": vision, "delivery": asdict(result)})
+            except JointDemoUnavailable as exc:
+                self._json(503, {"error": str(exc)})
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+            except Exception as exc:
+                self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                lock.release()
+            return
+        if path != "/api/run":
             self._json(404, {"error": "not found"})
             return
         lock: threading.Lock = self.server.demo_lock  # type: ignore[attr-defined]
@@ -827,6 +896,24 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
         finally:
             lock.release()
+
+    def _read_json_body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("请求体长度无效") from exc
+        if length <= 0:
+            raise ValueError("请求体不能为空")
+        if length > MAX_VISION_REQUEST_BYTES:
+            raise ValueError("请求体超过 12 MB 限制")
+        raw = self.rfile.read(length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("请求体必须是有效的 JSON") from exc
+        if not isinstance(body, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        return body
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -843,6 +930,7 @@ def run_ui(port: int, open_browser: bool) -> int:
     server.daemon_threads = True
     server.demo_lock = threading.Lock()  # type: ignore[attr-defined]
     server.joint_lock = threading.Lock()  # type: ignore[attr-defined]
+    server.vision_lock = threading.Lock()  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, name="demo-dashboard", daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}/"

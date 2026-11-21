@@ -32,6 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from demo_edge_core import EdgeService, MesSimulator, _http_json, _timeline, _worker
 from edge_core.store import STATE_DONE
+from vision_demo import DISPLAY_NAMES, classify_sample
 
 NS = "ns=1;s=MockPLC"
 NOMINAL_OUTPUT_PER_MIN = 120.0
@@ -85,6 +86,17 @@ class JointDemoResult:
     rcaConfidence: str
     rcaSummary: str
     rcaEvidence: list[str]
+    defectType: str
+    defectConfidence: float
+    imageId: str
+    imageSha256: str
+    imageHashScope: str
+    visionModelVersion: str
+    visionModelSha256: str
+    visionDatasetVersion: str
+    visionValidationAccuracy: float
+    visionValidationScope: str
+    visionInferenceMs: float
     steps: list[dict[str, Any]]
     samples: list[dict[str, Any]]
     timeline: list[dict[str, Any]]
@@ -346,6 +358,7 @@ async def _run_scenario(
     plc: MockPlcProcess,
     db_path: Path,
     progress: Callable[[JointStep], None] | None,
+    vision_result: dict[str, Any] | None,
 ) -> JointDemoResult:
     started = _utc_now()
     steps: list[JointStep] = []
@@ -353,6 +366,17 @@ async def _run_scenario(
     work_order = "WO-JX-JOINT-20261121-001"
     serial = "SN-JX-JOINT-20261121-0001"
     correlation = f"corr-jx-joint-{uuid.uuid4()}"
+    vision = vision_result or classify_sample("DENT")
+    if vision.get("decision") != "NG":
+        raise ValueError("只有 NG 推理结果可以进入联合质量闭环")
+    defect_type = str(vision["predictedClass"])
+    defect_label = DISPLAY_NAMES.get(defect_type, defect_type)
+    defect_confidence = round(float(vision["confidence"]), 6)
+    model_card = vision.get("modelCard") or {}
+    image_sha256 = str(vision.get("imageSha256") or "")
+    if len(image_sha256) != 64:
+        raise ValueError("视觉推理结果缺少有效的图像哈希")
+    image_id = f"IMG-JX-JOINT-{image_sha256[:8].upper()}"
 
     def step(
         title: str,
@@ -429,9 +453,9 @@ async def _run_scenario(
             "result": "NG",
             "serialNumber": serial,
             "workOrderId": work_order,
-            "defectType": "THERMAL_DEFORMATION",
-            "confidence": 0.96,
-            "imageId": f"IMG-JX-JOINT-{uuid.uuid4().hex[:8]}",
+            "defectType": defect_type,
+            "confidence": defect_confidence,
+            "imageId": image_id,
             "correlationId": correlation,
             "metadata": {
                 "source": "joint-qa-oee-rca-demo",
@@ -440,15 +464,30 @@ async def _run_scenario(
                 "temperatureC": temperature_at_ng,
                 "currentOutput": spike_sample["currentOutput"],
                 "alarmCodes": spike_sample["alarmCodes"],
+                "visionModelVersion": model_card.get("modelVersion"),
+                "visionModelSha256": model_card.get("modelSha256"),
+                "visionDatasetVersion": model_card.get("datasetVersion"),
+                "visionValidationAccuracy": model_card.get("validationAccuracy"),
+                "visionValidationMacroRecall": model_card.get("validationMacroRecall"),
+                "visionValidationScope": model_card.get("validationScope"),
+                "visionInferenceMs": vision.get("inferenceMs"),
+                "imageSha256": image_sha256,
+                "imageHashScope": vision.get("imageHashScope"),
             },
         }
         step(
-            "质检产生 NG：附带设备上下文",
-            "NG 事件保持原 MES 业务合同，同时携带设备状态、温度和报警代码，供后续对账与 RCA 使用。",
+            "AI 质检推理产生 NG：附带设备上下文",
+            f"缺陷类别与置信度来自本地模型对合成{defect_label}图像的真实推理；合成留出集指标不代表现场精度。NG 事件保持原 MES 业务合同，同时携带设备状态、温度和报警代码。",
             tone="dead",
             facts={
                 "SN": serial,
-                "缺陷": "THERMAL_DEFORMATION",
+                "缺陷": defect_type,
+                "置信度": f"{defect_confidence:.2%}",
+                "视觉模型": str(model_card.get("modelVersion") or "unknown"),
+                "视觉指标口径": str(model_card.get("validationScope") or "合成数据"),
+                "模型哈希": str(model_card.get("modelSha256") or "unknown")[:12],
+                "图像哈希": image_sha256[:12],
+                "推理耗时": f"{float(vision.get('inferenceMs') or 0):.2f} ms",
                 "温度": f"{temperature_at_ng}℃",
                 "alarmCodes": ", ".join(spike_sample["alarmCodes"]) or "无",
             },
@@ -515,7 +554,7 @@ async def _run_scenario(
 
     delivery_id = str(done["deliveryId"])
     return JointDemoResult(
-        scenario="设备停机/温度异常 → 质检 NG → MES 闭环 → OEE / RCA",
+        scenario="AI 质检 → 设备停机/温度异常 → MES 闭环 → OEE / RCA",
         startedAt=started,
         finishedAt=_utc_now(),
         lineId="JX-LINE-01",
@@ -544,6 +583,17 @@ async def _run_scenario(
         rcaConfidence=confidence,
         rcaSummary=summary,
         rcaEvidence=evidence,
+        defectType=defect_type,
+        defectConfidence=defect_confidence,
+        imageId=image_id,
+        imageSha256=image_sha256,
+        imageHashScope=str(vision.get("imageHashScope") or "unknown"),
+        visionModelVersion=str(model_card.get("modelVersion") or "unknown"),
+        visionModelSha256=str(model_card.get("modelSha256") or "unknown"),
+        visionDatasetVersion=str(model_card.get("datasetVersion") or "unknown"),
+        visionValidationAccuracy=round(float(model_card.get("validationAccuracy") or 0.0), 6),
+        visionValidationScope=str(model_card.get("validationScope") or "合成数据，不是生产现场数据"),
+        visionInferenceMs=round(float(vision.get("inferenceMs") or 0.0), 2),
         steps=[asdict(item) for item in steps],
         samples=_public_samples(samples),
         timeline=_timeline(db_path, delivery_id),
@@ -551,7 +601,11 @@ async def _run_scenario(
     )
 
 
-def run_joint_demo(progress: Callable[[JointStep], None] | None = None) -> JointDemoResult:
+def run_joint_demo(
+    progress: Callable[[JointStep], None] | None = None,
+    *,
+    vision_result: dict[str, Any] | None = None,
+) -> JointDemoResult:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = REPO_ROOT / ".tmp" / f"joint-qa-oee-{stamp}-{uuid.uuid4().hex[:6]}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -563,7 +617,9 @@ def run_joint_demo(progress: Callable[[JointStep], None] | None = None) -> Joint
     try:
         plc.start()
         edge = EdgeService(db_path, mes.base_url, token)
-        return asyncio.run(_run_scenario(edge, mes, token, plc, db_path, progress))
+        return asyncio.run(
+            _run_scenario(edge, mes, token, plc, db_path, progress, vision_result)
+        )
     finally:
         if edge is not None:
             edge.close()
@@ -576,7 +632,7 @@ JOINT_DASHBOARD = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>双项目联合演示 · QA + OEE/RCA</title>
+<title>双项目联合演示 · AI 质检 + OEE/RCA</title>
 <style>
 :root{--bg:#07111f;--panel:#0d1c30;--panel2:#12243b;--line:#24405f;--text:#e8f1fb;--muted:#8da5bd;--ok:#30d48a;--warn:#f4b740;--dead:#ff6b6b;--blue:#58a6ff;--cyan:#62d9ff}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0%,#3a2412 0,transparent 34%),radial-gradient(circle at 10% 0%,#143154 0,transparent 40%),var(--bg);color:var(--text);font-family:"Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;min-height:100vh}
@@ -590,9 +646,9 @@ JOINT_DASHBOARD = r"""<!doctype html>
 </style>
 </head>
 <body><div class="wrap">
-<header class="hero"><div><div class="eyebrow">JOINT DEMO · TWO REPOSITORIES</div><h1>设备异常 × 质检 NG</h1><p>左边项目负责让质量结果可靠进入 MES，右边项目负责采集设备状态、产量、温度和报警。联合后，不只回答“有没有交付”，还回答“这次损失发生在哪里、时间和设备异常是否重合”。</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a class="back" href="/overview">项目总览 →</a><a class="back" href="/">← 返回质量连接器演示</a></div></header>
+<header class="hero"><div><div class="eyebrow">JOINT DEMO · AI INSPECTION + OEE/RCA</div><h1>AI 质检 × 设备异常</h1><p>本地模型先对合成图像做真实推理，NG 才进入 MES 交付；另一个项目同步采集设备状态、产量、温度和报警。联合后，不只回答“有没有交付”，还回答“这次损失发生在哪里、时间和设备异常是否重合”。</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a class="back" href="/vision">AI 质检 →</a><a class="back" href="/overview">项目总览 →</a></div></header>
 <section class="chain">
- <div class="lane"><h3>质检交付主线 · UA_LinqInspect</h3><div class="flow"><span>QC NG</span><i>→</i><span>Edge Core Outbox</span><i>→</i><span>MES 回执</span><i>→</i><span>UA 确认</span></div><p>本次真实执行：SQLite、API、Worker、回执校验和状态机。</p></div>
+ <div class="lane"><h3>AI 质检与交付主线 · UA_LinqInspect</h3><div class="flow"><span>本地视觉推理</span><i>→</i><span>NG 门禁</span><i>→</i><span>Edge Core Outbox</span><i>→</i><span>MES 回执</span><i>→</i><span>UA 确认</span></div><p>本次真实执行：图像解码、模型推理、置信度门禁、SQLite、API、Worker、回执校验和状态机。</p></div>
  <div class="lane device"><h3>设备上下文 · RPi4 OEE / RCA Gateway</h3><div class="flow"><span>Mock PLC</span><i>→</i><span>停机</span><i>→</i><span>温度 92℃</span><i>→</i><span>报警快照</span></div><p>本次真实执行：另一个仓库的 OPC UA Server、Method 故障注入和变量订阅读取。</p></div>
 </section>
 <div class="toolbar"><button id="run" class="run">▶ 运行双项目联合场景</button><span id="hint" class="hint">自动触发停机与温度异常，约 12 秒完成</span></div>
@@ -610,7 +666,7 @@ JOINT_DASHBOARD = r"""<!doctype html>
   <div class="card"><h3>MES / 投递审计</h3><div id="audit" class="audit"><div class="empty">完成后显示状态轨迹。</div></div></div>
  </aside>
 </div>
-<p class="foot">真实：另一个仓库的 OPC UA Mock PLC、停机/温度 Method、变量读取，以及本项目 Edge Core API、SQLite Outbox、Worker 与回执状态机。模拟：下游 MES 与 OPC UA 回执写回。RCA 只展示时间关联和候选原因，不宣称因果证明。</p>
+<p class="foot">真实：本地视觉模型推理、置信度门禁、另一个仓库的 OPC UA Mock PLC、停机/温度 Method、变量读取，以及本项目 Edge Core API、SQLite Outbox、Worker 与回执状态机。模拟：训练/验证图像为程序合成，下游 MES 与 OPC UA 回执写回为本地模拟。合成留出集准确率不代表现场精度；RCA 只展示时间关联和候选原因，不宣称因果证明。</p>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -635,7 +691,7 @@ async function run(){
   $('availability').textContent=pct(data.availability);$('availability').className='value warn';$('downtime').textContent='停机 '+data.downtimeSeconds+'s / 观测 '+data.observedSeconds+'s';
   $('state').textContent=data.finalState;$('state').className='value ok';$('receipt').textContent=data.mesReceiptNo;
   $('rca').textContent=data.rcaCandidate;$('rca').className='value '+(data.rcaCandidate==='TEMPERATURE_SPIKE'?'warn':'dead');$('rca-confidence').textContent=data.rcaConfidence;
-  setKV('identity',{'产线':data.lineId,'工位':data.stationId,'工单':data.workOrderId,'SN':data.serialNumber,'温度峰值':data.temperaturePeakC+'℃','NG 时温度':data.temperatureAtNgC+'℃','alarmCodes':(data.alarmCodes||[]).join(', '),'deliveryId':data.deliveryId,'correlationId':data.correlationId,'另一仓库':data.rpiRepo});
+  setKV('identity',{'产线':data.lineId,'工位':data.stationId,'工单':data.workOrderId,'SN':data.serialNumber,'视觉判定':data.defectType+' / '+(Number(data.defectConfidence)*100).toFixed(2)+'%','视觉模型':data.visionModelVersion,'模型哈希':String(data.visionModelSha256||'').slice(0,12),'视觉指标口径':data.visionValidationScope,'imageId':data.imageId,'图像哈希':String(data.imageSha256||'').slice(0,12),'哈希口径':data.imageHashScope,'温度峰值':data.temperaturePeakC+'℃','NG 时温度':data.temperatureAtNgC+'℃','alarmCodes':(data.alarmCodes||[]).join(', '),'deliveryId':data.deliveryId,'correlationId':data.correlationId,'另一仓库':data.rpiRepo});
   const ev=$('evidence');ev.innerHTML='';for(const text of data.rcaEvidence){const row=document.createElement('div');row.textContent=text;ev.appendChild(row);}
   const audit=$('audit');audit.innerHTML='';for(const e of data.timeline){const row=document.createElement('div');row.className='audit-row';const b=document.createElement('b');b.textContent=e.from+' → '+e.to;row.append(b,document.createElement('br'),document.createTextNode((e.detail?e.detail+' · ':'')+e.at));audit.appendChild(row);}
   $('hint').textContent='完成：设备损失已量化，NG 已进入 MES，RCA 只给出有证据的候选原因。';btn.textContent='↻ 重新运行联合场景';btn.disabled=false;window.scrollTo({top:0,behavior:'smooth'});

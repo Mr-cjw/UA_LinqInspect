@@ -68,6 +68,22 @@ class JointOeeRcaDemoTests(unittest.TestCase):
         self.assertTrue(self.result.timeline)
         self.assertIn("rpi4-opcua-oee-rca-gateway", self.result.rpiRepo)
 
+    def test_defect_classification_comes_from_the_local_vision_model(self):
+        self.assertIn(self.result.defectType, {"SCRATCH", "DENT", "STAIN", "MISSING"})
+        self.assertNotEqual(self.result.defectType, "THERMAL_DEFORMATION")
+        self.assertGreaterEqual(self.result.defectConfidence, 0.0)
+        self.assertLessEqual(self.result.defectConfidence, 1.0)
+        self.assertEqual(self.result.visionModelVersion, "synthetic-vision-mlp-v1")
+        self.assertEqual(len(self.result.visionModelSha256), 64)
+        self.assertIn("合成", self.result.visionValidationScope)
+        self.assertGreaterEqual(self.result.visionValidationAccuracy, 0.9)
+        self.assertEqual(len(self.result.imageSha256), 64)
+        self.assertEqual(self.result.imageHashScope, "canonical-png-bytes")
+        self.assertTrue(self.result.imageId.startswith("IMG-JX-JOINT-"))
+        self.assertEqual(self.result.imageId, f"IMG-JX-JOINT-{self.result.imageSha256[:8].upper()}")
+        self.assertIn("AI 质检推理产生 NG", self.result.steps[4]["title"])
+        self.assertEqual(self.result.steps[4]["facts"]["缺陷"], self.result.defectType)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

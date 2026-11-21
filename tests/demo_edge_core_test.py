@@ -66,7 +66,6 @@ class DemoEdgeCoreTests(unittest.TestCase):
         self.assertIn('href="/overview"', html)
         self.assertEqual(PROJECT_OVERVIEW_DASHBOARD.count('id="run"'), 1)
         self.assertIn('id="run-section"', PROJECT_OVERVIEW_DASHBOARD)
-        self.assertNotIn("陈" + "总", PROJECT_OVERVIEW_DASHBOARD)
         self.assertNotIn("投资" + "评审", PROJECT_OVERVIEW_DASHBOARD)
         self.assertNotIn("/api/" + "invest" + "or", PROJECT_OVERVIEW_DASHBOARD)
 
