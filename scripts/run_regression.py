@@ -34,6 +34,7 @@ NODE_TESTS = (
 )
 
 TESTS = (
+    ("mount_storage", "tests/mount_storage_test.py", 120),
     ("state_persistence", "tests/state_persistence_test.py", 30),
     ("event_outbox", "tests/outbox_test.py", 30),
     ("outbox_capacity", "tests/outbox_capacity_test.py", 30),

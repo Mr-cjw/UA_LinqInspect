@@ -34,6 +34,8 @@ cd ~/UA_LinqInspect
 21. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
 22. `tests/mes_idempotency_test.js`：模拟 MES 的 payload 指纹、重复回执、冲突拒绝和原型污染防护。
 
+真实挂载演练 `tests/mount_storage_test.py` 需要本机 Docker daemon。它通过 `--privileged` 在容器挂载命名空间创建受限 `tmpfs`，运行项目真实状态存储和 SQLite 队列代码，验证内核 `EROFS`、`ENOSPC`、回滚、临时文件清理与恢复；宿主机根目录只读绑定，只有一个临时目录可写，容器挂载不会留在宿主机命名空间。
+
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
 ```bash
@@ -69,6 +71,7 @@ cd ~/UA_LinqInspect
 |---|---:|---|
 | SQLite 队列单测 | 19/19 PASS | 唯一约束、事务回滚、UA 写回确认、单飞行、退避、看门狗、迁移、上限、死信重放 |
 | SQLite 存储故障 | 3/3 PASS | 写满时入队/完工回滚、损坏库启动失败、恢复后继续可用 |
+| 真实挂载存储 | 25/25 PASS | 受限 tmpfs 的 `EROFS`/`ENOSPC`、状态回滚、SQLite 事务保持、临时文件清理与恢复 |
 | MES 接收端幂等 | 10/10 PASS | 稳定指纹、重复返回原回执、冲突 409、旧回执迁移、原型污染防护 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | outbox 状态接口 | 9/9 PASS | `OutboxStatus` 解析、容量拒收不 ACK、背压健康降级、`/qc/status` 与 Prometheus 指标 |
@@ -94,9 +97,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **556/556 PASS** | 31 个测试模块 |
+| **合计** | **581/581 PASS** | 32 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-043206/summary.json`。
+实际产物：`.tmp/regression-20261121-045211/summary.json`。
 
 ## 4. 手工执行单个测试
 
