@@ -51,6 +51,8 @@ def main() -> int:
         repo_root / "nodered" / "settings.secure.js",
         repo_root / "scripts" / "setup_node_red_security.py",
         repo_root / "scripts" / "backup_queue.py",
+        repo_root / "operator_console" / "main.py",
+        repo_root / "operator_console" / "static" / "index.html",
     )
     missing = [str(path) for path in required if not path.exists()]
     if missing:

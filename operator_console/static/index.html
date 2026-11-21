@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>质检工位操作台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">EDGE QUALITY GATEWAY</p>
+      <h1>质检工位操作台</h1>
+    </div>
+    <div class="top-actions">
+      <span id="refresh-state" class="status-pill neutral">正在连接</span>
+      <button id="refresh-button" class="button secondary" type="button">刷新</button>
+      <button id="download-report" class="button secondary" type="button">导出快照</button>
+    </div>
+  </header>
+
+  <div id="alert" class="alert hidden" role="alert"></div>
+
+  <main>
+    <section class="grid two-columns">
+      <article class="card station-card">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">STATION</p>
+            <h2>工位状态</h2>
+          </div>
+          <span id="device-status" class="status-pill neutral">未知</span>
+        </div>
+        <dl class="facts">
+          <div><dt>当前工单</dt><dd id="current-work-order">—</dd></div>
+          <div><dt>当前 SN</dt><dd id="current-sn">—</dd></div>
+          <div><dt>最后结果</dt><dd id="last-result">—</dd></div>
+          <div><dt>缺陷类型</dt><dd id="last-defect">—</dd></div>
+          <div><dt>最近图片</dt><dd id="last-image">—</dd></div>
+          <div><dt>最后时间</dt><dd id="last-timestamp">—</dd></div>
+        </dl>
+      </article>
+
+      <article class="card control-card">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">WORK ORDER</p>
+            <h2>工单控制</h2>
+          </div>
+        </div>
+        <form id="start-form" class="stack">
+          <label>工单号
+            <input id="work-order-input" name="workOrderId" autocomplete="off" placeholder="WO-20261121-001" required>
+          </label>
+          <label>目标数量
+            <input id="target-input" name="targetCount" type="number" min="1" max="100000" value="5" required>
+          </label>
+          <button id="start-button" class="button primary" type="submit">开始检测</button>
+        </form>
+        <div class="divider"></div>
+        <button id="complete-button" class="button danger" type="button">完成当前工单</button>
+        <p id="action-message" class="action-message">操作结果会显示在这里。</p>
+      </article>
+    </section>
+
+    <section class="metrics" aria-label="检测统计">
+      <article class="metric"><span>检测总数</span><strong id="inspect-count">0</strong></article>
+      <article class="metric ok"><span>OK</span><strong id="ok-count">0</strong></article>
+      <article class="metric ng"><span>NG</span><strong id="ng-count">0</strong></article>
+      <article class="metric"><span>NG 率</span><strong id="ng-rate">—</strong></article>
+      <article class="metric"><span>队列</span><strong id="queue-total">—</strong></article>
+      <article class="metric"><span>死信</span><strong id="dead-total">—</strong></article>
+    </section>
+
+    <section class="grid two-columns wide-left">
+      <article class="card">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">DELIVERY</p>
+            <h2>最近投递</h2>
+          </div>
+          <span id="edge-status" class="status-pill neutral">Edge Core</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>类型</th><th>工单</th><th>状态</th><th>回执号</th><th>更新时间</th></tr>
+            </thead>
+            <tbody id="delivery-rows"><tr><td colspan="5" class="empty">暂无数据</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">RECEIPT</p>
+            <h2>回执镜像</h2>
+          </div>
+        </div>
+        <dl class="facts compact">
+          <div><dt>最近 MES</dt><dd id="last-mes-order">—</dd></div>
+          <div><dt>最近 NG</dt><dd id="last-ng-receipt">—</dd></div>
+          <div><dt>最近完工</dt><dd id="last-completion-receipt">—</dd></div>
+          <div><dt>最近置信度</dt><dd id="last-confidence">—</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">DEAD LETTER</p>
+          <h2>死信处置</h2>
+        </div>
+        <span class="muted">重放/确认必须填写操作人和原因</span>
+      </div>
+      <div id="dead-letter-list" class="dead-letter-list">
+        <p class="empty">暂无死信</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>默认仅监听本机 · HTTP Basic 鉴权 · POST 请求带 CSRF 防护头</span>
+    <span id="generated-at">—</span>
+  </footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>

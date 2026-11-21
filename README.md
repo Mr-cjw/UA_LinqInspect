@@ -142,6 +142,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [UA 回执写回适配器](docs/22_UA回执写回适配器.md)
 - [零客户阶段：痛点验证与融资前证据包](docs/23_零客户阶段痛点验证与融资前证据包.md)
 - [产品扩展与 MES 契约体检](docs/24_产品扩展与MES契约体检.md)
+- [本地操作台使用说明](docs/25_本地操作台使用说明.md)
 
 ## 商业现状
 
@@ -174,10 +175,12 @@ UA_LinqInspect/
 │   ├── demo_joint_oee_rca.py  # 双项目联合演示：设备上下文 → NG → MES → OEE/RCA
 │   ├── run_ua_writeback_adapter.py # Edge Core → OPC UA RecordMesReceipt 写回
 │   ├── project_overview.py    # 项目总览页：现场运行证据、能力分层与落地边界
+│   ├── mes_contract_doctor.py # MES 契约体检：回执、重复、冲突、非法请求与鉴权预检
 │   └── run_regression.py      # 隔离启动 UA Server + Node-RED 并执行全部测试
 ├── deploy/                    # systemd、Prometheus 告警与环境变量模板
 ├── contracts/                 # Node-RED 与 Edge Core 共用的投递读模型 JSON Schema
 ├── edge_core/                  # 外部 Edge Core 控制面、共享 MES 契约校验与 OpenAPI 垂直切片
+├── operator_console/           # 单工位本地 Web 操作台：开检/完工、队列、回执、死信与快照
 ├── hardware/                  # 可选硬件扩展：树莓派 open62541 Server、STM32 客户端方案
 ├── docs/
 │   ├── README.md              # 文档导航与学习路径
@@ -206,6 +209,9 @@ UA_LinqInspect/
 │   ├── 20_项目总览与现场演示.md
 │   ├── 21_项目演示讲稿与问答.md
 │   ├── 22_UA回执写回适配器.md
+│   ├── 23_零客户阶段痛点验证与融资前证据包.md
+│   ├── 24_产品扩展与MES契约体检.md
+│   ├── 25_本地操作台使用说明.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
@@ -440,6 +446,16 @@ export MES_BASE_URL='http://127.0.0.1:1880'
 
 完整契约见 [docs/11_Edge_Core_接口与状态机.md](docs/11_Edge_Core_接口与状态机.md) 和 [docs/api/edge-core.openapi.yaml](docs/api/edge-core.openapi.yaml)。
 
+### 7. 启动本地操作台
+
+```bash
+export OPERATOR_CONSOLE_USER='operator'
+export OPERATOR_CONSOLE_PASSWORD='replace-with-strong-password'
+.venv/bin/python -m operator_console.main
+```
+
+访问 `http://127.0.0.1:8780`，可完成开检、完工、查看队列/回执、处置死信和导出状态快照。完整说明见 [docs/25_本地操作台使用说明.md](docs/25_本地操作台使用说明.md)。
+
 ## 快速开始（Windows PowerShell）
 
 
@@ -566,16 +582,17 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
 | M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 637/637 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 637/637 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 637/637 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 637/637 PASS，含只读恢复目标拒绝） |
-| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（637/637 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 647/647 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 647/647 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 647/647 PASS，含只读源/目录与真实 tmpfs EROFS/ENOSPC 演练） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 647/647 PASS，含只读恢复目标拒绝） |
+| 状态源 0.2 | 工位控制变量只读、SQLite 状态 + 事务 Outbox、ACK、保存失败回滚、真实挂载故障与 SIGKILL 恢复 | ✅ 完成（647/647 PASS；与 Node-RED 队列共用同一 SQLite 文件，Outbox 为下游中继边界） |
 | MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同事务持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、共享请求/回执校验、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 14 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
 | MES 契约体检 0.1 | 对真实/沙箱 MES 做同步回执、重复请求、业务键冲突、非法请求和鉴权预检，输出 JSON/Markdown 报告 | ✅ 5/5 PASS；默认 dry-run，真实写入需双重确认 |
+| 本地操作台 0.1 | 单工位 Web 控制台，支持 UA 开检/完工、队列/回执/死信、快照导出与 Basic/CSRF 防护 | ✅ 7/7 PASS；真实在线链路 17/17 PASS |
 | 投递读模型 0.1 | Node-RED 与 Edge Core 共用 `delivery-record.schema.json`，统一投递字段、状态映射和回执结构 | 🟡 读模型已统一；物理表和发送泵仍待收敛 |
 | 五分钟演示 0.1 | 无需硬件展示超时、重启、5xx、死信重放、唯一回执与 UA 写回 | ✅ 最终状态 `DONE`，4 项自动化测试 |
 | 发送泵迁移 0.4 | Edge Core 目标权威、离线迁移、Node-RED 直写、单发送权、真实在线流量与 UA 写回演练 | 🟡 实验室在线闭环与回滚通过；真实 MES 沙箱和工厂切换待做 |

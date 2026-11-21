@@ -20,6 +20,7 @@ EXPECTED_UNITS = {
     "ua-linqinspect-backup.timer",
     "ua-linqinspect-edge-core.service",
     "ua-linqinspect-ua-writeback.service",
+    "ua-linqinspect-operator.service",
 }
 EXPECTED_ALERTS = {
     "QcEdgeDown",
@@ -73,6 +74,12 @@ REQUIRED_ENV = {
     "MES_BEARER_TOKEN",
     "EDGE_MES_BASIC_USER",
     "EDGE_MES_BASIC_PASS",
+    "OPERATOR_CONSOLE_HOST",
+    "OPERATOR_CONSOLE_PORT",
+    "OPERATOR_CONSOLE_USER",
+    "OPERATOR_CONSOLE_PASSWORD",
+    "OPERATOR_EDGE_TIMEOUT_SECONDS",
+    "UA_OPERATOR_TIMEOUT_SECONDS",
     "UA_CLIENT_CERT",
     "UA_CLIENT_KEY",
     "UA_SERVER_CERT",
@@ -166,6 +173,7 @@ def main() -> int:
         nodered_unit = (systemd_dir / "ua-linqinspect-nodered.service").read_text(encoding="utf-8")
         edge_core_unit = (systemd_dir / "ua-linqinspect-edge-core.service").read_text(encoding="utf-8")
         ua_writeback_unit = (systemd_dir / "ua-linqinspect-ua-writeback.service").read_text(encoding="utf-8")
+        operator_unit = (systemd_dir / "ua-linqinspect-operator.service").read_text(encoding="utf-8")
         check("backup service runs the backup script with metrics",
               "scripts/backup_queue.py" in backup_unit and "--metrics-file" in backup_unit)
         check("backup timer targets the backup service",
@@ -176,8 +184,9 @@ def main() -> int:
               ".node-red/node_modules/.bin/node-red" in nodered_unit and
               "-m edge_core.main" in edge_core_unit and
               "run_ua_writeback_adapter.py --interval 2" in ua_writeback_unit and
+              "-m operator_console.main" in operator_unit and
               all("Restart=on-failure" in unit for unit in (
-                  server_unit, nodered_unit, edge_core_unit, ua_writeback_unit)))
+                  server_unit, nodered_unit, edge_core_unit, ua_writeback_unit, operator_unit)))
         check("Node-RED unit loads deployment credentials",
               "EnvironmentFile=-/etc/ua-linqinspect/ua-linqinspect.env" in nodered_unit)
 
@@ -237,7 +246,8 @@ def main() -> int:
               "NODERED_ADMIN_PASSWORD=CHANGE_ME" in env_text and
               "NODERED_CREDENTIAL_SECRET=CHANGE_ME" in env_text and
               "NODERED_HTTP_PASS=CHANGE_ME" in env_text and
-              "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text)
+              "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text and
+              "OPERATOR_CONSOLE_PASSWORD=CHANGE_ME" in env_text)
         check("environment template exposes one-or-the-other MES auth modes",
               "MES_BEARER_TOKEN=" in env_text and
               "EDGE_MES_BASIC_USER=" in env_text and

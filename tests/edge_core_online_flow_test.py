@@ -55,8 +55,15 @@ def http_json(
     *,
     headers: dict[str, str] | None = None,
     timeout: float = 3.0,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers=headers or {})
+    request_headers = dict(headers or {})
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request_headers.setdefault("content-type", "application/json")
+    request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read(4 * 1024 * 1024)
     value = json.loads(raw.decode("utf-8")) if raw else {}
@@ -112,48 +119,6 @@ async def secure_client(endpoint: str, username: str, password: str) -> Client:
     return client
 
 
-async def drive_work_order(endpoint: str, username: str, password: str, work_order: str) -> dict[str, Any]:
-    client = await secure_client(endpoint, username, password)
-    try:
-        namespace_index = await client.get_namespace_index("urn:fde:linqinspect:qc")
-        root = await client.nodes.objects.get_child([f"{namespace_index}:QCStation"])
-        statistics = await root.get_child([f"{namespace_index}:Statistics"])
-        inspect_count_node = await statistics.get_child([f"{namespace_index}:InspectCount"])
-        ng_count_node = await statistics.get_child([f"{namespace_index}:NgCount"])
-        start_result = await root.call_method(f"{namespace_index}:StartInspection", work_order, 8)
-        if not start_result or start_result[0] is not True:
-            raise RuntimeError(f"StartInspection rejected: {start_result}")
-
-        deadline = time.monotonic() + 15
-        inspect_count = 0
-        ng_count = 0
-        while time.monotonic() < deadline:
-            inspect_count = int(await inspect_count_node.read_value())
-            ng_count = int(await ng_count_node.read_value())
-            if inspect_count >= 8 and ng_count >= 1:
-                break
-            await asyncio.sleep(0.25)
-        else:
-            raise TimeoutError(
-                f"virtual inspection did not produce enough NG data: inspect={inspect_count} ng={ng_count}"
-            )
-
-        complete_result = await root.call_method(f"{namespace_index}:CompleteWorkOrder", work_order)
-        if not complete_result or complete_result[0] is not True:
-            raise RuntimeError(f"CompleteWorkOrder rejected: {complete_result}")
-        return {
-            "workOrderId": work_order,
-            "inspectCount": inspect_count,
-            "ngCount": ng_count,
-            "completionSummary": str(complete_result[1]) if len(complete_result) > 1 else "",
-        }
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-
-
 async def read_receipts(endpoint: str, username: str, password: str) -> dict[str, Any]:
     client = await secure_client(endpoint, username, password)
     try:
@@ -187,16 +152,21 @@ def main() -> int:
     ua_port = free_port()
     nr_port = free_port()
     edge_port = free_port()
-    while len({ua_port, nr_port, edge_port}) != 3:
+    operator_port = free_port()
+    while len({ua_port, nr_port, edge_port, operator_port}) != 4:
         nr_port = free_port()
         edge_port = free_port()
+        operator_port = free_port()
 
     endpoint = f"opc.tcp://127.0.0.1:{ua_port}"
     node_red_base = f"http://127.0.0.1:{nr_port}"
     edge_api_base = f"http://127.0.0.1:{edge_port}"
+    operator_base = f"http://127.0.0.1:{operator_port}"
     admin_user = "online-cutover-admin"
     admin_password = secrets.token_urlsafe(24)
     edge_token = secrets.token_urlsafe(24)
+    operator_user = "operator"
+    operator_password = secrets.token_urlsafe(24)
     http_auth = "Basic " + base64.b64encode(
         f"{admin_user}:{admin_password}".encode("utf-8")
     ).decode("ascii")
@@ -267,8 +237,22 @@ def main() -> int:
         "UA_WRITEBACK_TIMEOUT_SECONDS": "5",
         "UA_WRITEBACK_BATCH_LIMIT": "200",
     }
+    operator_env = edge_env | {
+        "OPERATOR_CONSOLE_HOST": "127.0.0.1",
+        "OPERATOR_CONSOLE_PORT": str(operator_port),
+        "OPERATOR_CONSOLE_USER": operator_user,
+        "OPERATOR_CONSOLE_PASSWORD": operator_password,
+        "UA_CLIENT_CERT": str(CLIENT_CERT),
+        "UA_CLIENT_KEY": str(CLIENT_KEY),
+        "UA_SERVER_CERT": str(SERVER_CERT),
+        "UA_CLIENT_APPLICATION_URI": APPLICATION_URI,
+    }
     headers = {"authorization": http_auth}
     api_headers = {"authorization": f"Bearer {edge_token}"}
+    operator_auth = "Basic " + base64.b64encode(
+        f"{operator_user}:{operator_password}".encode("utf-8")
+    ).decode("ascii")
+    operator_headers = {"authorization": operator_auth}
     processes: list[tuple[Any, Any]] = []
     work_order = f"WO-ONLINE-CUTOVER-{stamp}"
     summary: dict[str, Any] = {
@@ -277,6 +261,7 @@ def main() -> int:
         "uaEndpoint": endpoint,
         "nodeRedBase": node_red_base,
         "edgeApiBase": edge_api_base,
+        "operatorBase": operator_base,
         "workOrderId": work_order,
     }
 
@@ -334,6 +319,29 @@ def main() -> int:
             json.dumps(lock_meta, ensure_ascii=False),
         )
 
+        operator_process = launch(
+            [sys.executable, "-m", "operator_console.main"],
+            operator_env,
+            "operator-console",
+        )
+        wait_for_http(operator_base + "/healthz", 15)
+        operator_status = wait_until(
+            lambda: (
+                status
+                if (status := http_json(operator_base + "/api/status", headers=operator_headers))
+                .get("station", {})
+                .get("available") is True
+                else None
+            ),
+            12,
+            "operator console station status",
+        )
+        check(
+            "operator console reads the real UA station",
+            operator_status["station"]["data"].get("deviceStatusText") in ("空闲", "运行中", "故障"),
+            json.dumps(operator_status["station"]["data"], ensure_ascii=False)[:1200],
+        )
+
         adapter = launch(
             [
                 sys.executable,
@@ -369,7 +377,47 @@ def main() -> int:
             json.dumps(nr_status.get("senderAuthority"), ensure_ascii=False),
         )
 
-        drive = asyncio.run(drive_work_order(endpoint, admin_user, admin_password, work_order))
+        start_response = http_json(
+            operator_base + "/api/work-orders/start",
+            headers={**operator_headers, "X-Operator-Request": "1"},
+            method="POST",
+            payload={"workOrderId": work_order, "targetCount": 8},
+        )
+        check(
+            "operator console starts a work order through the real UA Method",
+            start_response.get("accepted") is True,
+            json.dumps(start_response, ensure_ascii=False),
+        )
+        drive_status = wait_until(
+            lambda: (
+                status
+                if (status := http_json(operator_base + "/api/status", headers=operator_headers))
+                .get("station", {})
+                .get("data", {})
+                .get("InspectCount", 0) >= 8
+                and status["station"]["data"].get("NgCount", 0) >= 1
+                else None
+            ),
+            20,
+            "operator console inspection metrics",
+        )
+        complete_response = http_json(
+            operator_base + "/api/work-orders/complete",
+            headers={**operator_headers, "X-Operator-Request": "1"},
+            method="POST",
+            payload={"workOrderId": work_order},
+        )
+        check(
+            "operator console completes the work order through the real UA Method",
+            complete_response.get("accepted") is True,
+            json.dumps(complete_response, ensure_ascii=False),
+        )
+        drive = {
+            "workOrderId": work_order,
+            "inspectCount": drive_status["station"]["data"]["InspectCount"],
+            "ngCount": drive_status["station"]["data"]["NgCount"],
+            "completionSummary": complete_response.get("message", ""),
+        }
         check(
             "virtual inspections and completion ran through the switched chain",
             drive["inspectCount"] >= 8 and drive["ngCount"] >= 1,
@@ -452,6 +500,8 @@ def main() -> int:
             f"(DeviceStatus={receipts.get('DeviceStatus')})",
         )
 
+        stop_process(operator_process)
+        operator_process = None
         stop_process(nr_edge)
         nr_edge = None
         stop_process(adapter)
