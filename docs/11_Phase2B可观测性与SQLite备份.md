@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：496/496，证据：`.tmp/regression-20261121-005716/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：512/512，证据：`.tmp/regression-20261121-015542/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -132,11 +132,12 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox 与队列容量处置后当前合并回归为 **496/496 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置与模拟 MES 幂等合同后当前合并回归为 **512/512 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
 | SQLite 队列单测 | 19/19 |
+| MES 接收端幂等 | 10/10 |
 | 状态工具单测 | 5/5 |
 | 事件 outbox 单测 | 3/3 |
 | outbox 容量/导出单测 | 9/9 |
@@ -147,7 +148,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | Edge Core | 7/7 |
 | 安全 | 16/16 |
 | UA 冒烟 | 36/36 |
-| Node-RED E2E | 15/15 |
+| Node-RED E2E | 21/21 |
 | Prometheus 指标 | 80/80 |
 | SQLite 备份 | 20/20 |
 | 离线恢复 | 20/20 |
@@ -161,7 +162,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **496/496** |
+| **合计** | **512/512** |
 
 ## 5. 下一阶段
 

@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-005716/summary.json` ｜ 当前结果：496/496 PASS
+> 日期：2026-11-21 ｜ 回归证据：`.tmp/regression-20261121-015542/summary.json` ｜ 当前结果：512/512 PASS
 
 ## 1. 阶段目标
 
@@ -289,6 +289,7 @@ Phase 2C 新增专项：
 | 测试 | 结果 | 覆盖 |
 |---|---:|---|
 | `tests/health_test.js` | 10/10 PASS | ready/degraded/unavailable、边界、响应头、flow 接线 |
+| `tests/mes_idempotency_test.js` | 10/10 PASS | 模拟 MES 稳定指纹、重复回执、冲突 409、旧回执迁移与原型污染防护 |
 | `tests/outbox_status_test.js` | 9/9 PASS | OutboxStatus 解析、容量拒收不 ACK、背压健康降级、状态接口与指标 |
 | `tests/outbox_capacity_test.py` | 9/9 PASS | 高水位/硬上限拒绝、分页导出、令牌清空与幂等 |
 | `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
@@ -307,8 +308,8 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 综合回归共 29 个测试模块、**496/496 PASS**，摘要为
-`.tmp/regression-20261121-005716/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 综合回归共 30 个测试模块、**512/512 PASS**，摘要为
+`.tmp/regression-20261121-015542/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 19/19；一键回归包含运行中的 Node-RED 数据库，因此为 20/20。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

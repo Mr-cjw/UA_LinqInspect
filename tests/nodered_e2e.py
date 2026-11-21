@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime
 
@@ -47,6 +48,31 @@ def edge_status():
     request = urllib.request.Request(NODERED_BASE + "/qc/status", headers=headers)
     with urllib.request.urlopen(request, timeout=3) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def mes_post(path, payload):
+    headers = {
+        "Content-Type": "application/json",
+        "X-Correlation-Id": payload["correlationId"],
+    }
+    if NODERED_HTTP_AUTH:
+        headers["Authorization"] = NODERED_HTTP_AUTH
+    request = urllib.request.Request(
+        NODERED_BASE + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        data = exc.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(data)
+        except json.JSONDecodeError:
+            body = {"raw": data}
+        return exc.code, body
 
 
 async def wait_for_drained_edge(timeout=30):
@@ -175,6 +201,68 @@ async def main():
                           bool(completion_request.get("correlationId")) and
                           completion_request.get("correlationId") in done_correlations,
                           f"(request={completion_request.get('correlationId') or 'empty'}, events={len(done_correlations)})"))
+
+        suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        ng_body = {
+            "schemaVersion": "1.0",
+            "correlationId": f"corr-mes-idem-ng-{suffix}",
+            "workOrderId": f"WO-MES-IDEM-{suffix}",
+            "serialNumber": f"SN-MES-IDEM-{suffix}",
+            "defectType": "SCRATCH",
+            "confidence": 0.88,
+            "imageId": f"IMG-MES-IDEM-{suffix}",
+            "occurredAt": "2026-11-21T01:10:00.000Z",
+        }
+        ng_first_status, ng_first = mes_post("/mes/ng-order", ng_body)
+        ng_duplicate_status, ng_duplicate = mes_post(
+            "/mes/ng-order", {**ng_body, "correlationId": f"corr-mes-idem-ng-dup-{suffix}"}
+        )
+        ng_conflict_status, ng_conflict = mes_post(
+            "/mes/ng-order",
+            {**ng_body, "correlationId": f"corr-mes-idem-ng-conflict-{suffix}", "defectType": "DENT"},
+        )
+        results.append(ok("mock MES NG first request accepted",
+                          ng_first_status == 200 and ng_first.get("accepted") is True and
+                          bool(str(ng_first.get("mesOrderNo") or "").startswith("MES-")),
+                          f"(status={ng_first_status})"))
+        results.append(ok("mock MES NG duplicate returns original receipt",
+                          ng_duplicate_status == 200 and ng_duplicate.get("duplicated") is True and
+                          ng_duplicate.get("mesOrderNo") == ng_first.get("mesOrderNo"),
+                          f"(status={ng_duplicate_status})"))
+        results.append(ok("mock MES NG payload conflict returns 409",
+                          ng_conflict_status == 409 and
+                          ng_conflict.get("errorCode") == "IDEMPOTENCY_CONFLICT",
+                          f"(status={ng_conflict_status}, code={ng_conflict.get('errorCode') or 'empty'})"))
+
+        done_body = {
+            "schemaVersion": "1.0",
+            "correlationId": f"corr-mes-idem-done-{suffix}",
+            "workOrderId": f"WO-MES-IDEM-DONE-{suffix}",
+            "inspectCount": 12,
+            "okCount": 9,
+            "ngCount": 3,
+            "ngRate": 0.25,
+        }
+        done_first_status, done_first = mes_post("/mes/complete", done_body)
+        done_duplicate_status, done_duplicate = mes_post(
+            "/mes/complete", {**done_body, "correlationId": f"corr-mes-idem-done-dup-{suffix}"}
+        )
+        done_conflict_status, done_conflict = mes_post(
+            "/mes/complete",
+            {**done_body, "correlationId": f"corr-mes-idem-done-conflict-{suffix}", "inspectCount": 13},
+        )
+        results.append(ok("mock MES completion first request accepted",
+                          done_first_status == 200 and done_first.get("accepted") is True and
+                          bool(str(done_first.get("receiptNo") or "").startswith("RC-")),
+                          f"(status={done_first_status})"))
+        results.append(ok("mock MES completion duplicate returns original receipt",
+                          done_duplicate_status == 200 and done_duplicate.get("duplicated") is True and
+                          done_duplicate.get("receiptNo") == done_first.get("receiptNo"),
+                          f"(status={done_duplicate_status})"))
+        results.append(ok("mock MES completion payload conflict returns 409",
+                          done_conflict_status == 409 and
+                          done_conflict.get("errorCode") == "IDEMPOTENCY_CONFLICT",
+                          f"(status={done_conflict_status}, code={done_conflict.get('errorCode') or 'empty'})"))
 
     passed = sum(1 for r in results if r)
     print(f"===== NODERED E2E: {passed}/{len(results)} passed =====")

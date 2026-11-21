@@ -41,10 +41,12 @@
 |---|---|---|---|---|
 | 1 | NG 开单 | `POST /mes/ng-order` | Node-RED 订阅到 `NgDetectedEvent` | schemaVersion=`1.0`, **correlationId**, workOrderId, **serialNumber**, defectType, confidence, imageId, occurredAt(ISO8601) |
 | 2 | 完工报工 | `POST /mes/complete` | Node-RED 订阅到 `WorkOrderCompletedEvent` | schemaVersion=`1.0`, **correlationId**, workOrderId, inspectCount, okCount, ngCount, ngRate |
-| 3 | 开单回执 | 由模拟 MES 同步返回 | 接口1 同步响应 | `{ "schemaVersion": "1.0", "correlationId": "...", "mesOrderNo": "MES-<yyyyMMdd>-<seq>", "accepted": true }`；重复 SN 返回原单号 + `duplicated:true`（MES 侧防重第二道防线） |
-| 4 | 报工回执 | 同上 | 接口2 同步响应 | `{ "schemaVersion": "1.0", "correlationId": "...", "accepted": true, "receiptNo": "RC-<...>" }`；重复工单号同理防重 |
+| 3 | 开单回执 | 由模拟 MES 同步返回 | 接口1 同步响应 | `{ "schemaVersion": "1.0", "correlationId": "...", "mesOrderNo": "MES-<yyyyMMdd>-<seq>", "accepted": true }`；同 SN 且业务 payload 指纹一致时返回原单号 + `duplicated:true`；同 SN 但缺陷/工单/图片/时间等业务字段变化时返回 `409 IDEMPOTENCY_CONFLICT` |
+| 4 | 报工回执 | 同上 | 接口2 同步响应 | `{ "schemaVersion": "1.0", "correlationId": "...", "accepted": true, "receiptNo": "RC-<...>" }`；同工单且统计 payload 指纹一致时返回原回执 + `duplicated:true`；统计变化时返回 `409 IDEMPOTENCY_CONFLICT` |
 
 所有请求必须同时携带 HTTP 头 `X-Correlation-Id`，且其值必须与请求体 `correlationId` 完全一致；模拟 MES 不一致时返回 `400 CORRELATION_MISMATCH`。
+
+接收端幂等键为 `serialNumber`（NG 开单）或 `workOrderId`（完工报工）。服务端对去除 `schemaVersion`、`correlationId` 等传输信封字段后的业务 payload 计算稳定 SHA-256 指纹：重复请求必须返回原回执，不得生成第二张工单；同一业务键对应不同指纹时必须返回 `409 IDEMPOTENCY_CONFLICT`，由边缘队列进入终态死信并等待人工核对，不能静默复用旧回执。
 
 `correlationId` 由 UA Server 在每次检测/完工时生成（`corr-<uuid4>`）。一次 NG 检测的 `InspectionFinishedEvent` 与 `NgDetectedEvent` 共用同一个 ID；`WorkOrderCompletedEvent` 使用独立 ID。Node-RED 原样透传到 MES，并在 `/qc/status` 的 `lastRequest`、`lastRequestByType`、`lastResponse` 中暴露，用于把 UA 事件、HTTP 请求、MES 回执和死信串成一条可追溯链。
 

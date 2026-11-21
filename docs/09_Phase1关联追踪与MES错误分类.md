@@ -3,7 +3,7 @@
 > 日期：2026-11-20 ｜ 对应契约：[M1 v1.1](M1_业务口径与MES契约.md) ｜ 回归证据：`.tmp/regression-20261120-131213/summary.json`
 
 > 阶段说明：本文的 158/158 是 Phase 1 当时的证据。Phase 2A/2B/2C 完成后，
-> 当前一键回归为 496/496，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
+> 当前一键回归为 512/512，见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。
 
 ## 1. 本阶段解决的问题
 
@@ -48,14 +48,15 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 ## 4. 自动化验证
 
-2026-11-20 完整隔离回归：
+2026-11-21 当前隔离回归：
 
 | 测试 | 结果 | 新增覆盖 |
 |---|---:|---|
 | Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
-| 安全回归 | 8/8 PASS | UA 权限 + Node-RED HTTP 未认证 401/认证 200 |
+| MES 接收端幂等 | 10/10 PASS | 稳定 payload 指纹、重复返回原回执、同键不同内容 409、旧回执迁移、原型污染防护 |
+| 安全回归 | 16/16 PASS | UA 权限、业务变量只读、Node-RED HTTP 认证与运维接口鉴权 |
 | UA 冒烟 | 36/36 PASS | 三类事件均携带 `CorrelationId` |
-| Node-RED E2E | 15/15 PASS | UA 事件关联 ID 传到 MES，回执关联 ID 回显，请求 schemaVersion=1.0 |
+| Node-RED E2E | 21/21 PASS | UA 事件关联 ID 传到 MES，回执关联 ID 回显，请求 schemaVersion=1.0，重复/冲突 HTTP 契约 |
 | 故障场景 | 52/52 PASS | 5xx、timeout、4xx、429、非法 2xx、Method 拒绝 |
 | 重启恢复 | 18/18 PASS | 非空队列 context 恢复、回执续写、无新增死信 |
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
@@ -80,7 +81,7 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 2. ✅ UA Server 重启后显式重建事件订阅。
 3. ✅ 超过 60 秒的陈旧事件不进入队列和回执链路。
 
-仍需补充：Wireshark 的 `CreateMonitoredItems`/`Publish` 证据、真实交换机断链/防火墙切换、长时断网恢复耗时。Phase 2A 已完成 SQLite 事务队列与崩溃恢复；下一阶段重点是可观测性、部署基线和接收端幂等契约。
+仍需补充：Wireshark 的 `CreateMonitoredItems`/`Publish` 证据、真实交换机断链/防火墙切换、长时断网恢复耗时。Phase 2A 已完成 SQLite 事务队列与崩溃恢复；模拟 MES 已实现稳定指纹、重复回执与冲突拒绝，下一阶段重点是真实 MES 沙箱验证同一幂等合同。
 
 ## 6. 后续规划
 
@@ -103,6 +104,6 @@ UA WorkOrderCompletedEvent(corr-Y) ─> Node-RED 入队 -> MES -> 回执 corr-Y 
 
 建议说：
 
-> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列、UA 写回确认、MES 成功后写回前 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，M3 自动化补上 MES 长断网、死信重放和周期 soak，事件 outbox 补上稳定事件 ID、ACK、重启重发、容量背压、受控处置和队列满时失败关闭，当前 496 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在试点主机验证 MES 接收端幂等契约和端到端 RTO。
+> Phase 1 已把关联 ID、MES 失败分类、非空队列重启恢复、短断网、陈旧过滤和 UA Server 重启后的订阅重建跑通；Phase 2A 完成 SQLite 事务队列、UA 写回确认、MES 成功后写回前 `SIGKILL` 恢复，Phase 2B 完成 Prometheus 指标与在线备份，Phase 2C 完成 systemd/告警模板与离线恢复演练，M3 自动化补上 MES 长断网、死信重放和周期 soak，事件 outbox 补上稳定事件 ID、ACK、重启重发、容量背压、受控处置和队列满时失败关闭，模拟 MES 补上稳定 payload 指纹、重复回执和冲突拒绝，当前 512 项隔离回归全部通过。下一步补真实网络切换与抓包证据，并在真实 MES 沙箱验证同一幂等合同和端到端 RTO。
 
 不要宣称已经生产级、exactly-once 或完成真实 MES 对接。

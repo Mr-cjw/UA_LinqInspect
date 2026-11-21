@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 const RETRY_DELAYS = [1000, 2000, 4000];
 
 function mesBaseUrl(flow) {
@@ -20,6 +22,323 @@ function ngKeys(serialNumber, occurredAt) {
     { kind: 'ng_fp', key: `${serialNumber}|${occurredAt}` },
     { kind: 'ng_sn', key: serialNumber },
   ];
+}
+
+const MES_IDEMPOTENCY_STATE = {
+  ng: 'mesNgIdempotency',
+  complete: 'mesCompleteIdempotency',
+};
+
+function safeRecord(value) {
+  const result = Object.create(null);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const key of Object.keys(value)) result[key] = value[key];
+  return result;
+}
+
+function canonicalJson(value) {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  return '{' + Object.keys(value).sort()
+    .map(key => JSON.stringify(key) + ':' + canonicalJson(value[key]))
+    .join(',') + '}';
+}
+
+function mesFingerprint(kind, payload) {
+  const ignored = new Set(kind === 'ng'
+    ? ['schemaVersion', 'correlationId', 'sourceEventId']
+    : ['schemaVersion', 'correlationId', 'sourceEventId']);
+  const businessPayload = Object.create(null);
+  for (const key of Object.keys(payload || {})) {
+    if (!ignored.has(key)) businessPayload[key] = payload[key];
+  }
+  return crypto.createHash('sha256')
+    .update(kind + '|' + canonicalJson(businessPayload))
+    .digest('hex');
+}
+
+function mesIdempotency(flow, kind, businessKey, payload, existingReceipt = '') {
+  const stateKey = MES_IDEMPOTENCY_STATE[kind];
+  if (!stateKey) throw new Error('unsupported MES receipt kind: ' + kind);
+  const key = String(businessKey || '');
+  if (!key) throw new Error('empty MES idempotency key');
+  const fingerprint = mesFingerprint(kind, payload);
+  const records = safeRecord(flow.get(stateKey));
+  const record = records[key];
+  if (record && record.fingerprint) {
+    if (record.fingerprint !== fingerprint) {
+      return { state: 'conflict', fingerprint, receiptNo: String(record.receiptNo || '') };
+    }
+    return {
+      state: 'duplicate',
+      fingerprint,
+      receiptNo: String(record.receiptNo || existingReceipt || ''),
+    };
+  }
+  if (existingReceipt) {
+    records[key] = {
+      fingerprint,
+      receiptNo: String(existingReceipt),
+      seenAt: timestamp(),
+    };
+    flow.set(stateKey, records);
+    return { state: 'duplicate-legacy', fingerprint, receiptNo: String(existingReceipt) };
+  }
+  return { state: 'new', fingerprint, receiptNo: '' };
+}
+
+function rememberMesReceipt(flow, kind, businessKey, fingerprint, receiptNo) {
+  const stateKey = MES_IDEMPOTENCY_STATE[kind];
+  if (!stateKey) throw new Error('unsupported MES receipt kind: ' + kind);
+  const key = String(businessKey || '');
+  if (!key) throw new Error('empty MES idempotency key');
+  if (!fingerprint) throw new Error('empty MES idempotency fingerprint');
+  if (!receiptNo) throw new Error('empty MES receipt number');
+  const records = safeRecord(flow.get(stateKey));
+  records[key] = {
+    fingerprint: String(fingerprint),
+    receiptNo: String(receiptNo),
+    seenAt: timestamp(),
+  };
+  flow.set(stateKey, records);
+  return String(receiptNo);
+}
+
+function activeMesMode(flow) {
+  const now = Date.now();
+  let mode = String(flow.get('mesMode') || 'ok').toLowerCase();
+  const until = Number(flow.get('timeoutUntil') || 0);
+  if (mode === 'timeout' && until && now >= until) {
+    mode = 'ok';
+    flow.set('mesMode', 'ok');
+    flow.set('timeoutUntil', 0);
+  }
+  return mode;
+}
+
+function mesFailure(msg, statusCode, errorCode, error, headers, correlationId) {
+  msg.statusCode = statusCode;
+  msg.headers = Object.assign({}, msg.headers, headers || {});
+  msg.payload = {
+    accepted: false,
+    schemaVersion: '1.0',
+    correlationId: correlationId || '',
+    errorCode,
+    error,
+  };
+  return [msg, null];
+}
+
+function mesNgOrder(msg, flow, node) {
+  const mode = activeMesMode(flow);
+  const body = msg.payload;
+  const requestHeaders = (msg.req && msg.req.headers) || {};
+  const headerCorrelationId = String(requestHeaders['x-correlation-id'] || '').trim();
+  const responseCorrelationId = (body && typeof body === 'object' && body.correlationId) || headerCorrelationId;
+  const fail = (statusCode, errorCode, error, headers) =>
+    mesFailure(msg, statusCode, errorCode, error, headers, responseCorrelationId);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return fail(400, 'INVALID_BODY', 'invalid JSON body');
+  }
+  const required = ['schemaVersion', 'correlationId', 'workOrderId', 'serialNumber', 'defectType', 'confidence', 'imageId', 'occurredAt'];
+  const missing = required.filter(key => !(key in body));
+  if (missing.length) return fail(400, 'INVALID_BODY', 'missing fields: ' + missing.join(','));
+  if (body.schemaVersion !== '1.0') {
+    return fail(400, 'INVALID_SCHEMA_VERSION', 'schemaVersion must be 1.0');
+  }
+  if (!headerCorrelationId || headerCorrelationId !== body.correlationId) {
+    return fail(400, 'CORRELATION_MISMATCH', 'X-Correlation-Id must match body.correlationId');
+  }
+  if (typeof body.occurredAt !== 'string' || !/Z$/.test(body.occurredAt)) {
+    return fail(400, 'INVALID_TIMESTAMP', 'occurredAt must be ISO8601 UTC with Z');
+  }
+  const businessKey = String(body.serialNumber || '').trim();
+  if (!businessKey) return fail(400, 'INVALID_SERIAL_NUMBER', 'serialNumber must be non-empty');
+
+  const orders = safeRecord(flow.get('orders'));
+  const existing = orders[businessKey] == null ? '' : String(orders[businessKey]);
+  const verdict = mesIdempotency(flow, 'ng', businessKey, body, existing);
+  if (verdict.state === 'conflict') {
+    return fail(409, 'IDEMPOTENCY_CONFLICT', 'serialNumber already has a receipt for a different payload');
+  }
+  if (verdict.state === 'duplicate' || verdict.state === 'duplicate-legacy') {
+    msg.statusCode = 200;
+    msg.payload = {
+      accepted: true,
+      schemaVersion: '1.0',
+      correlationId: body.correlationId,
+      mesOrderNo: verdict.receiptNo || existing,
+      duplicated: true,
+    };
+    return [msg, null];
+  }
+
+  const makeOrder = () => {
+    const seq = (flow.get('mesSeq') || 0) + 1;
+    flow.set('mesSeq', seq);
+    const date = new Date();
+    const no = 'MES-' + date.toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(seq).padStart(4, '0');
+    orders[businessKey] = no;
+    flow.set('orders', orders);
+    rememberMesReceipt(flow, 'ng', businessKey, verdict.fingerprint, no);
+    return no;
+  };
+
+  if (mode === '4xx') return fail(400, 'MES_REJECTED', 'simulated business rejection');
+  if (mode === '429') {
+    return fail(429, 'MES_BUSY', 'simulated rate limit', { 'Retry-After': '1' });
+  }
+  if (mode === 'invalid2xx') {
+    msg.statusCode = 200;
+    msg.payload = {
+      accepted: true,
+      schemaVersion: '0.9',
+      correlationId: 'corr-invalid',
+      mesOrderNo: 'MES-INVALID',
+    };
+    return [msg, null];
+  }
+  if (mode === '5xx') return fail(500, 'MES_UNAVAILABLE', 'simulated 5xx');
+  if (mode === 'timeout') {
+    node.warn('[MES注入timeout][' + body.correlationId + '] NG单 ' + businessKey + ' 延迟 10s 响应');
+    setTimeout(() => {
+      try {
+        if (msg.res && (msg.res.finished || msg.res.writableEnded)) {
+          node.warn('[MES超时模拟] 客户端已超时断开，丢弃延迟响应');
+          return;
+        }
+        const latestOrders = safeRecord(flow.get('orders'));
+        const current = latestOrders[businessKey];
+        const no = current || makeOrder();
+        msg.statusCode = 200;
+        msg.payload = {
+          accepted: true,
+          schemaVersion: '1.0',
+          correlationId: body.correlationId,
+          mesOrderNo: no,
+          duplicated: Boolean(current),
+        };
+        node.send([msg, null]);
+      } catch (error) {
+        node.warn('[MES超时模拟] 响应失败：' + error.message);
+      }
+    }, 10000);
+    return null;
+  }
+  const no = makeOrder();
+  msg.statusCode = 200;
+  msg.payload = {
+    accepted: true,
+    schemaVersion: '1.0',
+    correlationId: body.correlationId,
+    mesOrderNo: no,
+  };
+  return [msg, null];
+}
+
+function mesComplete(msg, flow, node) {
+  const mode = activeMesMode(flow);
+  const body = msg.payload;
+  const requestHeaders = (msg.req && msg.req.headers) || {};
+  const headerCorrelationId = String(requestHeaders['x-correlation-id'] || '').trim();
+  const responseCorrelationId = (body && typeof body === 'object' && body.correlationId) || headerCorrelationId;
+  const fail = (statusCode, errorCode, error, headers) =>
+    mesFailure(msg, statusCode, errorCode, error, headers, responseCorrelationId);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return fail(400, 'INVALID_BODY', 'invalid JSON body');
+  }
+  const required = ['schemaVersion', 'correlationId', 'workOrderId', 'inspectCount', 'okCount', 'ngCount', 'ngRate'];
+  const missing = required.filter(key => !(key in body));
+  if (missing.length) return fail(400, 'INVALID_BODY', 'missing fields: ' + missing.join(','));
+  if (body.schemaVersion !== '1.0') {
+    return fail(400, 'INVALID_SCHEMA_VERSION', 'schemaVersion must be 1.0');
+  }
+  if (!headerCorrelationId || headerCorrelationId !== body.correlationId) {
+    return fail(400, 'CORRELATION_MISMATCH', 'X-Correlation-Id must match body.correlationId');
+  }
+  const businessKey = String(body.workOrderId || '').trim();
+  if (!businessKey) return fail(400, 'INVALID_WORK_ORDER_ID', 'workOrderId must be non-empty');
+
+  const receipts = safeRecord(flow.get('receipts'));
+  const existing = receipts[businessKey] == null ? '' : String(receipts[businessKey]);
+  const verdict = mesIdempotency(flow, 'complete', businessKey, body, existing);
+  if (verdict.state === 'conflict') {
+    return fail(409, 'IDEMPOTENCY_CONFLICT', 'workOrderId already has a receipt for different statistics');
+  }
+  if (verdict.state === 'duplicate' || verdict.state === 'duplicate-legacy') {
+    msg.statusCode = 200;
+    msg.payload = {
+      accepted: true,
+      schemaVersion: '1.0',
+      correlationId: body.correlationId,
+      receiptNo: verdict.receiptNo || existing,
+      duplicated: true,
+    };
+    return [msg, null];
+  }
+
+  const makeReceipt = () => {
+    const seq = (flow.get('rcSeq') || 0) + 1;
+    flow.set('rcSeq', seq);
+    const date = new Date();
+    const no = 'RC-' + date.toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(seq).padStart(4, '0');
+    receipts[businessKey] = no;
+    flow.set('receipts', receipts);
+    rememberMesReceipt(flow, 'complete', businessKey, verdict.fingerprint, no);
+    return no;
+  };
+
+  if (mode === '4xx') return fail(400, 'MES_REJECTED', 'simulated business rejection');
+  if (mode === '429') {
+    return fail(429, 'MES_BUSY', 'simulated rate limit', { 'Retry-After': '1' });
+  }
+  if (mode === 'invalid2xx') {
+    msg.statusCode = 200;
+    msg.payload = {
+      accepted: true,
+      schemaVersion: '0.9',
+      correlationId: 'corr-invalid',
+      receiptNo: 'RC-INVALID',
+    };
+    return [msg, null];
+  }
+  if (mode === '5xx') return fail(500, 'MES_UNAVAILABLE', 'simulated 5xx');
+  if (mode === 'timeout') {
+    node.warn('[MES注入timeout][' + body.correlationId + '] 报工 ' + businessKey + ' 延迟 10s 响应');
+    setTimeout(() => {
+      try {
+        if (msg.res && (msg.res.finished || msg.res.writableEnded)) {
+          node.warn('[MES超时模拟] 客户端已超时断开，丢弃延迟响应');
+          return;
+        }
+        const latestReceipts = safeRecord(flow.get('receipts'));
+        const current = latestReceipts[businessKey];
+        const no = current || makeReceipt();
+        msg.statusCode = 200;
+        msg.payload = {
+          accepted: true,
+          schemaVersion: '1.0',
+          correlationId: body.correlationId,
+          receiptNo: no,
+          duplicated: Boolean(current),
+        };
+        node.send([msg, null]);
+      } catch (error) {
+        node.warn('[MES超时模拟] 响应失败：' + error.message);
+      }
+    }, 10000);
+    return null;
+  }
+  const no = makeReceipt();
+  msg.statusCode = 200;
+  msg.payload = {
+    accepted: true,
+    schemaVersion: '1.0',
+    correlationId: body.correlationId,
+    receiptNo: no,
+  };
+  return [msg, null];
 }
 
 const UA_WRITE_TOPICS = {
@@ -989,6 +1308,12 @@ function replayDeadLetters(msg, flow, store) {
 }
 
 module.exports = {
+  safeRecord,
+  mesFingerprint,
+  mesIdempotency,
+  rememberMesReceipt,
+  mesNgOrder,
+  mesComplete,
   validateNg,
   validateDone,
   enqueueNg,

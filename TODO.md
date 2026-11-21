@@ -42,8 +42,8 @@
 □ [Medium] `nodered/flows.json` 节点 `fn_parse`：时间戳解析失败时回退为 `now`，会绕过 60 秒陈旧过滤；未来时间戳也没有拒绝。应区分缺失/非法/未来时间并提供明确的丢弃或死信策略。
 □ [Medium] `nodered/flows.json` 节点 `fn_parse`：`isDone`/`isNg` 使用事件类型子串和字段猜测兜底，未知或伪造事件可能被误判为开单/报工。应只接受精确 EventType，所有兜底路径记录告警并纳入测试。
 □ [Medium] `nodered/flows.json` 节点 `fn_mes_ng`、`fn_mes_done`：只检查字段是否存在，不校验 `confidence` 类型/范围、计数一致性、`ngRate` 范围和 ID 长度；会生成不合法 MES 记录。应使用 JSON Schema/手写严格校验并返回稳定错误码。
-□ [Medium] `nodered/flows.json` 节点 `fn_mes_ng`、`fn_mes_done`：`orders`/`receipts`/`ngSeen` 等使用普通对象和外部字符串作键，`__proto__`、`constructor` 等键可能造成原型污染、键冲突或错误命中。应使用 `Object.create(null)`、`Map`/`Set` 或持久唯一表。
-□ [Medium] `nodered/flows.json` 节点 `fn_mes_ng`、`fn_mes_done`：同一 key 的重复请求只比较 key，不比较原始 payload；同一 SN/工单携带不同缺陷或统计仍返回原回执。应校验幂等指纹，不一致时返回冲突错误。
+✅ [Medium] ~~`nodered/flows.json` 节点 `fn_mes_ng`、`fn_mes_done`：`orders`/`receipts`/`ngSeen` 等使用普通对象和外部字符串作键，`__proto__`、`constructor` 等键可能造成原型污染、键冲突或错误命中~~：模拟 MES 已抽到 `queue_logic.js`，`orders`/`receipts` 和幂等表均使用 null-prototype 安全映射，并有 `__proto__`/`constructor` 键回归。
+✅ [Medium] ~~`nodered/flows.json` 节点 `fn_mes_ng`、`fn_mes_done`：同一 key 的重复请求只比较 key，不比较原始 payload；同一 SN/工单携带不同缺陷或统计仍返回原回执~~：已增加稳定 payload SHA-256 指纹；同键同内容返回原回执和 `duplicated:true`，同键不同缺陷/统计返回 `409 IDEMPOTENCY_CONFLICT`，单测 10/10、HTTP E2E 覆盖。
 □ [Medium] `server/qc_server.py:201-206`：`ResetCounters` 无角色校验、无 Running/Fault 守卫、无审计，生产中任意客户端可清零统计。应限制为维护角色，要求 Idle 或显式确认，并记录操作者/原因。
 □ [Medium] `server/qc_server.py:220-238`：`record_inspection` 未校验 confidence 范围、缺陷码枚举、OK/NG 与缺陷字段一致性；空 SN 时仍更新结果但不更新 `CurrentPartSN`，会留下陈旧追溯号。应做输入不变量校验并拒绝不一致数据。
 □ [Medium] `server/qc_server.py:215-218`：统计变量逐个写入，消费者可能观察到 `InspectCount` 已增加而 `OkCount/NgCount` 未更新的中间态；应提供原子快照或统一状态版本号。

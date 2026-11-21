@@ -110,7 +110,7 @@
 | ③ 报工分支 | `fn_parse` / `fn_dedup_done` / `fn_enq_done` | 解析、按 workOrderId 去重、入队 |
 | ④ 发送泵 | `in_tick` / `fn_pump` / `http1` / `n_catch_http` / `fn_resp` | 单飞行取任务、调 MES、处理成功/退避/死信 |
 | ⑤ UA 客户端 | `opcua` / `fn_ua_result` / `n_catch_ua` / `fn_ua_err` / `inj_hb` / `fn_hb` | 回执写回、Method 调用、心跳、异常计数 |
-| ⑥ 模拟 MES | `httpin_ng` / `fn_mes_ng` / `httpin_done` / `fn_mes_done` / `inj_*` | 接收 HTTP、校验 schema/关联 ID、生成回执、防重、故障注入 |
+| ⑥ 模拟 MES | `httpin_ng` / `fn_mes_ng` / `httpin_done` / `fn_mes_done` / `inj_*` | 接收 HTTP、校验 schema/关联 ID、payload 指纹幂等、冲突 409、故障注入 |
 
 ## 4. 关键 Function 节点速查
 
@@ -127,15 +127,15 @@
 | `fn_ua_result` | UA 结果校验 | UA 响应 | 打印 Method accepted/rejected；成功心跳清零 |
 | `fn_ua_err` | UA 异常计数 | catch 异常 | 连续 3 次告警 |
 | `fn_failmode` | MES 故障模式 | `ok/5xx/timeout/4xx/429/invalid2xx` | 写 `flow.mesMode` |
-| `fn_mes_ng` | MES 处理 NG 单 | HTTP body | 生成 `MES-*`，同 SN 防重，故障注入 |
-| `fn_mes_done` | MES 处理报工 | HTTP body | 生成 `RC-*`，同工单防重，故障注入 |
+| `fn_mes_ng` | MES 处理 NG 单 | HTTP body | 委托 `qlogic.mesNgOrder`：生成 `MES-*`，同 SN 同指纹返回原单，冲突 409 |
+| `fn_mes_done` | MES 处理报工 | HTTP body | 委托 `qlogic.mesComplete`：生成 `RC-*`，同工单同指纹返回原回执，统计变化 409 |
 | `fn_status` | 输出队列/死信/心跳状态 | `GET /qc/status` | 从 SQLite 返回队列、死信、去重计数，并附带最近请求/响应和关联 ID |
 | `fn_metrics` | 输出 Prometheus 指标 | `GET /metrics` | 从 SQLite 计数和当前队列生成 Prometheus 文本 |
 
 Function 节点现在只做薄适配；核心实现位于：
 
 - `nodered/sqlite_store.js`：表结构、事务、原子领取、退避/死信、持久化指标和旧 context 迁移。
-- `nodered/queue_logic.js`：消息校验、入队、发送、响应契约处理、状态接口和指标渲染。
+- `nodered/queue_logic.js`：消息校验、入队、发送、响应契约处理、模拟 MES 幂等/冲突判定、状态接口和指标渲染。
 - `nodered/settings.js`：通过 `functionGlobalContext` 注入 `qstore` 和 `qlogic`。
 
 SQLite 在线备份脚本位于 `scripts/backup_queue.py`，不在 Node-RED 请求链路内运行。

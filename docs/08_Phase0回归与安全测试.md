@@ -31,6 +31,7 @@ cd ~/UA_LinqInspect
 18. `tests/outage_recovery.py stall`：5 秒 `SIGSTOP/SIGCONT` 后验证继续闭环。
 19. `tests/outage_recovery.py stale`：超过 60 秒的陈旧事件不污染队列和回执。
 20. `tests/outage_recovery.py prepare_restart/verify_restart`：重启 UA Server，验证 StartTime 触发的显式重连与事件订阅重建。
+21. `tests/mes_idempotency_test.js`：模拟 MES 的 payload 指纹、重复回执、冲突拒绝和原型污染防护。
 
 默认遇到第一个失败即停止；需要收集全部结果时使用：
 
@@ -66,6 +67,7 @@ cd ~/UA_LinqInspect
 | 测试 | 结果 | 覆盖重点 |
 |---|---:|---|
 | SQLite 队列单测 | 19/19 PASS | 唯一约束、事务回滚、UA 写回确认、单飞行、退避、看门狗、迁移、上限、死信重放 |
+| MES 接收端幂等 | 10/10 PASS | 稳定指纹、重复返回原回执、冲突 409、旧回执迁移、原型污染防护 |
 | 健康探针 | 10/10 PASS | ready/degraded/unavailable、心跳边界、响应头、flow 接线 |
 | outbox 状态接口 | 9/9 PASS | `OutboxStatus` 解析、容量拒收不 ACK、背压健康降级、`/qc/status` 与 Prometheus 指标 |
 | 状态工具单测 | 5/5 PASS | 快照往返、非法 Running 回退、损坏 JSON 回退、outbox 往返与坏事件隔离 |
@@ -76,7 +78,7 @@ cd ~/UA_LinqInspect
 | Edge Core API/状态机 | 7/7 PASS | 幂等冲突、有效回执、4xx/5xx、死信重放、重启后去重、API 查询 |
 | 安全回归 | 16/16 PASS | UA NoSecurity/匿名权限、控制变量直接写拒绝、匿名 outbox 导出/清空拒绝、Node-RED 认证 |
 | UA 冒烟 | 36/36 PASS | 信息模型、状态机、事件、NgRate、负面用例、三类事件 CorrelationId |
-| Node-RED E2E | 15/15 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通 |
+| Node-RED E2E | 21/21 PASS | NG 开单、完工报工、回执写回、兼容镜像、关联 ID 贯通、MES 重复/冲突 HTTP 契约 |
 | Prometheus 指标 | 80/80 PASS | 文本格式、HELP/TYPE、gauge 一致性、UA 写回计数、outbox 积压指标、SQLite/WAL/SHM 体积、响应契约 |
 | SQLite 备份 | 20/20 PASS | WAL 热备、完整性校验、行数一致、保留策略、运行中数据库、textfile 指标 |
 | 离线恢复 | 20/20 PASS | dry-run、`--force`、安全快照、WAL/SHM 清理、恢复后继续消费 |
@@ -90,9 +92,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **496/496 PASS** | 29 个测试模块 |
+| **合计** | **512/512 PASS** | 30 个测试模块 |
 
-实际产物：`.tmp/regression-20261121-005716/summary.json`。
+实际产物：`.tmp/regression-20261121-015542/summary.json`。
 
 ## 4. 手工执行单个测试
 

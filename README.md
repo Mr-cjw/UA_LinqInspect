@@ -104,7 +104,7 @@ UA_LinqInspect/
 ├── nodered/
 │   ├── flows.json             # M2：Node-RED 流（薄 Function 节点 + 回执写回）
 │   ├── sqlite_store.js        # 事务队列、死信、去重、看门狗与旧 context 迁移
-│   ├── queue_logic.js         # 入队、发送泵、响应校验、/qc/status 与 /metrics
+│   ├── queue_logic.js         # 入队、发送泵、模拟MES幂等/冲突校验、状态接口与指标
 │   └── settings.js            # 注入 qstore/qlogic 的 Node-RED 配置模板
 ├── scripts/
 │   ├── setup_pki.py           # 本地 Root CA、Server/Client 证书与 CRL
@@ -150,7 +150,8 @@ UA_LinqInspect/
     ├── security_test.py       # UA 权限、控制变量只读、HTTP 认证与运维接口鉴权（16 项断言）
     ├── edge_core_test.py      # Edge Core 契约、幂等、死信重放与 UA 确认（7 项断言）
     ├── smoke_test.py          # M1 冒烟测试（UA Client 视角，36 项断言）
-    ├── nodered_e2e.py         # M2 正常链路端到端测试（15 项断言）
+    ├── mes_idempotency_test.js # 模拟 MES 重复投递与 payload 冲突（10 项断言）
+    ├── nodered_e2e.py         # M2 正常链路与 MES 幂等 HTTP 契约（21 项断言）
     ├── metrics_test.py        # Prometheus 指标、outbox、UA 写回与状态一致性（80 项断言）
     ├── health_test.js         # /healthz ready/degraded/unavailable（10 项断言）
     ├── outbox_status_test.js  # OutboxStatus 解析、队列拒收 ACK、健康降级与指标（9 项断言）
@@ -451,7 +452,7 @@ $env:LOCALAPPDATA = "$PWD\.localappdata"
 cd D:\UA_LinqInspect
 $env:UA_ENDPOINT_PORT = '4840'
 & '.conda\python.exe' 'tests\smoke_test.py'       # M1：当前 36/36 PASS
-& '.conda\python.exe' 'tests\nodered_e2e.py'      # M2：当前 15/15 PASS
+& '.conda\python.exe' 'tests\nodered_e2e.py'      # M2：当前 21/21 PASS
 & '.conda\python.exe' 'tests\fault_scenarios.py'  # 可靠性：当前 52/52 PASS
 ```
 
@@ -473,7 +474,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
   UA Server 重启后 StartTime 变化，流会主动向三个客户端广播 `action=reconnect`，
   重建旧 Session 上的事件订阅；仅靠读写心跳恢复不足以证明 Event Subscription 已恢复。
 - 心跳同时读取 `Events.OutboxStatus`；有积压时 UA Server 每个重发周期刷新最老事件年龄，Node-RED 据此暴露 `/qc/status`、`/healthz` 和 Prometheus 背压指标。
-- 缓冲队列、去重集合、死信队列和运行计数使用 SQLite 事务存储（WAL + `synchronous=FULL`）；去重与入队在同一事务提交，发送泵用原子 `claimNext` 保持单飞行。当前是“至少一次投递 + 接收端幂等”，仍不能宣称 exactly-once。
+- 缓冲队列、去重集合、死信队列和运行计数使用 SQLite 事务存储（WAL + `synchronous=FULL`）；去重与入队在同一事务提交，发送泵用原子 `claimNext` 保持单飞行。当前是“至少一次投递 + 接收端幂等”，模拟 MES 已用稳定 payload 指纹验证重复返回原单号、同键不同内容返回 `409 IDEMPOTENCY_CONFLICT`；真实 MES 沙箱仍需验证同一合同，仍不能宣称 exactly-once。
 - `GET /metrics` 提供 Prometheus 文本指标；`GET /qc/status` 保持原有 JSON 契约。运维接口当前依赖网络边界保护，生产部署应在反向代理/防火墙限制来源。
 - `/metrics` 额外暴露 `qc_database_bytes{kind="main|wal|shm"}`；Prometheus 模板包含 WAL 超过 256 MiB 与文件系统剩余空间低于 10% 的告警。
 - UA 写回阶段暴露 `qc_ua_write_pending`、`qc_ua_write_total{type,outcome}` 与 `qc_ua_write_errors_total{type,error_code}`；`/qc/status` 同时返回 `uaWriteback` 计数。
@@ -487,12 +488,13 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:1880/inject/inj_to'
 |---|---|---|
 | M0 | 需求拆解 + 信息模型 + 排期 | ✅ 完成 |
 | M1 | 业务口径契约表 + asyncua Server 骨架 + 单件追溯 + 幂等开检 | ✅ 完成（冒烟测试 36/36 PASS） |
-| M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 15/15、故障矩阵 52/52 PASS） |
-| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 496/496 PASS） |
-| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 496/496 PASS，含 MES 成功、UA 确认前崩溃恢复） |
-| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 496/496 PASS） |
-| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 496/496 PASS） |
-| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 496/496 PASS；与投递队列尚未同事务） |
+| M2 | Node-RED 订阅/报警流 + 模拟 MES + SQLite WAL 队列 + 状态接口 | ✅ 完成（正常链路 21/21、故障矩阵 52/52 PASS） |
+| Phase 1 | correlationId 贯通 + MES 错误分类 + 重启/断网订阅恢复 | ✅ 完成（当前合并回归 512/512 PASS） |
+| Phase 2A | SQLite 事务队列 + 去重/入队原子性 + UA 写回确认 + SIGKILL 崩溃恢复 | ✅ 完成（当前合并回归 512/512 PASS，含 MES 成功、UA 确认前崩溃恢复） |
+| Phase 2B | Prometheus 指标 + 事务计数 + SQLite 在线备份与完整性校验 | ✅ 完成（当前合并回归 512/512 PASS） |
+| Phase 2C | systemd 部署 + 健康探针 + 告警规则 + 备份 timer + 离线恢复演练 | ✅ 完成（一键回归 512/512 PASS） |
+| 状态源 0.1 | 工位控制变量只读、单写者锁、JSON 快照和 SIGKILL 续跑 | ✅ 完成（当前合并回归 512/512 PASS；与投递队列尚未同事务） |
+| MES 幂等 0.1 | 模拟 MES payload 指纹、重复回执、冲突拒绝与原型污染防护 | ✅ 完成（单测 10/10、E2E 21/21 PASS；真实 MES 沙箱待对接） |
 | 事件 outbox 0.1 | NG/完工事件与状态同快照持久化、稳定事件 ID、周期重发和 ACK | ✅ 完成（事件 outbox 3/3、崩溃恢复 18/18；仍为 at-least-once） |
 | outbox 容量 0.1 | 高水位/硬上限、只读积压状态、Prometheus 告警、管理员导出与令牌清空 | ✅ 完成（容量/导出 9/9、状态接口 9/9、积压恢复 18/18） |
 | Edge Core 0.2 | 外部控制面 OpenAPI、SQLite 状态机、死信重放和 UA 写回确认接口 | 🟡 7 项测试通过；Node-RED 在线链路使用独立 SQLite 队列 |
