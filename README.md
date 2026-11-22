@@ -162,6 +162,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [AI 质检最小闭环](docs/26_AI质检最小闭环.md)
 - [无案例阶段商业化与融资路线](docs/27_无案例阶段商业化与融资路线.md)
 - [质检-MES 对账诊断一页报价](docs/28_质检MES对账诊断一页报价.md)
+- [小额验证资金申请与信任建立](docs/30_小额验证资金申请与信任建立.md)
 
 ## 商业现状
 
@@ -172,9 +173,10 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 ```bash
 python3 scripts/render_investor_deck.py
 python3 scripts/render_diagnostic_offer.py
+python3 scripts/render_validation_budget.py
 ```
 
-输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf` 和同名 HTML。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
+输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf`、`小额验证资金申请_一页版.pdf` 和同名 HTML。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
 
 ## 项目结构
 
@@ -245,6 +247,7 @@ UA_LinqInspect/
 │   ├── 27_无案例阶段商业化与融资路线.md
 │   ├── 28_质检MES对账诊断一页报价.md
 │   ├── 29_质量证据包与追溯.md
+│   ├── 30_小额验证资金申请与信任建立.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
