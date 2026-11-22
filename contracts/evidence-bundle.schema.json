@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/contracts/evidence-bundle.schema.json",
+  "title": "QC Delivery Evidence Bundle",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "bundleType",
+    "generatedAt",
+    "deliveryId",
+    "businessKey",
+    "correlationId",
+    "inspection",
+    "visionLineage",
+    "delivery",
+    "mes",
+    "ua",
+    "audit",
+    "deadLetter",
+    "completeness",
+    "limitations",
+    "bundleSha256",
+    "bundleHashScope"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "bundleType": {"const": "QC_DELIVERY_EVIDENCE"},
+    "generatedAt": {"type": "string"},
+    "deliveryId": {"type": "string", "format": "uuid"},
+    "businessKey": {"type": "string"},
+    "correlationId": {"type": "string"},
+    "inspection": {
+      "type": "object",
+      "required": ["sourceEventId", "stationId", "eventType", "workOrderId", "metadata"],
+      "properties": {
+        "sourceEventId": {"type": ["string", "null"]},
+        "stationId": {"type": ["string", "null"]},
+        "eventType": {"enum": ["NG_ORDER", "COMPLETION_REPORT"]},
+        "occurredAt": {"type": ["string", "null"]},
+        "result": {"type": ["string", "null"]},
+        "workOrderId": {"type": ["string", "null"]},
+        "serialNumber": {"type": ["string", "null"]},
+        "defectType": {"type": ["string", "null"]},
+        "confidence": {"type": ["number", "null"]},
+        "imageId": {"type": ["string", "null"]},
+        "metadata": {"type": "object"}
+      }
+    },
+    "visionLineage": {"type": "object"},
+    "delivery": {"type": "object"},
+    "mes": {"type": "object"},
+    "ua": {"type": "object"},
+    "audit": {"type": "array"},
+    "deadLetter": {"type": ["object", "null"]},
+    "completeness": {"type": "object"},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "bundleSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "bundleHashScope": {"type": "string"}
+  }
+}

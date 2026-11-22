@@ -459,6 +459,38 @@ def main() -> int:
             json.dumps([item.get("mesReceipt") for item in deliveries], ensure_ascii=False)[:1500],
         )
 
+        ng_delivery = ng_deliveries[0]
+        evidence = http_json(
+            edge_api_base + f"/v1/deliveries/{ng_delivery['deliveryId']}/evidence",
+            headers=api_headers,
+        )
+        check(
+            "Edge Core evidence bundle reconstructs the NG inspection and audit trail",
+            evidence.get("bundleType") == "QC_DELIVERY_EVIDENCE"
+            and evidence.get("deliveryId") == ng_delivery["deliveryId"]
+            and bool(evidence.get("inspection", {}).get("defectType"))
+            and evidence.get("mes", {}).get("receipt", {}).get("receiptNo") == ng_delivery["mesReceipt"]["receiptNo"]
+            and evidence.get("ua", {}).get("writeConfirmed") is True
+            and evidence.get("completeness", {}).get("complete") is True
+            and len(evidence.get("audit", [])) >= 3
+            and len(evidence.get("bundleSha256", "")) == 64,
+            json.dumps({
+                "deliveryId": evidence.get("deliveryId"),
+                "bundleSha256": evidence.get("bundleSha256"),
+                "completeness": evidence.get("completeness"),
+                "auditEvents": len(evidence.get("audit", [])),
+            }, ensure_ascii=False),
+        )
+        operator_evidence = http_json(
+            operator_base + f"/api/evidence/{ng_delivery['deliveryId']}",
+            headers=operator_headers,
+        )
+        check(
+            "operator console exposes the same quality evidence bundle",
+            operator_evidence.get("data", {}).get("bundleSha256") == evidence.get("bundleSha256"),
+            f"(bundle={operator_evidence.get('data', {}).get('bundleSha256', '')[:16]})",
+        )
+
         edge_status = http_json(edge_api_base + "/v1/status", headers=api_headers)
         check(
             "Edge Core queue and dead letters are empty",

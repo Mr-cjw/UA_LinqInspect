@@ -1,6 +1,6 @@
 # Phase 2B：可观测性与 SQLite 在线备份
 
-> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：664/664，证据：`.tmp/regression-20261121-163110/summary.json`
+> 日期：2026-11-21 ｜ Phase 2B 证据：`.tmp/regression-20261120-145650/summary.json`（255/255）｜ 当前合并回归：668/668，证据：`.tmp/regression-20261122-031255/summary.json`
 
 ## 1. 这一阶段解决了什么
 
@@ -133,7 +133,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置、模拟 MES 幂等合同、SQLite 存储故障恢复、真实挂载 EROFS/ENOSPC、备份 schema 合同、只读目录演练、状态持久化失败演练、进程内回滚、无硬件演示、发送泵迁移工具、UA 写回适配器与 AI 图像质量门禁后当前合并回归为 **664/664 PASS**：
+2026-11-20 Phase 2B 实测 **255/255 PASS**；加入 Node-RED 认证、Edge Core、Phase 2C 运维、M3、存储告警、状态持久化、UA 写回确认、写回前崩溃恢复、事件 outbox、队列容量处置、模拟 MES 幂等合同、SQLite 存储故障恢复、真实挂载 EROFS/ENOSPC、备份 schema 合同、只读目录演练、状态持久化失败演练、进程内回滚、无硬件演示、发送泵迁移工具、UA 写回适配器与 AI 图像质量门禁后当前合并回归为 **668/668 PASS**：
 
 | 测试 | 结果 |
 |---|---:|
@@ -149,12 +149,12 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 工位状态重启 | 13/13 |
 | 事件 outbox 崩溃恢复 | 18/18 |
 | 健康探针 | 10/10 |
-| Edge Core | 14/14 |
+| Edge Core | 15/15 |
 | Edge Core 入站 | 7/7 |
 | 发送权并发 | 3/3 |
 | 受控迁移/回滚 | 1/1 |
-| 本地操作台 | 7/7 |
-| Node-RED 在线全链路 | 17/17 |
+| 本地操作台 | 8/8 |
+| Node-RED 在线全链路 | 19/19 |
 | MES 契约体检 | 5/5 |
 | 无硬件演示 | 4/4 |
 | Node-RED 迁移 | 5/5 |
@@ -175,7 +175,7 @@ curl -s http://127.0.0.1:1880/metrics | head -40
 | 短断网 | 10/10 |
 | 陈旧过滤 | 7/7 |
 | UA Server 重启 | 14/14 |
-| **合计** | **664/664** |
+| **合计** | **668/668** |
 
 ## 5. 下一阶段
 

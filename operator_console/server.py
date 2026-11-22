@@ -17,6 +17,7 @@ from .station import StationError, StationGateway
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 _DEAD_ACTION = re.compile(r"^/api/dead-letters/([0-9a-fA-F-]{36})/(replay|acknowledge)$")
+_EVIDENCE_PATH = re.compile(r"^/api/evidence/([0-9a-fA-F-]{36})$")
 _MAX_BODY = 64 * 1024
 
 
@@ -165,6 +166,11 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 limit = min(200, max(1, int((query.get("limit") or ["30"])[0])))
                 result = self.edge.dead_letters(limit=limit)
+                self._json(200, {"ok": True, "data": result})
+                return
+            match = _EVIDENCE_PATH.match(parsed.path)
+            if match:
+                result = self.edge.evidence(match.group(1))
                 self._json(200, {"ok": True, "data": result})
                 return
             if parsed.path == "/api/report":

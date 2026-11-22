@@ -323,6 +323,67 @@ class EdgeCoreTests(unittest.TestCase):
         self.assertEqual(dead["lastErrorCode"], "MES_UNAVAILABLE")
         self.assertEqual(len(FakeMesHandler.requests), 2)
 
+    def test_evidence_bundle_reconstructs_inspection_delivery_and_audit(self):
+        event = make_event()
+        event["metadata"] = {
+            "modelVersion": "synthetic-vision-mlp-v1",
+            "modelSha256": "a" * 64,
+            "datasetVersion": "procedural-synthetic-v1",
+            "imageSha256": "b" * 64,
+            "imageHashScope": "canonical-png-bytes",
+            "inferenceMs": 4.2,
+        }
+        delivery, _ = self.store.enqueue(
+            event,
+            url=self.mes_url + "/mes/ng-order",
+            idempotency_key=str(uuid.uuid4()),
+            correlation_id=event["correlationId"],
+        )
+        self.worker().run_once()
+        self.store.mark_ua_write_result(
+            delivery["deliveryId"],
+            success=True,
+            correlation_id=event["correlationId"],
+        )
+        api = create_api_server("127.0.0.1", 0, self.store, "test-token", self.mes_url)
+        api.quiet = True  # type: ignore[attr-defined]
+        thread = threading.Thread(target=api.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{api.server_address[1]}/v1/deliveries/{delivery['deliveryId']}/evidence",
+                headers={"authorization": "Bearer test-token"},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                bundle = json.loads(response.read().decode("utf-8"))
+        finally:
+            api.shutdown()
+            api.server_close()
+            thread.join(timeout=5)
+
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1] / "contracts" / "evidence-bundle.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertTrue(set(schema["required"]) <= set(bundle))
+        self.assertEqual(bundle["bundleType"], "QC_DELIVERY_EVIDENCE")
+        self.assertEqual(bundle["deliveryId"], delivery["deliveryId"])
+        self.assertEqual(bundle["inspection"]["serialNumber"], event["serialNumber"])
+        self.assertEqual(bundle["inspection"]["defectType"], event["defectType"])
+        self.assertEqual(bundle["visionLineage"]["modelVersion"], "synthetic-vision-mlp-v1")
+        self.assertEqual(bundle["visionLineage"]["imageSha256"], "b" * 64)
+        self.assertEqual(bundle["mes"]["receipt"]["receiptType"], "MES_ORDER")
+        self.assertTrue(bundle["ua"]["writeConfirmed"])
+        self.assertTrue(bundle["completeness"]["complete"])
+        self.assertTrue(bundle["completeness"]["modelLineagePresent"])
+        self.assertGreaterEqual(len(bundle["audit"]), 4)
+        transitions = [(item["fromState"], item["toState"]) for item in bundle["audit"]]
+        self.assertIn(("PENDING", "SENDING"), transitions)
+        self.assertIn(("SENDING", "UA_WRITE_PENDING"), transitions)
+        self.assertIn(("UA_WRITE_PENDING", "DONE"), transitions)
+        self.assertEqual(len(bundle["bundleSha256"]), 64)
+
     def test_business_key_survives_store_reopen(self):
         event = make_event(source_event_id="evt-persisted")
         key = str(uuid.uuid4())

@@ -65,6 +65,26 @@ function deterministicUuid(value) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+function edgeCoreMetadata(msg, source) {
+  const metadata = { adapter: 'node-red', source };
+  const allowed = [
+    'modelVersion', 'modelHash', 'modelSha256', 'datasetVersion',
+    'imageSha256', 'imageHashScope', 'inferenceMs', 'qualityGate',
+    'visionDecision', 'decisionReason',
+  ];
+  for (const key of allowed) {
+    if (msg[key] !== undefined) metadata[key] = msg[key];
+  }
+  if (msg.metadata && typeof msg.metadata === 'object' && !Array.isArray(msg.metadata)) {
+    for (const key of Object.keys(msg.metadata)) {
+      if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') {
+        metadata[key] = msg.metadata[key];
+      }
+    }
+  }
+  return metadata;
+}
+
 function edgeCoreSettings(flow) {
   const baseUrl = String(flow.get('edgeCoreBaseUrl') || process.env.EDGE_API_BASE_URL || 'http://127.0.0.1:8770')
     .replace(/\/+$/, '');
@@ -126,7 +146,7 @@ async function edgeCoreIngressNg(msg, flow, node) {
     confidence: msg.confidence,
     imageId: String(msg.imageId || '').trim(),
     correlationId,
-    metadata: { adapter: 'node-red', source: 'NgDetectedEvent' },
+    metadata: edgeCoreMetadata(msg, 'NgDetectedEvent'),
   };
   const delivery = await postEdgeCoreIngress(flow, event, sourceEventId);
   node.warn('[Edge Core入队][' + correlationId + '] NG ' + event.serialNumber +
@@ -151,7 +171,7 @@ async function edgeCoreIngressDone(msg, flow, node) {
     ngCount: Number(msg.ngCount || 0),
     ngRate: Number(msg.ngRate == null ? -1 : msg.ngRate),
     correlationId,
-    metadata: { adapter: 'node-red', source: 'WorkOrderCompletedEvent' },
+    metadata: edgeCoreMetadata(msg, 'WorkOrderCompletedEvent'),
   };
   const delivery = await postEdgeCoreIngress(flow, event, sourceEventId);
   node.warn('[Edge Core入队][' + correlationId + '] 报工 ' + event.workOrderId +

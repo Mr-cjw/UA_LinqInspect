@@ -81,6 +81,11 @@ td { padding: 10px; border-bottom: 1px solid #eef1f4; vertical-align: top; }
 .dead-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .alert { margin: 18px clamp(16px, 4vw, 56px) 0; padding: 13px 16px; border-radius: 10px; background: #fde5e2; color: var(--ng); border: 1px solid #efc0bb; }
 .hidden { display: none; }
+.evidence-panel { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; }
+.evidence-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.evidence-head h3 { margin: 4px 0 0; }
+.evidence-summary { color: #34414d; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-panel pre { max-height: 420px; overflow: auto; padding: 14px; border-radius: 10px; background: #0f1d28; color: #d8e5ee; font-size: 11px; line-height: 1.55; }
 footer { padding: 0 clamp(16px, 4vw, 56px) 30px; display: flex; justify-content: space-between; gap: 20px; color: var(--muted); font-size: 12px; }
 
 @media (max-width: 1050px) {

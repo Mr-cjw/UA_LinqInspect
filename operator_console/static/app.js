@@ -1,6 +1,6 @@
 'use strict';
 
-const state = { busy: false, lastStatus: null };
+const state = { busy: false, lastStatus: null, currentEvidence: null, evidenceName: "" };
 const byId = id => document.getElementById(id);
 const alertBox = byId('alert');
 
@@ -100,7 +100,7 @@ function renderDeliveries(payload) {
   if (!Array.isArray(items) || items.length === 0) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.className = 'empty';
     cell.textContent = '暂无投递任务';
     row.appendChild(cell);
@@ -114,6 +114,14 @@ function renderDeliveries(payload) {
     appendCell(row, item.state);
     appendCell(row, item.mesReceipt?.receiptNo || item.mesReceipt?.mesOrderNo || '');
     appendCell(row, formatTime(item.updatedAt));
+    const evidenceCell = document.createElement('td');
+    const evidenceButton = document.createElement('button');
+    evidenceButton.type = 'button';
+    evidenceButton.className = 'button small secondary';
+    evidenceButton.textContent = '查看';
+    evidenceButton.addEventListener('click', () => showEvidence(item.deliveryId, item.workOrderId));
+    evidenceCell.appendChild(evidenceButton);
+    row.appendChild(evidenceCell);
     body.appendChild(row);
   }
 }
@@ -180,6 +188,48 @@ function renderDeadLetters(payload) {
     article.append(head, meta, actions);
     list.appendChild(article);
   }
+}
+
+async function showEvidence(deliveryId, workOrderId) {
+  try {
+    const payload = await request(`/api/evidence/${encodeURIComponent(deliveryId)}`);
+    const evidence = payload.data;
+    state.currentEvidence = evidence;
+    state.evidenceName = `qc-evidence-${workOrderId || deliveryId}.json`;
+    const inspection = evidence.inspection || {};
+    const lineage = evidence.visionLineage || {};
+    const mes = evidence.mes || {};
+    const lines = [
+      `工单：${formatValue(inspection.workOrderId)}`,
+      `SN：${formatValue(inspection.serialNumber)}`,
+      `结果：${formatValue(inspection.result)} · 缺陷：${formatValue(inspection.defectType)} · 置信度：${inspection.confidence ?? '—'}`,
+      `图片：${formatValue(inspection.imageId)}`,
+      `模型：${formatValue(lineage.modelVersion)} · 模型哈希：${formatValue(lineage.modelSha256)}`,
+      `MES 回执：${formatValue(mes.receipt?.receiptNo)} · UA 写回：${evidence.ua?.writeConfirmed ? '已确认' : '未确认'}`,
+      `correlationId：${formatValue(evidence.correlationId)}`,
+      `bundleSha256：${formatValue(evidence.bundleSha256)}`,
+      `完整性：${evidence.completeness?.complete ? '字段完整' : '缺少 ' + (evidence.completeness?.missingFields || []).join(', ')}`,
+    ];
+    byId('evidence-summary').textContent = lines.join('\n');
+    byId('evidence-json').textContent = JSON.stringify(evidence, null, 2);
+    byId('evidence-panel').classList.remove('hidden');
+    byId('evidence-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+function downloadEvidence() {
+  if (!state.currentEvidence) return;
+  const blob = new Blob([JSON.stringify(state.currentEvidence, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = state.evidenceName || 'qc-evidence.json';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function refresh() {
@@ -260,5 +310,7 @@ byId('start-form').addEventListener('submit', submitStart);
 byId('complete-button').addEventListener('click', completeWorkOrder);
 byId('refresh-button').addEventListener('click', refresh);
 byId('download-report').addEventListener('click', () => window.location.assign('/api/report'));
+byId('download-evidence').addEventListener('click', downloadEvidence);
+byId('close-evidence').addEventListener('click', () => byId('evidence-panel').classList.add('hidden'));
 refresh();
 window.setInterval(refresh, 3000);

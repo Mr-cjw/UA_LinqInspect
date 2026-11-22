@@ -82,6 +82,8 @@ async function main() {
       occurredAt: '2026-11-21T00:00:00.000Z',
       correlationId: 'corr-edge-ingress-ng-0001',
       sourceEventId: 'evt-edge-ingress-ng-0001',
+      modelVersion: 'synthetic-vision-mlp-v1',
+      metadata: { datasetVersion: 'procedural-synthetic-v1' },
     };
     const ngAck = await qlogic.edgeCoreIngressNg(ng, flow, node);
     check('NG ingress posts the canonical event', () => {
@@ -94,6 +96,9 @@ async function main() {
       assert.equal(request.headers['x-correlation-id'], ng.correlationId);
       assert.match(request.headers['idempotency-key'], /^[0-9a-f-]{36}$/);
       assert.equal(request.headers.authorization, 'Bearer ingress-test-token');
+      assert.equal(request.body.metadata.modelVersion, 'synthetic-vision-mlp-v1');
+      assert.equal(request.body.metadata.datasetVersion, 'procedural-synthetic-v1');
+      assert.equal(request.body.metadata.adapter, 'node-red');
     });
     check('NG ingress ACKs only after HTTP 202', () => {
       assert.equal(ngAck.action, 'method');

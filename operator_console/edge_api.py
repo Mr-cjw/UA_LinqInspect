@@ -67,6 +67,12 @@ class OperatorEdgeClient:
     def dead_letters(self, *, limit: int = 30) -> dict[str, Any]:
         return self.request("GET", "/v1/dead-letters?" + urllib.parse.urlencode({"limit": limit}))
 
+    def evidence(self, delivery_id: str) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            f"/v1/deliveries/{urllib.parse.quote(delivery_id, safe='')}/evidence",
+        )
+
     def replay_dead_letter(self, delivery_id: str, *, actor: str, reason: str) -> dict[str, Any]:
         return self.request(
             "POST",

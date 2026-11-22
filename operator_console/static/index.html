@@ -84,11 +84,22 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>类型</th><th>工单</th><th>状态</th><th>回执号</th><th>更新时间</th></tr>
+              <tr><th>类型</th><th>工单</th><th>状态</th><th>回执号</th><th>更新时间</th><th>证据</th></tr>
             </thead>
-            <tbody id="delivery-rows"><tr><td colspan="5" class="empty">暂无数据</td></tr></tbody>
+            <tbody id="delivery-rows"><tr><td colspan="6" class="empty">暂无数据</td></tr></tbody>
           </table>
         </div>
+        <section id="evidence-panel" class="evidence-panel hidden">
+          <div class="evidence-head">
+            <div><p class="eyebrow">EVIDENCE BUNDLE</p><h3>质量证据包</h3></div>
+            <div class="dead-actions">
+              <button id="download-evidence" class="button small secondary" type="button">下载 JSON</button>
+              <button id="close-evidence" class="button small secondary" type="button">关闭</button>
+            </div>
+          </div>
+          <p id="evidence-summary" class="evidence-summary"></p>
+          <pre id="evidence-json"></pre>
+        </section>
       </article>
 
       <article class="card">

@@ -188,6 +188,129 @@ class DeliveryStore:
             ).fetchone()
             return self._row_to_delivery(row) if row else None
 
+    def evidence_bundle(self, delivery_id: str) -> dict[str, Any] | None:
+        """Build a reconstructable quality evidence bundle from durable state."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+            if not row:
+                return None
+            event_rows = conn.execute(
+                "SELECT sequence, from_state, to_state, correlation_id, detail_json, created_at "
+                "FROM delivery_events WHERE delivery_id = ? ORDER BY sequence",
+                (delivery_id,),
+            ).fetchall()
+            dead_row = conn.execute(
+                "SELECT * FROM dead_letters WHERE delivery_id = ?", (delivery_id,)
+            ).fetchone()
+
+        payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        delivery = self._row_to_delivery(row)
+        audit = []
+        for event in event_rows:
+            detail = event["detail_json"]
+            try:
+                parsed_detail = json.loads(detail) if detail else None
+            except json.JSONDecodeError:
+                parsed_detail = detail
+            audit.append({
+                "sequence": int(event["sequence"]),
+                "fromState": event["from_state"],
+                "toState": event["to_state"],
+                "correlationId": event["correlation_id"],
+                "detail": parsed_detail,
+                "createdAt": event["created_at"],
+            })
+
+        event_type = str(row["event_type"])
+        inspection_fields = {
+            "sourceEventId": payload.get("sourceEventId"),
+            "stationId": payload.get("stationId"),
+            "eventType": event_type,
+            "occurredAt": payload.get("occurredAt"),
+            "result": payload.get("result"),
+            "workOrderId": payload.get("workOrderId"),
+            "serialNumber": payload.get("serialNumber"),
+            "defectType": payload.get("defectType"),
+            "confidence": payload.get("confidence"),
+            "imageId": payload.get("imageId"),
+            "metadata": metadata,
+        }
+        lineage = {
+            "modelVersion": metadata.get("modelVersion"),
+            "modelSha256": metadata.get("modelSha256") or metadata.get("modelHash"),
+            "datasetVersion": metadata.get("datasetVersion"),
+            "imageSha256": metadata.get("imageSha256"),
+            "imageHashScope": metadata.get("imageHashScope"),
+            "inferenceMs": metadata.get("inferenceMs"),
+        }
+        required = ("sourceEventId", "stationId", "workOrderId", "correlationId")
+        if event_type == "NG_ORDER":
+            required += ("serialNumber", "defectType", "confidence", "imageId")
+        missing = [name for name in required if payload.get(name) in (None, "")]
+        dead_letter = None
+        if dead_row:
+            dead_letter = {
+                "reasonCode": dead_row["reason_code"],
+                "reason": dead_row["reason"],
+                "failedAt": dead_row["failed_at"],
+                "replayedAt": dead_row["replayed_at"],
+                "acknowledgedAt": dead_row["acknowledged_at"],
+                "acknowledgedBy": dead_row["acknowledged_by"],
+                "resolution": dead_row["resolution"],
+            }
+
+        content = {
+            "schemaVersion": "1.0",
+            "bundleType": "QC_DELIVERY_EVIDENCE",
+            "generatedAt": utc_now(),
+            "deliveryId": row["delivery_id"],
+            "businessKey": row["business_key"],
+            "correlationId": row["correlation_id"],
+            "inspection": inspection_fields,
+            "visionLineage": lineage,
+            "delivery": delivery,
+            "mes": {
+                "endpoint": row["url"],
+                "receipt": delivery.get("mesReceipt"),
+                "attempts": int(row["attempts"]),
+                "lastErrorCode": row["last_error_code"],
+                "lastErrorMessage": row["last_error_message"],
+            },
+            "ua": {
+                "writeConfirmed": bool(row["ua_write_confirmed"]),
+                "receiptMirrorsExternal": bool(row["ua_write_confirmed"]),
+            },
+            "audit": audit,
+            "deadLetter": dead_letter,
+            "completeness": {
+                "missingFields": missing,
+                "complete": not missing,
+                "imageBinaryStored": False,
+                "imageReferenceOnly": bool(payload.get("imageId")),
+                "modelLineagePresent": all(
+                    lineage.get(key) not in (None, "")
+                    for key in ("modelVersion", "modelSha256", "datasetVersion")
+                ),
+            },
+            "limitations": [
+                "bundleSha256 is content integrity, not a digital signature.",
+                "Image binaries are not stored by this MVP; imageId/hash references require separate retention.",
+                "Vision metrics are only valid for the dataset and model version recorded above.",
+            ],
+        }
+        content["bundleHashScope"] = "canonical-json-excluding-generatedAt-and-bundleSha256"
+        hash_input = {
+            key: value for key, value in content.items()
+            if key not in ("generatedAt", "bundleSha256")
+        }
+        content["bundleSha256"] = hashlib.sha256(
+            _canonical_json(hash_input).encode("utf-8")
+        ).hexdigest()
+        return content
+
     def enqueue(
         self,
         event: dict[str, Any],

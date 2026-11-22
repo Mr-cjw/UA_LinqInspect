@@ -113,6 +113,28 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/deliveries/{deliveryId}/evidence:
+    get:
+      tags: [Deliveries]
+      operationId: getDeliveryEvidence
+      summary: 构建可追溯的质量证据包
+      description: |
+        从持久化 payload、投递状态、MES 回执、UA 写回确认、审计事件和死信记录中重建证据包。
+        bundleSha256 是内容完整性哈希，不替代数字签名；图像二进制当前只保存引用。
+      parameters:
+        - $ref: '#/components/parameters/DeliveryId'
+      responses:
+        '200':
+          description: 质量证据包
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceBundle'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/deliveries/{deliveryId}/ua-write-result:
     post:
       tags: [Deliveries]
@@ -421,6 +443,76 @@ components:
           correlationId: corr-7d35b5d0-6811-4d66-b7db-42242543b9b1
           metadata:
             source: third-party-vision
+
+    EvidenceBundle:
+      type: object
+      required:
+        - schemaVersion
+        - bundleType
+        - generatedAt
+        - deliveryId
+        - businessKey
+        - correlationId
+        - inspection
+        - visionLineage
+        - delivery
+        - mes
+        - ua
+        - audit
+        - deadLetter
+        - completeness
+        - limitations
+        - bundleSha256
+        - bundleHashScope
+      properties:
+        schemaVersion:
+          const: '1.0'
+        bundleType:
+          const: QC_DELIVERY_EVIDENCE
+        generatedAt:
+          type: string
+          format: date-time
+        deliveryId:
+          type: string
+          format: uuid
+        businessKey:
+          type: string
+        correlationId:
+          type: string
+        inspection:
+          type: object
+          additionalProperties: true
+        visionLineage:
+          type: object
+          additionalProperties: true
+        delivery:
+          $ref: '#/components/schemas/Delivery'
+        mes:
+          type: object
+          additionalProperties: true
+        ua:
+          type: object
+          additionalProperties: true
+        audit:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        deadLetter:
+          type: [object, 'null']
+          additionalProperties: true
+        completeness:
+          type: object
+          additionalProperties: true
+        limitations:
+          type: array
+          items:
+            type: string
+        bundleSha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        bundleHashScope:
+          type: string
 
     DeliveryState:
       type: string

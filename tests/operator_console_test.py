@@ -72,6 +72,19 @@ class FakeEdge:
             "nextCursor": None,
         }
 
+    def evidence(self, delivery_id):
+        return {
+            "schemaVersion": "1.0",
+            "bundleType": "QC_DELIVERY_EVIDENCE",
+            "deliveryId": delivery_id,
+            "correlationId": "corr-operator-evidence-0001",
+            "inspection": {"serialNumber": "SN-OPERATOR-001", "defectType": "SCRATCH"},
+            "mes": {"receipt": {"receiptNo": "MES-001"}},
+            "ua": {"writeConfirmed": True},
+            "bundleSha256": "a" * 64,
+            "completeness": {"complete": True, "missingFields": []},
+        }
+
     def dead_letters(self, *, limit=30):
         return {
             "items": [{
@@ -207,6 +220,15 @@ class OperatorConsoleTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(self.edge.acknowledged, [(delivery_id, "operator", "manually reconciled")])
+
+    def test_evidence_bundle_is_proxied(self):
+        delivery_id = "11111111-1111-4111-8111-111111111111"
+        status, _, payload = self.json_response("GET", f"/api/evidence/{delivery_id}")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["deliveryId"], delivery_id)
+        self.assertEqual(payload["data"]["inspection"]["defectType"], "SCRATCH")
+        self.assertIn("EVIDENCE BUNDLE", (Path(__file__).resolve().parents[1] / "operator_console" / "static" / "index.html").read_text(encoding="utf-8"))
 
     def test_report_is_downloadable_json(self):
         status, headers, body = self.request("GET", "/api/report")

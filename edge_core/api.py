@@ -16,7 +16,7 @@ from .store import (
 )
 
 _MAX_BODY = 1024 * 1024
-_DELIVERY_PATH = re.compile(r"^/v1/deliveries/([0-9a-fA-F-]{36})(/ua-write-result)?$")
+_DELIVERY_PATH = re.compile(r"^/v1/deliveries/([0-9a-fA-F-]{36})(/ua-write-result|/evidence)?$")
 _DEAD_PATH = re.compile(r"^/v1/dead-letters/([0-9a-fA-F-]{36})/(replay|acknowledge)$")
 
 
@@ -89,6 +89,13 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
                 self._send_json(200, self._status_payload())
                 return
             match = _DELIVERY_PATH.match(path)
+            if match and match.group(2) == "/evidence":
+                evidence = self.store.evidence_bundle(match.group(1))
+                if not evidence:
+                    self._error(404, "NOT_FOUND", "delivery not found")
+                    return
+                self._send_json(200, evidence)
+                return
             if match and not match.group(2):
                 delivery = self.store.get(match.group(1))
                 if not delivery:
@@ -113,7 +120,7 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
                 self._ingest(body)
                 return
             match = _DELIVERY_PATH.match(path)
-            if match and match.group(2):
+            if match and match.group(2) == "/ua-write-result":
                 self._ua_write_result(match.group(1), body)
                 return
             match = _DEAD_PATH.match(path)
