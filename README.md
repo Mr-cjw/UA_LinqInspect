@@ -165,6 +165,9 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [小额验证资金申请与信任建立](docs/30_小额验证资金申请与信任建立.md)
 - [无硬件阶段验证与小额投资计划](docs/31_无硬件阶段验证与小额投资计划.md)
 - [证据备份恢复与容量治理](docs/32_证据备份恢复与容量治理.md)
+- [现场验证确认单](docs/33_现场验证确认单.md)
+- [硬件询价与资产清单](docs/34_硬件询价与资产清单.md)
+- [验收指标与停止条件](docs/35_验收指标与停止条件.md)
 
 ## 商业现状
 
@@ -176,9 +179,10 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 python3 scripts/render_investor_deck.py
 python3 scripts/render_diagnostic_offer.py
 python3 scripts/render_validation_budget.py
+python3 scripts/render_site_validation_pack.py
 ```
 
-输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf`、`小额验证资金申请_一页版.pdf` 和同名 HTML。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
+输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf`、`小额验证资金申请_一页版.pdf`、`现场验证三件套.pdf` 和同名 HTML。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
 
 ## 项目结构
 
@@ -254,6 +258,9 @@ UA_LinqInspect/
 │   ├── 30_小额验证资金申请与信任建立.md
 │   ├── 31_无硬件阶段验证与小额投资计划.md
 │   ├── 32_证据备份恢复与容量治理.md
+│   ├── 33_现场验证确认单.md
+│   ├── 34_硬件询价与资产清单.md
+│   ├── 35_验收指标与停止条件.md
 │   ├── api/edge-core.openapi.yaml
 │   ├── M1_业务口径与MES契约.md  # 缺陷码枚举 / NgRate 滑窗规则 / MES 调用契约
 │   └── M2_验收与测试场景.md     # 四种验收场景（正向/超时/5xx死信/Method拒绝）
