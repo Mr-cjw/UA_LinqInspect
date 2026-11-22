@@ -87,7 +87,8 @@ OK 也必须过置信度门禁，低置信度的 OK/NG 都转人工复核。合�
 完整讲解、60 秒项目说明和真/模拟边界见
 [五分钟软件体验演示](docs/17_五分钟软件体验演示.md) 与
 [双项目联合架构](docs/18_双项目联合架构.md)，现场话术见
-[项目演示讲稿与问答](docs/21_项目演示讲稿与问答.md)。
+[项目演示讲稿与问答](docs/21_项目演示讲稿与问答.md)。投资人现场按
+[投资人演示当天执行清单](docs/38_投资人演示当天执行清单.md) 操作。
 
 ## 启动流程总览
 
@@ -169,6 +170,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [硬件询价与资产清单](docs/34_硬件询价与资产清单.md)
 - [验收指标与停止条件](docs/35_验收指标与停止条件.md)
 - [接单能力与同行差距审计](docs/36_接单能力与同行差距审计.md)
+- [投资人演示当天执行清单](docs/38_投资人演示当天执行清单.md)
 - [证据签名与密钥轮换](docs/37_证据签名与密钥轮换.md)
 
 ## 商业现状
@@ -183,6 +185,7 @@ python3 scripts/render_diagnostic_offer.py
 python3 scripts/render_validation_budget.py
 python3 scripts/render_site_validation_pack.py
 python3 scripts/render_capability_audit.py
+python3 scripts/render_investor_demo_card.py
 ```
 
 输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf`、`小额验证资金申请_一页版.pdf`、`现场验证三件套.pdf` 和同名 HTML；接单审计输出到 `交付材料/05_接单能力审计_2页.pdf`。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
