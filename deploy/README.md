@@ -23,6 +23,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ua-linqinspect-server.service
 sudo systemctl enable --now ua-linqinspect-nodered.service
 sudo systemctl enable --now ua-linqinspect-backup.timer
+sudo systemctl enable --now ua-linqinspect-edge-backup.timer
 sudo systemctl enable --now ua-linqinspect-operator.service
 
 # Edge Core 发送泵采用条件启动，默认 QC_DELIVERY_AUTHORITY=node-red 时保持停止。

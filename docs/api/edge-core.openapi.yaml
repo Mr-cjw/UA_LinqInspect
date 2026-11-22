@@ -197,6 +197,22 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /v1/evidence/images/status:
+    get:
+      tags: [Deliveries]
+      operationId: getEvidenceImageCapacity
+      summary: 查询证据图片容量和剩余磁盘空间
+      responses:
+        '200':
+          description: 容量状态
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /v1/evidence/images/{imageId}:
     get:
       tags: [Deliveries]

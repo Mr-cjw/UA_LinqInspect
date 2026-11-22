@@ -22,6 +22,7 @@ from edge_core.store import (
     ConflictError,
     DeliveryStore,
     STATE_DEAD,
+    StorageCapacityError,
     STATE_DONE,
     STATE_UA_WRITE_PENDING,
 )
@@ -416,6 +417,12 @@ class EdgeCoreTests(unittest.TestCase):
             with urllib.request.urlopen(upload, timeout=5) as response:
                 self.assertEqual(response.status, 201)
                 uploaded = json.loads(response.read().decode("utf-8"))
+            capacity_request = urllib.request.Request(
+                base + "/v1/evidence/images/status",
+                headers={"authorization": "Bearer test-token"},
+            )
+            with urllib.request.urlopen(capacity_request, timeout=5) as response:
+                capacity = json.loads(response.read().decode("utf-8"))
             image_request = urllib.request.Request(
                 base + "/v1/evidence/images/" + event["imageId"],
                 headers={"authorization": "Bearer test-token"},
@@ -441,11 +448,28 @@ class EdgeCoreTests(unittest.TestCase):
 
         self.assertEqual(uploaded["sha256"], digest)
         self.assertEqual(uploaded["bytes"], len(image))
+        self.assertEqual(capacity["files"], 1)
+        self.assertEqual(capacity["totalBytes"], len(image))
         self.assertEqual(found[0]["deliveryId"], delivery["deliveryId"])
         self.assertEqual(bundle["inspection"]["imageId"], event["imageId"])
         self.assertTrue(bundle["imageEvidence"]["available"])
         self.assertTrue(bundle["completeness"]["imageBinaryStored"])
         self.assertFalse(bundle["completeness"]["imageReferenceOnly"])
+
+    def test_evidence_image_quota_fails_without_silent_eviction(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DeliveryStore(
+                Path(temp) / "edge.sqlite3",
+                image_max_files=1,
+                image_min_free_bytes=0,
+            )
+            first = b"\x89PNG\r\n\x1a\nfirst"
+            second = b"\x89PNG\r\n\x1a\nsecond"
+            store.store_evidence_image("IMG-FIRST", first)
+            with self.assertRaises(StorageCapacityError):
+                store.store_evidence_image("IMG-SECOND", second)
+            self.assertIsNotNone(store.evidence_image("IMG-FIRST"))
+            self.assertIsNone(store.evidence_image("IMG-SECOND"))
 
     def test_business_key_survives_store_reopen(self):
         event = make_event(source_event_id="evt-persisted")

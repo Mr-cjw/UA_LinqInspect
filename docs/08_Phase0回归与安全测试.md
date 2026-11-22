@@ -80,9 +80,10 @@ cd ~/UA_LinqInspect
 | outbox 容量/导出单测 | 9/9 PASS | 高水位/硬上限拒绝、不丢事件、分页导出、令牌校验、清空幂等、重启恢复积压 |
 | 工位状态重启 | 13/13 PASS | `SIGKILL` 后工单、计数、SN 与 Outbox 恢复、继续完工 |
 | 事件 outbox 崩溃恢复 | 18/18 PASS | 未 ACK 事件跨 `SIGKILL` 保留、稳定 ID 重发、ACK 后停止、积压状态恢复与背压拒绝 |
-| Edge Core API/状态机 | 16/16 PASS | 严格输入约束、MES Bearer/Basic 鉴权、NG/完工专属回执、稳定错误码、幂等冲突、4xx/5xx、死信重放、重启后去重、API 查询 |
+| Edge Core API/状态机 | 17/17 PASS | 严格输入约束、MES Bearer/Basic 鉴权、NG/完工专属回执、稳定错误码、幂等冲突、4xx/5xx、死信重放、重启后去重、API 查询 |
 | Edge Core 入站 | 7/7 PASS | Node-RED 直写 202 后才 ACK，503 保持 UA outbox 未确认 |
 | 发送权并发与迁移/回滚 | 4/4 PASS | Node/Python 单赢家、Edge Core 启动互锁、离线迁移与源库保留 |
+| 证据备份/恢复 | 7/7 PASS | 联合备份、恢复、SHA 校验、强制快照、保留策略、容量清理 |
 | 本地操作台 | 10/10 PASS | Basic 鉴权、CSRF、开检/完工、死信处置与快照下载 |
 | Node-RED 在线全链路 | 22/22 PASS | Node-RED 直写、Edge Core Worker、MES Basic、真实 UA 写回、回滚与审计保留 |
 | MES 契约体检 | 5/5 PASS | dry-run 不联网、严格 MES 通过、非幂等警告、非法 2xx 失败、写入确认保护 |
@@ -105,9 +106,9 @@ cd ~/UA_LinqInspect
 | 短断网 | 10/10 PASS | 5 秒停顿后继续开检、NG 与完工闭环 |
 | 陈旧事件 | 7/7 PASS | 不入队、不改去重、不写回执、不请求 MES |
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
-| **合计** | **674/674 PASS** | 42 个测试模块 |
+| **合计** | **682/682 PASS** | 43 个测试模块 |
 
-实际产物：`.tmp/regression-20261122-070817/summary.json`。
+实际产物：`.tmp/regression-20261122-074655/summary.json`。
 
 ## 4. 手工执行单个测试
 

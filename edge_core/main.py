@@ -18,6 +18,9 @@ def main() -> int:
         config.db_path,
         evidence_image_dir=config.evidence_image_dir,
         image_max_bytes=config.evidence_image_max_bytes,
+        image_max_total_bytes=config.evidence_image_max_total_bytes,
+        image_max_files=config.evidence_image_max_files,
+        image_min_free_bytes=config.evidence_image_min_free_bytes,
     )
     authority = None
     worker = None

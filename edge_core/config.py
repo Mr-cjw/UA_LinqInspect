@@ -25,6 +25,9 @@ class EdgeConfig:
     sender_lock_dir: Path
     evidence_image_dir: Path
     evidence_image_max_bytes: int
+    evidence_image_max_total_bytes: int
+    evidence_image_max_files: int
+    evidence_image_min_free_bytes: int
 
 
 def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
@@ -64,5 +67,14 @@ def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
         ).expanduser(),
         evidence_image_max_bytes=max(
             1, int(values.get("EDGE_EVIDENCE_IMAGE_MAX_BYTES", str(8 * 1024 * 1024)))
+        ),
+        evidence_image_max_total_bytes=max(
+            1, int(values.get("EDGE_EVIDENCE_IMAGE_MAX_TOTAL_BYTES", str(1024 * 1024 * 1024)))
+        ),
+        evidence_image_max_files=max(
+            1, int(values.get("EDGE_EVIDENCE_IMAGE_MAX_FILES", "10000"))
+        ),
+        evidence_image_min_free_bytes=max(
+            0, int(values.get("EDGE_EVIDENCE_IMAGE_MIN_FREE_BYTES", str(256 * 1024 * 1024)))
         ),
     )

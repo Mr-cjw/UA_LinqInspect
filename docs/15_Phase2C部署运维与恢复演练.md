@@ -1,6 +1,6 @@
 # Phase 2C：部署、运维闭环与恢复演练
 
-> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261122-070817/summary.json` ｜ 当前结果：42 个测试模块、674/674 PASS
+> 日期：2026-11-21 ｜ 最终回归证据：`.tmp/regression-20261122-074655/summary.json` ｜ 当前结果：43 个测试模块、682/682 PASS
 
 ## 1. 阶段目标
 
@@ -303,6 +303,7 @@ Phase 2C 新增专项：
 | `tests/outbox_capacity_test.py` | 9/9 PASS | 高水位/硬上限拒绝、分页导出、令牌清空与幂等 |
 | `tests/outbox_recovery.py` | 18/18 PASS | 积压状态跨 SIGKILL、背压拒绝、ACK 后恢复、稳定 ID |
 | `tests/mes_contract_doctor_test.py` | 5/5 PASS | dry-run、严格回执、非幂等警告、非法 2xx 失败、写入确认保护 |
+| `tests/edge_core_backup_test.py` | 7/7 PASS | 数据库+图片联合备份、恢复前快照、SHA 校验、保留与清理 |
 | `tests/operator_console_test.py` | 10/10 PASS | Basic 鉴权、CSRF、开检/完工、死信处置、快照下载 |
 | `tests/edge_core_online_flow_test.py` | 22/22 PASS | Node-RED 在线直写、Edge Core 权威、MES Basic、真实 UA 写回、质量证据包、回滚与审计持久化 |
 | `tests/vision_demo_test.py` | 17/17 PASS | 图像质量门禁、本地真实推理、类别级模型卡、低置信度 OK/NG 复核、上传边界与 NG 输入一致性 |
@@ -328,7 +329,7 @@ Phase 2C 新增专项：
 .venv/bin/python scripts/run_regression.py --keep-going
 ```
 
-2026-11-21 共享投递读模型、AI 质检最小闭环、MES 契约体检、本地操作台、无硬件演示、迁移工具、UA 写回适配器、发送权并发、受控切换/回滚与真实 Node-RED 在线全链路演练接入后的综合回归共 42 个测试模块、**674/674 PASS**，摘要为 `.tmp/regression-20261122-070817/summary.json`。单独运行备份测试且没有活跃
+2026-11-21 共享投递读模型、AI 质检最小闭环、MES 契约体检、本地操作台、无硬件演示、迁移工具、UA 写回适配器、发送权并发、受控切换/回滚与真实 Node-RED 在线全链路演练接入后的综合回归共 43 个测试模块、**682/682 PASS**，摘要为 `.tmp/regression-20261122-074655/summary.json`。单独运行备份测试且没有活跃
 `QC_DB_PATH` 时为 30/30；一键回归包含运行中的 Node-RED 数据库，因此为 31/31。
 
 死信重放接口为 `POST /qc/dead-letters/replay`，受 Node-RED HTTP Basic Auth 保护：

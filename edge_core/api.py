@@ -14,6 +14,7 @@ from .store import (
     ConflictError,
     DeliveryStore,
     StateConflictError,
+    StorageCapacityError,
 )
 
 _MAX_BODY = 1024 * 1024
@@ -99,6 +100,9 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
                 search = str((query.get("q") or [""])[0]).strip()
                 limit = min(200, max(1, int((query.get("limit") or ["20"])[0])))
                 self._send_json(200, {"items": self.store.search_evidence(search, limit=limit)})
+                return
+            if path == "/v1/evidence/images/status":
+                self._send_json(200, self.store.evidence_image_capacity())
                 return
             image_match = _IMAGE_PATH.match(path)
             if image_match:
@@ -198,6 +202,8 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
             self._error(409, "PAYLOAD_CONFLICT", str(exc))
         except StateConflictError as exc:
             self._error(409, "STATE_CONFLICT", str(exc))
+        except StorageCapacityError as exc:
+            self._error(507, "INSUFFICIENT_STORAGE", str(exc))
         except Exception as exc:
             self._error(500, "INTERNAL_ERROR", str(exc))
 

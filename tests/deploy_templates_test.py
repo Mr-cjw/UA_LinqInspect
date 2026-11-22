@@ -21,6 +21,8 @@ EXPECTED_UNITS = {
     "ua-linqinspect-edge-core.service",
     "ua-linqinspect-ua-writeback.service",
     "ua-linqinspect-operator.service",
+    "ua-linqinspect-edge-backup.service",
+    "ua-linqinspect-edge-backup.timer",
 }
 EXPECTED_ALERTS = {
     "QcEdgeDown",
@@ -67,6 +69,12 @@ REQUIRED_ENV = {
     "EDGE_DB_PATH",
     "EDGE_EVIDENCE_IMAGE_DIR",
     "EDGE_EVIDENCE_IMAGE_MAX_BYTES",
+    "EDGE_EVIDENCE_IMAGE_MAX_TOTAL_BYTES",
+    "EDGE_EVIDENCE_IMAGE_MAX_FILES",
+    "EDGE_EVIDENCE_IMAGE_MIN_FREE_BYTES",
+    "EDGE_EVIDENCE_RETENTION_DAYS",
+    "EDGE_BACKUP_DIR",
+    "EDGE_BACKUP_KEEP",
     "EDGE_API_BASE_URL",
     "EDGE_API_HOST",
     "EDGE_API_PORT",
@@ -176,6 +184,8 @@ def main() -> int:
         edge_core_unit = (systemd_dir / "ua-linqinspect-edge-core.service").read_text(encoding="utf-8")
         ua_writeback_unit = (systemd_dir / "ua-linqinspect-ua-writeback.service").read_text(encoding="utf-8")
         operator_unit = (systemd_dir / "ua-linqinspect-operator.service").read_text(encoding="utf-8")
+        edge_backup_unit = (systemd_dir / "ua-linqinspect-edge-backup.service").read_text(encoding="utf-8")
+        edge_backup_timer = (systemd_dir / "ua-linqinspect-edge-backup.timer").read_text(encoding="utf-8")
         check("backup service runs the backup script with metrics",
               "scripts/backup_queue.py" in backup_unit and "--metrics-file" in backup_unit)
         check("backup timer targets the backup service",
@@ -187,6 +197,8 @@ def main() -> int:
               "-m edge_core.main" in edge_core_unit and
               "run_ua_writeback_adapter.py --interval 2" in ua_writeback_unit and
               "-m operator_console.main" in operator_unit and
+              "scripts/edge_core_backup.py backup" in edge_backup_unit and
+              "Unit=ua-linqinspect-edge-backup.service" in edge_backup_timer and
               all("Restart=on-failure" in unit for unit in (
                   server_unit, nodered_unit, edge_core_unit, ua_writeback_unit, operator_unit)))
         check("Node-RED unit loads deployment credentials",

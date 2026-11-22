@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -50,6 +51,10 @@ class StateConflictError(RuntimeError):
     """The requested transition is not legal for the current state."""
 
 
+class StorageCapacityError(RuntimeError):
+    """Evidence storage cannot accept more data without violating a quota."""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -75,6 +80,9 @@ class DeliveryStore:
         *,
         evidence_image_dir: str | Path | None = None,
         image_max_bytes: int = 8 * 1024 * 1024,
+        image_max_total_bytes: int = 1024 * 1024 * 1024,
+        image_max_files: int = 10000,
+        image_min_free_bytes: int = 256 * 1024 * 1024,
     ):
         self.db_path = str(Path(db_path).expanduser())
         self._write_lock = threading.RLock()
@@ -82,6 +90,9 @@ class DeliveryStore:
         database_dir.mkdir(parents=True, exist_ok=True)
         self.image_dir = Path(evidence_image_dir or database_dir / "evidence-images").expanduser().resolve()
         self.image_max_bytes = max(1, int(image_max_bytes))
+        self.image_max_total_bytes = max(1, int(image_max_total_bytes))
+        self.image_max_files = max(1, int(image_max_files))
+        self.image_min_free_bytes = max(0, int(image_min_free_bytes))
         self.image_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.initialize()
 
@@ -219,6 +230,22 @@ class DeliveryStore:
             "available": True,
         }
 
+    def evidence_image_capacity(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count, COALESCE(SUM(bytes), 0) AS total FROM evidence_images"
+            ).fetchone()
+        usage = shutil.disk_usage(self.image_dir)
+        return {
+            "files": int(row["count"]),
+            "totalBytes": int(row["total"]),
+            "maxFiles": self.image_max_files,
+            "maxTotalBytes": self.image_max_total_bytes,
+            "maxFileBytes": self.image_max_bytes,
+            "freeBytes": int(usage.free),
+            "minFreeBytes": self.image_min_free_bytes,
+        }
+
     def store_evidence_image(
         self,
         image_id: str,
@@ -247,6 +274,22 @@ class DeliveryStore:
                 if existing["sha256"] != digest:
                     raise ConflictError(f"imageId {image_id!r} already exists with different content")
                 return self._image_row(existing), True
+            usage = conn.execute(
+                "SELECT COUNT(*) AS count, COALESCE(SUM(bytes), 0) AS total FROM evidence_images"
+            ).fetchone()
+            if int(usage["count"]) + 1 > self.image_max_files:
+                raise StorageCapacityError(
+                    f"evidence image file quota exceeded ({usage['count']}/{self.image_max_files})"
+                )
+            if int(usage["total"]) + len(content) > self.image_max_total_bytes:
+                raise StorageCapacityError(
+                    f"evidence image byte quota exceeded ({int(usage['total']) + len(content)}/{self.image_max_total_bytes})"
+                )
+            free = shutil.disk_usage(self.image_dir).free
+            if free < len(content) + self.image_min_free_bytes:
+                raise StorageCapacityError(
+                    f"evidence image disk reserve would be violated (free={free}, requested={len(content)}, reserve={self.image_min_free_bytes})"
+                )
             relative = Path(digest[:2]) / f"{digest}{extension}"
             destination = self.image_dir / relative
             destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -304,6 +347,68 @@ class DeliveryStore:
                 "SELECT * FROM deliveries WHERE business_key = ?", (business_key,)
             ).fetchone()
             return self._row_to_delivery(row) if row else None
+
+    def cleanup_unreferenced_evidence_images(
+        self,
+        *,
+        retention_days: int = 90,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        days = max(0, int(retention_days))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="milliseconds")
+        with self._write_lock, self._connect() as conn:
+            referenced: set[str] = set()
+            for row in conn.execute("SELECT payload_json FROM deliveries").fetchall():
+                try:
+                    payload = json.loads(row["payload_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                image_id = str(payload.get("imageId") or "").strip()
+                if image_id:
+                    referenced.add(image_id)
+            candidates = [
+                row for row in conn.execute(
+                    "SELECT * FROM evidence_images WHERE created_at < ? ORDER BY created_at",
+                    (cutoff,),
+                ).fetchall()
+                if row["image_id"] not in referenced
+            ]
+            total_bytes = sum(int(row["bytes"]) for row in candidates)
+            removed_files = []
+            if not dry_run and candidates:
+                candidate_ids = [row["image_id"] for row in candidates]
+                conn.executemany(
+                    "DELETE FROM evidence_images WHERE image_id = ?",
+                    [(image_id,) for image_id in candidate_ids],
+                )
+                remaining_paths = {
+                    str(row[0]) for row in conn.execute(
+                        "SELECT relative_path FROM evidence_images"
+                    ).fetchall()
+                }
+                for row in candidates:
+                    if row["relative_path"] in remaining_paths:
+                        continue
+                    path = safe_path = (self.image_dir / row["relative_path"]).resolve()
+                    if self.image_dir not in safe_path.parents:
+                        continue
+                    try:
+                        path.unlink()
+                        removed_files.append(str(path))
+                    except FileNotFoundError:
+                        pass
+        return {
+            "ok": True,
+            "dryRun": dry_run,
+            "retentionDays": days,
+            "cutoff": cutoff,
+            "candidateCount": len(candidates),
+            "candidateBytes": total_bytes,
+            "removedCount": 0 if dry_run else len(candidates),
+            "removedBytes": 0 if dry_run else total_bytes,
+            "removedFiles": removed_files,
+            "referencedImageCount": len(referenced),
+        }
 
     def search_evidence(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
         text = str(query or "").strip()
