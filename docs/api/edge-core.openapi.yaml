@@ -612,6 +612,8 @@ components:
         - limitations
         - bundleSha256
         - bundleHashScope
+        - signatureStatus
+        - signature
       properties:
         schemaVersion:
           const: '1.0'
@@ -664,6 +666,20 @@ components:
           pattern: '^[0-9a-f]{64}$'
         bundleHashScope:
           type: string
+        signatureStatus:
+          enum: [SIGNED, UNSIGNED]
+        signature:
+          type: [object, 'null']
+          properties:
+            algorithm:
+              const: HMAC-SHA256
+            keyId:
+              type: string
+            value:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+            scope:
+              const: canonical-json-excluding-signature
 
     DeliveryState:
       type: string

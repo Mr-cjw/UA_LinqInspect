@@ -73,6 +73,9 @@ REQUIRED_ENV = {
     "EDGE_EVIDENCE_IMAGE_MAX_FILES",
     "EDGE_EVIDENCE_IMAGE_MIN_FREE_BYTES",
     "EDGE_EVIDENCE_RETENTION_DAYS",
+    "EDGE_EVIDENCE_SIGNING_KEY",
+    "EDGE_EVIDENCE_SIGNING_KEY_ID",
+    "EDGE_EVIDENCE_SIGNING_PREVIOUS_KEYS",
     "EDGE_BACKUP_DIR",
     "EDGE_BACKUP_KEEP",
     "EDGE_API_BASE_URL",
@@ -261,7 +264,8 @@ def main() -> int:
               "NODERED_CREDENTIAL_SECRET=CHANGE_ME" in env_text and
               "NODERED_HTTP_PASS=CHANGE_ME" in env_text and
               "NODERED_OPCUA_PASSWORD=CHANGE_ME" in env_text and
-              "OPERATOR_CONSOLE_PASSWORD=CHANGE_ME" in env_text)
+              "OPERATOR_CONSOLE_PASSWORD=CHANGE_ME" in env_text and
+              "EDGE_EVIDENCE_SIGNING_KEY=CHANGE_ME" in env_text)
         check("environment template exposes one-or-the-other MES auth modes",
               "MES_BEARER_TOKEN=" in env_text and
               "EDGE_MES_BASIC_USER=" in env_text and

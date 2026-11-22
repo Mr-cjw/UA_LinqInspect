@@ -52,6 +52,7 @@ def main() -> int:
         repo_root / "scripts" / "setup_node_red_security.py",
         repo_root / "scripts" / "backup_queue.py",
         repo_root / "scripts" / "edge_core_backup.py",
+        repo_root / "scripts" / "verify_evidence_signature.py",
         repo_root / "operator_console" / "main.py",
         repo_root / "operator_console" / "static" / "index.html",
     )

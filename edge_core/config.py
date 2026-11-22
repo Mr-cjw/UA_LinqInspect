@@ -28,6 +28,8 @@ class EdgeConfig:
     evidence_image_max_total_bytes: int
     evidence_image_max_files: int
     evidence_image_min_free_bytes: int
+    evidence_signing_key: str
+    evidence_signing_key_id: str
 
 
 def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
@@ -77,4 +79,6 @@ def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
         evidence_image_min_free_bytes=max(
             0, int(values.get("EDGE_EVIDENCE_IMAGE_MIN_FREE_BYTES", str(256 * 1024 * 1024)))
         ),
+        evidence_signing_key=values.get("EDGE_EVIDENCE_SIGNING_KEY", "").strip(),
+        evidence_signing_key_id=values.get("EDGE_EVIDENCE_SIGNING_KEY_ID", "primary").strip() or "primary",
     )

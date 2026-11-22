@@ -24,6 +24,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from backup_queue import copy_database, ensure_writable_directory, readonly_connection  # noqa: E402
+from edge_core.evidence_signing import (  # noqa: E402
+    load_keyring_from_env,
+    sign_document,
+    verify_document,
+)
 
 MANIFEST_NAME = "manifest.json"
 DATABASE_NAME = "edge-core.sqlite"
@@ -123,6 +128,8 @@ def create_backup(
     image_dir: Path,
     output_dir: Path,
     keep: int = 7,
+    signing_key: str = "",
+    signing_key_id: str = "primary",
 ) -> dict[str, Any]:
     source_db = source_db.expanduser().resolve()
     image_dir = image_dir.expanduser().resolve()
@@ -150,6 +157,7 @@ def create_backup(
         images = copy_image_tree(image_dir, image_target, info["images"])
         manifest = {
             "schemaVersion": "1.0",
+            "signatureStatus": "SIGNED" if signing_key else "UNSIGNED",
             "backupType": "EDGE_CORE_DATABASE_AND_EVIDENCE_IMAGES",
             "createdAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "database": {
@@ -167,6 +175,10 @@ def create_backup(
                 "items": images,
             },
         }
+        if signing_key:
+            manifest = sign_document(manifest, key=signing_key, key_id=signing_key_id)
+        else:
+            manifest["signature"] = None
         manifest_temp = staging / f".{MANIFEST_NAME}.{os.getpid()}.tmp"
         manifest_temp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.chmod(manifest_temp, 0o600)
@@ -194,12 +206,18 @@ def create_backup(
         "databaseCounts": manifest["database"]["counts"],
         "imageCount": manifest["images"]["count"],
         "imageBytes": manifest["images"]["totalBytes"],
+        "signatureStatus": manifest["signatureStatus"],
+        "signingKeyId": (manifest.get("signature") or {}).get("keyId", ""),
         "retained": [str(path) for path in retained],
         "removed": removed,
     }
 
 
-def validate_backup(backup_dir: Path) -> tuple[dict[str, Any], Path, Path]:
+def validate_backup(
+    backup_dir: Path,
+    *,
+    keyring: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], Path, Path]:
     backup_dir = backup_dir.expanduser().resolve()
     manifest_path = backup_dir / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -207,6 +225,13 @@ def validate_backup(backup_dir: Path) -> tuple[dict[str, Any], Path, Path]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schemaVersion") != "1.0" or manifest.get("backupType") != "EDGE_CORE_DATABASE_AND_EVIDENCE_IMAGES":
         raise RuntimeError("unsupported Edge Core backup manifest")
+    keys = keyring or {}
+    if manifest.get("signatureStatus") == "SIGNED":
+        verification = verify_document(manifest, keys)
+        if not verification["ok"]:
+            raise RuntimeError(f"backup manifest signature verification failed: {verification['error']}")
+    elif keys:
+        raise RuntimeError("unsigned backup rejected because signing keys are configured")
     database = backup_dir / str(manifest["database"]["file"])
     if not database.is_file():
         raise FileNotFoundError(f"backup database missing: {database}")
@@ -232,11 +257,12 @@ def restore_backup(
     target_image_dir: Path,
     force: bool = False,
     dry_run: bool = False,
+    keyring: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     backup_dir = backup_dir.expanduser().resolve()
     target_db = target_db.expanduser().resolve()
     target_image_dir = target_image_dir.expanduser().resolve()
-    manifest, source_database, source_images = validate_backup(backup_dir)
+    manifest, source_database, source_images = validate_backup(backup_dir, keyring=keyring)
     target_exists = target_db.exists() or (target_image_dir.exists() and any(target_image_dir.iterdir()))
     if target_exists and not force:
         raise FileExistsError("target already exists; use --force to replace it")
@@ -318,6 +344,9 @@ def restore_backup(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    keyring = load_keyring_from_env()
+    signing_key = os.getenv("EDGE_EVIDENCE_SIGNING_KEY", "").strip()
+    signing_key_id = os.getenv("EDGE_EVIDENCE_SIGNING_KEY_ID", "primary").strip() or "primary"
     sub = parser.add_subparsers(dest="command", required=True)
 
     backup = sub.add_parser("backup")
@@ -325,6 +354,9 @@ def main() -> int:
     backup.add_argument("--images", type=Path, default=Path(os.getenv("EDGE_EVIDENCE_IMAGE_DIR", "data/evidence-images")))
     backup.add_argument("--output-dir", type=Path, default=Path(os.getenv("EDGE_BACKUP_DIR", "data/edge-backups")))
     backup.add_argument("--keep", type=int, default=int(os.getenv("EDGE_BACKUP_KEEP", "7")))
+
+    verify = sub.add_parser("verify")
+    verify.add_argument("--backup", type=Path, required=True)
 
     restore = sub.add_parser("restore")
     restore.add_argument("--backup", type=Path, required=True)
@@ -341,7 +373,19 @@ def main() -> int:
                 image_dir=args.images,
                 output_dir=args.output_dir,
                 keep=args.keep,
+                signing_key=signing_key,
+                signing_key_id=signing_key_id,
             )
+        elif args.command == "verify":
+            manifest, _database, _images = validate_backup(args.backup, keyring=keyring)
+            summary = {
+                "ok": True,
+                "backupDir": str(args.backup.expanduser().resolve()),
+                "signatureStatus": manifest.get("signatureStatus"),
+                "signingKeyId": (manifest.get("signature") or {}).get("keyId", ""),
+                "databaseCounts": manifest["database"]["counts"],
+                "imageCount": manifest["images"]["count"],
+            }
         else:
             summary = restore_backup(
                 backup_dir=args.backup,
@@ -349,6 +393,7 @@ def main() -> int:
                 target_image_dir=args.target_images,
                 force=args.force,
                 dry_run=args.dry_run,
+                keyring=keyring,
             )
     except Exception as exc:
         summary = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

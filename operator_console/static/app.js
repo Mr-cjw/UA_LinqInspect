@@ -215,6 +215,7 @@ async function showEvidence(deliveryId, workOrderId) {
       `图片：${formatValue(inspection.imageId)}`,
       `模型：${formatValue(lineage.modelVersion)} · 模型哈希：${formatValue(lineage.modelSha256)}`,
       `MES 回执：${formatValue(mes.receipt?.receiptNo)} · UA 写回：${evidence.ua?.writeConfirmed ? '已确认' : '未确认'}`,
+      `签名：${formatValue(evidence.signatureStatus)} · keyId：${formatValue(evidence.signature?.keyId)}`,
       `correlationId：${formatValue(evidence.correlationId)}`,
       `bundleSha256：${formatValue(evidence.bundleSha256)}`,
       `完整性：${evidence.completeness?.complete ? '字段完整' : '缺少 ' + (evidence.completeness?.missingFields || []).join(', ')}`,
@@ -307,6 +308,8 @@ function downloadEvidenceHtml() {
     ['模型 SHA-256', lineage.modelSha256],
     ['MES 回执', mes.receipt?.receiptNo],
     ['UA 写回确认', evidence.ua?.writeConfirmed ? '是' : '否'],
+    ['签名状态', evidence.signatureStatus],
+    ['签名密钥 ID', evidence.signature?.keyId],
     ['correlationId', evidence.correlationId],
     ['bundleSha256', evidence.bundleSha256],
   ];

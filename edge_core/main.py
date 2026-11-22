@@ -21,6 +21,8 @@ def main() -> int:
         image_max_total_bytes=config.evidence_image_max_total_bytes,
         image_max_files=config.evidence_image_max_files,
         image_min_free_bytes=config.evidence_image_min_free_bytes,
+        signing_key=config.evidence_signing_key,
+        signing_key_id=config.evidence_signing_key_id,
     )
     authority = None
     worker = None

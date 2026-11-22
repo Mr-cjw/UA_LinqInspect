@@ -51,6 +51,7 @@ TESTS = (
     ("outbox_recovery", "tests/outbox_recovery.py", 90),
     ("edge_core", "tests/edge_core_test.py", 60),
     ("edge_core_backup", "tests/edge_core_backup_test.py", 60),
+    ("evidence_signing", "tests/evidence_signing_test.py", 30),
     ("security", "tests/security_test.py", 60),
     ("smoke", "tests/smoke_test.py", 90),
     ("nodered_e2e", "tests/nodered_e2e.py", 120),

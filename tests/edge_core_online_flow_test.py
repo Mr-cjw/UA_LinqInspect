@@ -28,6 +28,7 @@ for path in (REPO_ROOT, TESTS_DIR, SCRIPTS_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from edge_core.evidence_signing import verify_document  # noqa: E402
 from run_regression import (  # noqa: E402
     NODE_RED_BIN,
     free_port,
@@ -218,6 +219,8 @@ def main() -> int:
         "EDGE_API_BASE_URL": edge_api_base,
         "EDGE_API_TOKEN": edge_token,
         "EDGE_DB_PATH": str(edge_db),
+        "EDGE_EVIDENCE_SIGNING_KEY": "online-evidence-signing-key",
+        "EDGE_EVIDENCE_SIGNING_KEY_ID": "online-k1",
         "MES_BASE_URL": node_red_base,
         "EDGE_MES_BASIC_USER": admin_user,
         "EDGE_MES_BASIC_PASS": admin_password,
@@ -474,6 +477,8 @@ def main() -> int:
             and evidence.get("mes", {}).get("receipt", {}).get("receiptNo") == ng_delivery["mesReceipt"]["receiptNo"]
             and evidence.get("ua", {}).get("writeConfirmed") is True
             and evidence.get("completeness", {}).get("complete") is True
+            and evidence.get("signatureStatus") == "SIGNED"
+            and verify_document(evidence, {"online-k1": "online-evidence-signing-key"})["ok"]
             and len(evidence.get("audit", [])) >= 3
             and len(evidence.get("bundleSha256", "")) == 64,
             json.dumps({
@@ -481,6 +486,8 @@ def main() -> int:
                 "bundleSha256": evidence.get("bundleSha256"),
                 "completeness": evidence.get("completeness"),
                 "auditEvents": len(evidence.get("audit", [])),
+                "signatureStatus": evidence.get("signatureStatus"),
+                "signingKeyId": (evidence.get("signature") or {}).get("keyId"),
             }, ensure_ascii=False),
         )
         operator_evidence = http_json(

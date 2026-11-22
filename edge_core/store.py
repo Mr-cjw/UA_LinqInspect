@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .evidence_signing import sign_document
+
 
 STATE_PENDING = "PENDING"
 STATE_SENDING = "SENDING"
@@ -83,6 +85,8 @@ class DeliveryStore:
         image_max_total_bytes: int = 1024 * 1024 * 1024,
         image_max_files: int = 10000,
         image_min_free_bytes: int = 256 * 1024 * 1024,
+        signing_key: str = "",
+        signing_key_id: str = "primary",
     ):
         self.db_path = str(Path(db_path).expanduser())
         self._write_lock = threading.RLock()
@@ -93,6 +97,8 @@ class DeliveryStore:
         self.image_max_total_bytes = max(1, int(image_max_total_bytes))
         self.image_max_files = max(1, int(image_max_files))
         self.image_min_free_bytes = max(0, int(image_min_free_bytes))
+        self.signing_key = str(signing_key or "")
+        self.signing_key_id = str(signing_key_id or "primary")
         self.image_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.initialize()
 
@@ -562,10 +568,11 @@ class DeliveryStore:
             },
             "limitations": [
                 "bundleSha256 is content integrity, not a digital signature.",
-                "Image binaries are not stored by this MVP; imageId/hash references require separate retention.",
+                "Image binaries are stored only after explicit evidence upload; back up the image directory with the database.",
                 "Vision metrics are only valid for the dataset and model version recorded above.",
             ],
         }
+        content["signatureStatus"] = "SIGNED" if self.signing_key else "UNSIGNED"
         content["bundleHashScope"] = "canonical-json-excluding-generatedAt-and-bundleSha256"
         hash_input = {
             key: value for key, value in content.items()
@@ -574,6 +581,9 @@ class DeliveryStore:
         content["bundleSha256"] = hashlib.sha256(
             _canonical_json(hash_input).encode("utf-8")
         ).hexdigest()
+        if self.signing_key:
+            return sign_document(content, key=self.signing_key, key_id=self.signing_key_id)
+        content["signature"] = None
         return content
 
     def enqueue(
