@@ -82,10 +82,10 @@ tr:nth-child(even) td{background:#fafcfd}
   <div class="hero">
     <div>
       <div class="eyebrow">SMALL VALIDATION BUDGET</div>
-      <h1>先批 <em>1～2 万</em>，<br>买一个可验证的答案</h1>
-      <p class="lede">不做全量硬件铺陈，只采购一台适配产线的工业相机、一个边缘算力盒和必要的光源线缆，在现有视觉处理与“不丢不重、可对账”软件上，跑通一个真实工位的质检-MES 闭环。</p>
+      <h1>先验证能力，<br>再谈 <em>1～2 万</em></h1>
+      <p class="lede">第一次见面不讲 BP，您指定一个故障场景，我现场跑给您看。能力经得起核验后，再申请首笔 1～2 万元，只买一台适配产线的工业相机、一个边缘算力盒和必要的光源线缆，补真实工位的质检-MES 证据。</p>
     </div>
-    <div class="callout"><b>您只需判断三件事</b>这个痛点是否值得花 1～2 万验证；这笔钱是否花得透明；如果失败，能不能及时停。达标后再追加到 3～5 万；不达标就停，余额退回。</div>
+    <div class="callout"><b>先让项目接受出题</b>MES 超时、断网、进程重启、重复上报、图像不合格，您任选一项现场跑。跑完把原始日志和回执带走核验；经得起，再谈 1～2 万预算。不达标就停，余额退回。</div>
   </div>
 
   <div class="section">
@@ -120,7 +120,7 @@ tr:nth-child(even) td{background:#fafcfd}
   <div class="section">
     <h2 class="section-title">让对方放心的五个承诺</h2>
     <div class="promises">
-      <div class="promise"><b>先看现有证据</b>软件、664 项回归和现场演示先看，不从零开始。</div>
+      <div class="promise"><b>先让您出题</b>MES 超时、断网、重启、重复上报，现场跑给您看。</div>
       <div class="promise"><b>首笔小额</b>只申请 1～2 万，不一次给满，不铺整线。</div>
       <div class="promise"><b>随时可停</b>每个阶段有停止条件，不达标不追加。</div>
       <div class="promise"><b>资产可盘</b>相机、边缘盒、发票和资产清单归对方核对。</div>
@@ -128,7 +128,7 @@ tr:nth-child(even) td{background:#fafcfd}
     </div>
   </div>
 
-  <div class="quote"><b>开口话术：</b>“您先不用判断要不要投这个项目。您只需要判断：这个质检到 MES 的痛点是否值得花 1～2 万验证；这笔钱是否花得透明；如果失败，能不能及时停。如果现场没有 MES 接口、没有数据、没有负责人，我会建议不花这笔钱。”</div>
+  <div class="quote"><b>第一次见面：</b>“您先不用判断要不要投这个项目。您只需要判断：这个质检到 MES 的痛点是否值得花 1～2 万验证；这笔钱是否花得透明；如果失败，能不能及时停。如果现场没有 MES 接口、没有数据、没有负责人，我会建议不花这笔钱。”</div>
 
   <div class="bottom">
     <div class="next"><b>最坏情况：</b>现场图像质量不达标、MES 接口拿不到或客户不配合，导致验证无法完成。出现这种情况，停止追加，未使用余额退回，硬件保留，并提交失败原因报告。损失是可控的验证成本，不是无底洞。</div>
