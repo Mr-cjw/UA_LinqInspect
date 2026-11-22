@@ -69,8 +69,9 @@ function edgeCoreMetadata(msg, source) {
   const metadata = { adapter: 'node-red', source };
   const allowed = [
     'modelVersion', 'modelHash', 'modelSha256', 'datasetVersion',
-    'imageSha256', 'imageHashScope', 'inferenceMs', 'qualityGate',
-    'visionDecision', 'decisionReason',
+    'visionModelVersion', 'visionModelSha256', 'visionDatasetVersion',
+    'imageSha256', 'imageHashScope', 'inferenceMs', 'visionInferenceMs',
+    'qualityGate', 'visionDecision', 'decisionReason',
   ];
   for (const key of allowed) {
     if (msg[key] !== undefined) metadata[key] = msg[key];

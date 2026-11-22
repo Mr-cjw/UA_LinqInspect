@@ -81,8 +81,11 @@ class JointOeeRcaDemoTests(unittest.TestCase):
         self.assertEqual(self.result.imageHashScope, "canonical-png-bytes")
         self.assertTrue(self.result.imageId.startswith("IMG-JX-JOINT-"))
         self.assertEqual(self.result.imageId, f"IMG-JX-JOINT-{self.result.imageSha256[:8].upper()}")
+        self.assertTrue(self.result.imageEvidenceStored)
+        self.assertEqual(len(self.result.evidenceBundleSha256), 64)
         self.assertIn("AI 质检推理产生 NG", self.result.steps[4]["title"])
         self.assertEqual(self.result.steps[4]["facts"]["缺陷"], self.result.defectType)
+        self.assertEqual(self.result.steps[5]["facts"]["图片证据"], "已留存")
 
 
 if __name__ == "__main__":

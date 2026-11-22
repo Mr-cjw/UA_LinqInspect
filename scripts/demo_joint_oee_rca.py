@@ -97,6 +97,8 @@ class JointDemoResult:
     visionValidationAccuracy: float
     visionValidationScope: str
     visionInferenceMs: float
+    imageEvidenceStored: bool
+    evidenceBundleSha256: str
     steps: list[dict[str, Any]]
     samples: list[dict[str, Any]]
     timeline: list[dict[str, Any]]
@@ -318,7 +320,22 @@ def _deliver_ng(
     mes: MesSimulator,
     token: str,
     event: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    image_data_url: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if not image_data_url.startswith("data:image/"):
+        raise ValueError("vision result is missing an evidence image data URL")
+    image_status, _, image_upload = _http_json(
+        "POST",
+        edge.base_url + "/v1/evidence/images",
+        token=token,
+        body={
+            "imageId": event["imageId"],
+            "imageBase64": image_data_url.split(",", 1)[-1],
+            "sha256": event["metadata"]["imageSha256"],
+        },
+    )
+    if image_status not in (200, 201):
+        raise RuntimeError(f"视觉证据图片留存失败：HTTP {image_status}: {image_upload}")
     delivery_key = str(uuid.uuid4())
     status, _headers, delivery = _http_json(
         "POST",
@@ -348,7 +365,14 @@ def _deliver_ng(
     )
     if done["state"] != STATE_DONE or not done.get("uaWriteConfirmed"):
         raise RuntimeError(f"联合场景 UA 写回未完成：{done}")
-    return acked, done
+    _, _, evidence_bundle = _http_json(
+        "GET",
+        edge.base_url + f"/v1/deliveries/{delivery_id}/evidence",
+        token=token,
+    )
+    if not evidence_bundle.get("completeness", {}).get("imageBinaryStored"):
+        raise RuntimeError(f"图片已上传但证据包未关联图片：{evidence_bundle}")
+    return acked, done, evidence_bundle
 
 
 async def _run_scenario(
@@ -493,7 +517,14 @@ async def _run_scenario(
             },
         )
 
-        acked, done = await asyncio.to_thread(_deliver_ng, edge, mes, token, event)
+        acked, done, evidence_bundle = await asyncio.to_thread(
+            _deliver_ng,
+            edge,
+            mes,
+            token,
+            event,
+            str(vision.get("imageDataUrl") or ""),
+        )
         step(
             "Edge Core 完成 MES 交付",
             "真实 Outbox、Worker 和回执校验通过；MES 接受后继续等待 UA 写回确认。",
@@ -502,6 +533,8 @@ async def _run_scenario(
                 "deliveryId": str(done["deliveryId"]),
                 "receiptNo": str(acked["mesReceipt"]["receiptNo"]),
                 "交付状态": str(done["state"]),
+                "图片证据": "已留存",
+                "证据包": str(evidence_bundle.get("bundleSha256") or "")[:12],
             },
         )
 
@@ -594,6 +627,8 @@ async def _run_scenario(
         visionValidationAccuracy=round(float(model_card.get("validationAccuracy") or 0.0), 6),
         visionValidationScope=str(model_card.get("validationScope") or "合成数据，不是生产现场数据"),
         visionInferenceMs=round(float(vision.get("inferenceMs") or 0.0), 2),
+        imageEvidenceStored=bool(evidence_bundle.get("completeness", {}).get("imageBinaryStored")),
+        evidenceBundleSha256=str(evidence_bundle.get("bundleSha256") or ""),
         steps=[asdict(item) for item in steps],
         samples=_public_samples(samples),
         timeline=_timeline(db_path, delivery_id),
@@ -691,7 +726,7 @@ async function run(){
   $('availability').textContent=pct(data.availability);$('availability').className='value warn';$('downtime').textContent='停机 '+data.downtimeSeconds+'s / 观测 '+data.observedSeconds+'s';
   $('state').textContent=data.finalState;$('state').className='value ok';$('receipt').textContent=data.mesReceiptNo;
   $('rca').textContent=data.rcaCandidate;$('rca').className='value '+(data.rcaCandidate==='TEMPERATURE_SPIKE'?'warn':'dead');$('rca-confidence').textContent=data.rcaConfidence;
-  setKV('identity',{'产线':data.lineId,'工位':data.stationId,'工单':data.workOrderId,'SN':data.serialNumber,'视觉判定':data.defectType+' / '+(Number(data.defectConfidence)*100).toFixed(2)+'%','视觉模型':data.visionModelVersion,'模型哈希':String(data.visionModelSha256||'').slice(0,12),'视觉指标口径':data.visionValidationScope,'imageId':data.imageId,'图像哈希':String(data.imageSha256||'').slice(0,12),'哈希口径':data.imageHashScope,'温度峰值':data.temperaturePeakC+'℃','NG 时温度':data.temperatureAtNgC+'℃','alarmCodes':(data.alarmCodes||[]).join(', '),'deliveryId':data.deliveryId,'correlationId':data.correlationId,'另一仓库':data.rpiRepo});
+  setKV('identity',{'产线':data.lineId,'工位':data.stationId,'工单':data.workOrderId,'SN':data.serialNumber,'视觉判定':data.defectType+' / '+(Number(data.defectConfidence)*100).toFixed(2)+'%','视觉模型':data.visionModelVersion,'模型哈希':String(data.visionModelSha256||'').slice(0,12),'视觉指标口径':data.visionValidationScope,'imageId':data.imageId,'图片证据':data.imageEvidenceStored?'已留存':'未留存','证据包':String(data.evidenceBundleSha256||'').slice(0,12),'图像哈希':String(data.imageSha256||'').slice(0,12),'哈希口径':data.imageHashScope,'温度峰值':data.temperaturePeakC+'℃','NG 时温度':data.temperatureAtNgC+'℃','alarmCodes':(data.alarmCodes||[]).join(', '),'deliveryId':data.deliveryId,'correlationId':data.correlationId,'另一仓库':data.rpiRepo});
   const ev=$('evidence');ev.innerHTML='';for(const text of data.rcaEvidence){const row=document.createElement('div');row.textContent=text;ev.appendChild(row);}
   const audit=$('audit');audit.innerHTML='';for(const e of data.timeline){const row=document.createElement('div');row.className='audit-row';const b=document.createElement('b');b.textContent=e.from+' → '+e.to;row.append(b,document.createElement('br'),document.createTextNode((e.detail?e.detail+' · ':'')+e.at));audit.appendChild(row);}
   $('hint').textContent='完成：设备损失已量化，NG 已进入 MES，RCA 只给出有证据的候选原因。';btn.textContent='↻ 重新运行联合场景';btn.disabled=false;window.scrollTo({top:0,behavior:'smooth'});

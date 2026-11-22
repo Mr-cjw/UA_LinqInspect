@@ -108,7 +108,7 @@ cd ~/UA_LinqInspect
 | UA Server 重启 | 14/14 PASS | StartTime 变化触发重连、旧订阅重建、新工单闭环 |
 | **合计** | **682/682 PASS** | 43 个测试模块 |
 
-实际产物：`.tmp/regression-20261122-074655/summary.json`。
+实际产物：`.tmp/regression-20261122-082208/summary.json`。
 
 ## 4. 手工执行单个测试
 

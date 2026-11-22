@@ -498,12 +498,16 @@ class DeliveryStore:
             "metadata": metadata,
         }
         lineage = {
-            "modelVersion": metadata.get("modelVersion"),
-            "modelSha256": metadata.get("modelSha256") or metadata.get("modelHash"),
-            "datasetVersion": metadata.get("datasetVersion"),
+            "modelVersion": metadata.get("modelVersion") or metadata.get("visionModelVersion"),
+            "modelSha256": (
+                metadata.get("modelSha256")
+                or metadata.get("modelHash")
+                or metadata.get("visionModelSha256")
+            ),
+            "datasetVersion": metadata.get("datasetVersion") or metadata.get("visionDatasetVersion"),
             "imageSha256": metadata.get("imageSha256"),
             "imageHashScope": metadata.get("imageHashScope"),
-            "inferenceMs": metadata.get("inferenceMs"),
+            "inferenceMs": metadata.get("inferenceMs") or metadata.get("visionInferenceMs"),
         }
         required = ("sourceEventId", "stationId", "workOrderId", "correlationId")
         if event_type == "NG_ORDER":

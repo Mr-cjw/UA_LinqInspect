@@ -463,6 +463,7 @@ def classify_image(
     *,
     sample: str | None = None,
     source_sha256: str | None = None,
+    source_data_url: str | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_model()
@@ -472,7 +473,7 @@ def classify_image(
     image_hash = source_sha256 or canonical_hash
     common = {
         "sample": sample,
-        "imageDataUrl": data_url,
+        "imageDataUrl": source_data_url or data_url,
         "imageSha256": image_hash,
         "imageHashScope": "original-upload-bytes" if source_sha256 else "canonical-png-bytes",
         "imageWidth": image.width,
@@ -518,7 +519,8 @@ def classify_sample(label: str, seed: int = 7001) -> dict[str, Any]:
 
 
 def classify_base64(image_base64: str) -> dict[str, Any]:
-    encoded = image_base64.split(",", 1)[-1]
+    raw_input = image_base64.strip()
+    encoded = raw_input.split(",", 1)[-1]
     try:
         payload = base64.b64decode(encoded, validate=True)
     except ValueError as exc:
@@ -535,13 +537,18 @@ def classify_base64(image_base64: str) -> dict[str, Any]:
                 f"图片像素数超过 {MAX_IMAGE_PIXELS // 1_000_000} MP 限制"
             )
         image.load()
+        source_format = str(image.format or "PNG").lower()
     except ValueError:
         raise
     except Exception as exc:
         raise ValueError("无法解析图片，请上传 PNG/JPEG/WebP") from exc
+    source_data_url = raw_input if raw_input.startswith("data:") else (
+        f"data:image/{source_format};base64,{encoded}"
+    )
     return classify_image(
         ImageOps.exif_transpose(image).convert("RGB"),
         source_sha256=source_sha256,
+        source_data_url=source_data_url,
     )
 
 

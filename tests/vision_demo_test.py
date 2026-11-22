@@ -168,6 +168,9 @@ class VisionModelTests(unittest.TestCase):
         self.assertEqual(result["predictedClass"], "DENT")
         self.assertEqual(result["imageSha256"], hashlib.sha256(payload).hexdigest())
         self.assertEqual(result["imageHashScope"], "original-upload-bytes")
+        evidence_bytes = base64.b64decode(result["imageDataUrl"].split(",", 1)[1])
+        self.assertEqual(evidence_bytes, payload)
+        self.assertEqual(hashlib.sha256(evidence_bytes).hexdigest(), result["imageSha256"])
 
     def test_invalid_base64_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Base64"):
@@ -287,6 +290,8 @@ class VisionHttpTests(unittest.TestCase):
         self.assertEqual(delivery["imageSha256"], vision["imageSha256"])
         self.assertEqual(delivery["imageHashScope"], vision["imageHashScope"])
         self.assertEqual(delivery["imageId"], f"IMG-JX-JOINT-{vision['imageSha256'][:8].upper()}")
+        self.assertTrue(delivery["imageEvidenceStored"])
+        self.assertEqual(len(delivery["evidenceBundleSha256"]), 64)
         self.assertEqual(delivery["finalState"], "DONE")
         self.assertTrue(delivery["mesReceiptNo"].startswith("MES-JX-DEMO-"))
         self.assertIn("合成", delivery["visionValidationScope"])
