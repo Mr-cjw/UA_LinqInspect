@@ -168,6 +168,7 @@ Server 只接受 `Basic256Sha256_SignAndEncrypt`；证书、私钥或信任目�
 - [现场验证确认单](docs/33_现场验证确认单.md)
 - [硬件询价与资产清单](docs/34_硬件询价与资产清单.md)
 - [验收指标与停止条件](docs/35_验收指标与停止条件.md)
+- [接单能力与同行差距审计](docs/36_接单能力与同行差距审计.md)
 
 ## 商业现状
 
@@ -180,9 +181,10 @@ python3 scripts/render_investor_deck.py
 python3 scripts/render_diagnostic_offer.py
 python3 scripts/render_validation_budget.py
 python3 scripts/render_site_validation_pack.py
+python3 scripts/render_capability_audit.py
 ```
 
-输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf`、`小额验证资金申请_一页版.pdf`、`现场验证三件套.pdf` 和同名 HTML。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
+输出到 `.tmp/investor-deck/UA_LinqInspect_投资人路演版.pdf`、`质检-MES对账诊断_一页报价.pdf`、`小额验证资金申请_一页版.pdf`、`现场验证三件套.pdf` 和同名 HTML；接单审计输出到 `交付材料/05_接单能力审计_2页.pdf`。材料中的价格、融资区间和 90 天目标均为待验证假设，不得写成已成交事实。
 
 ## 项目结构
 
