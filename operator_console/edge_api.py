@@ -73,6 +73,30 @@ class OperatorEdgeClient:
             f"/v1/deliveries/{urllib.parse.quote(delivery_id, safe='')}/evidence",
         )
 
+    def search_evidence(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            "/v1/evidence/search?" + urllib.parse.urlencode({"q": query, "limit": limit}),
+        )
+
+    def evidence_image(self, image_id: str) -> tuple[str, bytes]:
+        request = urllib.request.Request(
+            self.base_url + "/v1/evidence/images/" + urllib.parse.quote(image_id, safe=""),
+            headers={"authorization": f"Bearer {self.token}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.headers.get_content_type(), response.read(16 * 1024 * 1024)
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read(1024 * 1024).decode("utf-8", errors="replace")
+            finally:
+                exc.close()
+            raise EdgeApiError(f"HTTP {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise EdgeApiError(f"{type(exc).__name__}: {exc}") from exc
+
     def replay_dead_letter(self, delivery_id: str, *, actor: str, reason: str) -> dict[str, Any]:
         return self.request(
             "POST",

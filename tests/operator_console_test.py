@@ -78,12 +78,29 @@ class FakeEdge:
             "bundleType": "QC_DELIVERY_EVIDENCE",
             "deliveryId": delivery_id,
             "correlationId": "corr-operator-evidence-0001",
-            "inspection": {"serialNumber": "SN-OPERATOR-001", "defectType": "SCRATCH"},
+            "inspection": {"serialNumber": "SN-OPERATOR-001", "defectType": "SCRATCH", "imageId": "IMG-001"},
             "mes": {"receipt": {"receiptNo": "MES-001"}},
             "ua": {"writeConfirmed": True},
+            "imageEvidence": {"available": True, "contentType": "image/png", "sha256": "b" * 64},
             "bundleSha256": "a" * 64,
-            "completeness": {"complete": True, "missingFields": []},
+            "completeness": {"complete": True, "missingFields": [], "imageBinaryStored": True},
         }
+
+    def search_evidence(self, query, *, limit=20):
+        return {
+            "items": [{
+                "deliveryId": "11111111-1111-4111-8111-111111111111",
+                "workOrderId": "WO-OPERATOR-001",
+                "serialNumber": "SN-OPERATOR-001",
+                "eventType": "NG_ORDER",
+                "state": "DONE",
+                "receiptNo": "MES-001",
+            }],
+            "query": query,
+        }
+
+    def evidence_image(self, image_id):
+        return "image/png", b"\x89PNG\r\n\x1a\nfake-image"
 
     def dead_letters(self, *, limit=30):
         return {
@@ -229,6 +246,19 @@ class OperatorConsoleTests(unittest.TestCase):
         self.assertEqual(payload["data"]["deliveryId"], delivery_id)
         self.assertEqual(payload["data"]["inspection"]["defectType"], "SCRATCH")
         self.assertIn("EVIDENCE BUNDLE", (Path(__file__).resolve().parents[1] / "operator_console" / "static" / "index.html").read_text(encoding="utf-8"))
+
+    def test_evidence_search_is_proxied(self):
+        status, _, payload = self.json_response("GET", "/api/evidence/search?q=WO-OPERATOR-001")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["data"]["items"][0]["workOrderId"], "WO-OPERATOR-001")
+        self.assertEqual(payload["data"]["query"], "WO-OPERATOR-001")
+
+    def test_evidence_image_is_proxied(self):
+        delivery_id = "11111111-1111-4111-8111-111111111111"
+        status, headers, body = self.request("GET", f"/api/evidence/{delivery_id}/image")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "image/png")
+        self.assertTrue(body.startswith(b"\x89PNG"))
 
     def test_report_is_downloadable_json(self):
         status, headers, body = self.request("GET", "/api/report")

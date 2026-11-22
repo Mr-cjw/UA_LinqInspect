@@ -23,6 +23,8 @@ class EdgeConfig:
     lease_seconds: float
     delivery_authority: str
     sender_lock_dir: Path
+    evidence_image_dir: Path
+    evidence_image_max_bytes: int
 
 
 def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
@@ -57,4 +59,10 @@ def load_config(env: dict[str, str] | None = None) -> EdgeConfig:
         sender_lock_dir=Path(
             values.get("QC_SENDER_LOCK_DIR", "data/.sender-authority")
         ).expanduser(),
+        evidence_image_dir=Path(
+            values.get("EDGE_EVIDENCE_IMAGE_DIR", "data/evidence-images")
+        ).expanduser(),
+        evidence_image_max_bytes=max(
+            1, int(values.get("EDGE_EVIDENCE_IMAGE_MAX_BYTES", str(8 * 1024 * 1024)))
+        ),
     )

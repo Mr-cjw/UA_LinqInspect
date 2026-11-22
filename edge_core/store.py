@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -67,10 +69,20 @@ def payload_hash(payload: dict[str, Any]) -> str:
 class DeliveryStore:
     """Persistent Outbox/deduplication/state-machine storage."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        evidence_image_dir: str | Path | None = None,
+        image_max_bytes: int = 8 * 1024 * 1024,
+    ):
         self.db_path = str(Path(db_path).expanduser())
         self._write_lock = threading.RLock()
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        database_dir = Path(self.db_path).parent
+        database_dir.mkdir(parents=True, exist_ok=True)
+        self.image_dir = Path(evidence_image_dir or database_dir / "evidence-images").expanduser().resolve()
+        self.image_max_bytes = max(1, int(image_max_bytes))
+        self.image_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.initialize()
 
     @contextmanager
@@ -138,6 +150,17 @@ class DeliveryStore:
                     ON deliveries(state, next_attempt_at);
                 CREATE INDEX IF NOT EXISTS idx_deliveries_correlation
                     ON deliveries(correlation_id);
+
+                CREATE TABLE IF NOT EXISTS evidence_images (
+                    image_id TEXT PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_evidence_images_sha256
+                    ON evidence_images(sha256);
                 """
             )
 
@@ -174,6 +197,100 @@ class DeliveryStore:
             "updatedAt": row["updated_at"],
         }
 
+    @staticmethod
+    def _detect_image_type(content: bytes) -> tuple[str, str]:
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png", ".png"
+        if content.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg", ".jpg"
+        if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+            return "image/webp", ".webp"
+        raise ValueError("image must be PNG, JPEG or WebP")
+
+    @staticmethod
+    def _image_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "imageId": row["image_id"],
+            "sha256": row["sha256"],
+            "contentType": row["content_type"],
+            "bytes": int(row["bytes"]),
+            "relativePath": row["relative_path"],
+            "createdAt": row["created_at"],
+            "available": True,
+        }
+
+    def store_evidence_image(
+        self,
+        image_id: str,
+        content: bytes,
+        *,
+        expected_sha256: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        image_id = str(image_id or "").strip()
+        if not image_id or len(image_id) > 200:
+            raise ValueError("imageId must be a non-empty string up to 200 characters")
+        if not content:
+            raise ValueError("image content is empty")
+        if len(content) > self.image_max_bytes:
+            raise ValueError(f"image exceeds {self.image_max_bytes} bytes")
+        content_type, extension = self._detect_image_type(content)
+        digest = hashlib.sha256(content).hexdigest()
+        expected = str(expected_sha256 or "").strip().lower()
+        if expected and expected != digest:
+            raise ValueError("image SHA-256 does not match metadata")
+        now = utc_now()
+        with self._write_lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM evidence_images WHERE image_id = ?", (image_id,)
+            ).fetchone()
+            if existing:
+                if existing["sha256"] != digest:
+                    raise ConflictError(f"imageId {image_id!r} already exists with different content")
+                return self._image_row(existing), True
+            relative = Path(digest[:2]) / f"{digest}{extension}"
+            destination = self.image_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not destination.is_file():
+                temporary = destination.with_name(
+                    f".{destination.name}.{os.getpid()}.{time.time_ns()}.tmp"
+                )
+                try:
+                    temporary.write_bytes(content)
+                    os.chmod(temporary, 0o600)
+                    os.replace(temporary, destination)
+                finally:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+            conn.execute(
+                "INSERT INTO evidence_images(image_id, sha256, content_type, bytes, relative_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (image_id, digest, content_type, len(content), relative.as_posix(), now),
+            )
+            row = conn.execute(
+                "SELECT * FROM evidence_images WHERE image_id = ?", (image_id,)
+            ).fetchone()
+            return self._image_row(row), False
+
+    def evidence_image(self, image_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM evidence_images WHERE image_id = ?", (str(image_id),)
+            ).fetchone()
+            return self._image_row(row) if row else None
+
+    def read_evidence_image(self, image_id: str) -> tuple[dict[str, Any], bytes] | None:
+        metadata = self.evidence_image(image_id)
+        if not metadata:
+            return None
+        path = (self.image_dir / metadata["relativePath"]).resolve()
+        if self.image_dir not in path.parents:
+            raise ValueError("evidence image path escapes configured root")
+        if not path.is_file():
+            raise FileNotFoundError(f"evidence image file missing: {metadata['relativePath']}")
+        return metadata, path.read_bytes()
+
     def get(self, delivery_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -187,6 +304,43 @@ class DeliveryStore:
                 "SELECT * FROM deliveries WHERE business_key = ?", (business_key,)
             ).fetchone()
             return self._row_to_delivery(row) if row else None
+
+    def search_evidence(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        text = str(query or "").strip()
+        if not text:
+            return []
+        pattern = f"%{text}%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM deliveries "
+                "WHERE delivery_id LIKE ? OR business_key LIKE ? OR correlation_id LIKE ? "
+                "OR payload_json LIKE ? OR receipt_json LIKE ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (pattern, pattern, pattern, pattern, pattern, max(1, min(200, int(limit)))),
+            ).fetchall()
+        matches = []
+        needle = text.lower()
+        for row in rows:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else {}
+            fields = [
+                row["delivery_id"], row["business_key"], row["correlation_id"],
+                payload.get("workOrderId"), payload.get("serialNumber"), payload.get("imageId"),
+                receipt.get("receiptNo"), receipt.get("mesOrderNo"),
+            ]
+            if any(needle in str(value).lower() for value in fields if value not in (None, "")):
+                matches.append({
+                    "deliveryId": row["delivery_id"],
+                    "correlationId": row["correlation_id"],
+                    "workOrderId": payload.get("workOrderId"),
+                    "serialNumber": payload.get("serialNumber"),
+                    "eventType": row["event_type"],
+                    "state": row["state"],
+                    "imageId": payload.get("imageId"),
+                    "receiptNo": receipt.get("receiptNo"),
+                    "createdAt": row["created_at"],
+                })
+        return matches
 
     def evidence_bundle(self, delivery_id: str) -> dict[str, Any] | None:
         """Build a reconstructable quality evidence bundle from durable state."""
@@ -250,6 +404,7 @@ class DeliveryStore:
         if event_type == "NG_ORDER":
             required += ("serialNumber", "defectType", "confidence", "imageId")
         missing = [name for name in required if payload.get(name) in (None, "")]
+        image_evidence = self.evidence_image(str(payload.get("imageId") or "")) if payload.get("imageId") else None
         dead_letter = None
         if dead_row:
             dead_letter = {
@@ -285,11 +440,12 @@ class DeliveryStore:
             },
             "audit": audit,
             "deadLetter": dead_letter,
+            "imageEvidence": image_evidence,
             "completeness": {
                 "missingFields": missing,
                 "complete": not missing,
-                "imageBinaryStored": False,
-                "imageReferenceOnly": bool(payload.get("imageId")),
+                "imageBinaryStored": image_evidence is not None,
+                "imageReferenceOnly": bool(payload.get("imageId")) and image_evidence is None,
                 "modelLineagePresent": all(
                     lineage.get(key) not in (None, "")
                     for key in ("modelVersion", "modelSha256", "datasetVersion")

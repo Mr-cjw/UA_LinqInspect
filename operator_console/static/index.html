@@ -72,6 +72,21 @@
       <article class="metric"><span>死信</span><strong id="dead-total">—</strong></article>
     </section>
 
+    <section class="card evidence-search-card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">EVIDENCE SEARCH</p>
+          <h2>证据检索</h2>
+        </div>
+        <span class="muted">支持工单、SN、MES 回执号、correlationId</span>
+      </div>
+      <form id="evidence-search-form" class="search-row">
+        <input id="evidence-search-input" autocomplete="off" placeholder="输入工单 / SN / MES-JX-... / corr-..." required>
+        <button class="button primary" type="submit">搜索证据</button>
+      </form>
+      <div id="evidence-search-results" class="search-results"><p class="empty">输入关键字后搜索。</p></div>
+    </section>
+
     <section class="grid two-columns wide-left">
       <article class="card">
         <div class="card-heading">
@@ -93,11 +108,15 @@
           <div class="evidence-head">
             <div><p class="eyebrow">EVIDENCE BUNDLE</p><h3>质量证据包</h3></div>
             <div class="dead-actions">
+              <button id="download-evidence-html" class="button small secondary" type="button">导出摘要</button>
               <button id="download-evidence" class="button small secondary" type="button">下载 JSON</button>
               <button id="close-evidence" class="button small secondary" type="button">关闭</button>
             </div>
           </div>
           <p id="evidence-summary" class="evidence-summary"></p>
+          <div id="evidence-image-wrap" class="evidence-image-wrap hidden">
+            <img id="evidence-image" alt="质量证据图片">
+          </div>
           <pre id="evidence-json"></pre>
         </section>
       </article>

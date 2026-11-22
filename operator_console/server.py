@@ -18,6 +18,7 @@ from .station import StationError, StationGateway
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 _DEAD_ACTION = re.compile(r"^/api/dead-letters/([0-9a-fA-F-]{36})/(replay|acknowledge)$")
 _EVIDENCE_PATH = re.compile(r"^/api/evidence/([0-9a-fA-F-]{36})$")
+_EVIDENCE_IMAGE_PATH = re.compile(r"^/api/evidence/([0-9a-fA-F-]{36})/image$")
 _MAX_BODY = 64 * 1024
 
 
@@ -167,6 +168,28 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 limit = min(200, max(1, int((query.get("limit") or ["30"])[0])))
                 result = self.edge.dead_letters(limit=limit)
                 self._json(200, {"ok": True, "data": result})
+                return
+            if parsed.path == "/api/evidence/search":
+                query = parse_qs(parsed.query)
+                search = str((query.get("q") or [""])[0]).strip()
+                limit = min(200, max(1, int((query.get("limit") or ["20"])[0])))
+                result = self.edge.search_evidence(search, limit=limit)
+                self._json(200, {"ok": True, "data": result})
+                return
+            image_match = _EVIDENCE_IMAGE_PATH.match(parsed.path)
+            if image_match:
+                evidence = self.edge.evidence(image_match.group(1))
+                image_id = str(evidence.get("inspection", {}).get("imageId") or "")
+                if not image_id or not evidence.get("completeness", {}).get("imageBinaryStored"):
+                    self._error(404, "IMAGE_NOT_FOUND", "delivery has no stored evidence image")
+                    return
+                content_type, content = self.edge.evidence_image(image_id)
+                self._send(
+                    200,
+                    content,
+                    content_type=content_type,
+                    headers={"content-disposition": 'inline; filename="quality-evidence-image"'},
+                )
                 return
             match = _EVIDENCE_PATH.match(parsed.path)
             if match:

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .contract import ContractError, validate_inspection_event
 from .store import (
@@ -16,8 +17,10 @@ from .store import (
 )
 
 _MAX_BODY = 1024 * 1024
+_MAX_IMAGE_BODY = 12 * 1024 * 1024
 _DELIVERY_PATH = re.compile(r"^/v1/deliveries/([0-9a-fA-F-]{36})(/ua-write-result|/evidence)?$")
 _DEAD_PATH = re.compile(r"^/v1/dead-letters/([0-9a-fA-F-]{36})/(replay|acknowledge)$")
+_IMAGE_PATH = re.compile(r"^/v1/evidence/images/([^/]{1,400})$")
 
 
 class EdgeApiHandler(BaseHTTPRequestHandler):
@@ -51,14 +54,31 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(
+        self,
+        status: int,
+        body: bytes,
+        *,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(body)))
+        self.send_header("cache-control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     def _error(self, status: int, code: str, message: str) -> None:
         correlation = self.headers.get("X-Correlation-Id", "")
         self._send_json(status, {"code": code, "message": message, "correlationId": correlation, "retryable": False})
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_json(self, max_length: int = _MAX_BODY) -> dict[str, Any]:
         raw_length = self.headers.get("Content-Length", "0")
         length = int(raw_length)
-        if length <= 0 or length > _MAX_BODY:
+        if length <= 0 or length > max_length:
             raise ValueError("request body missing or too large")
         value = json.loads(self.rfile.read(length).decode("utf-8"))
         if not isinstance(value, dict):
@@ -74,6 +94,30 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
             self._error(401, "UNAUTHORIZED", "missing or invalid bearer token")
             return
         try:
+            if path == "/v1/evidence/search":
+                query = parse_qs(urlparse(self.path).query)
+                search = str((query.get("q") or [""])[0]).strip()
+                limit = min(200, max(1, int((query.get("limit") or ["20"])[0])))
+                self._send_json(200, {"items": self.store.search_evidence(search, limit=limit)})
+                return
+            image_match = _IMAGE_PATH.match(path)
+            if image_match:
+                image_id = unquote(image_match.group(1))
+                found = self.store.read_evidence_image(image_id)
+                if not found:
+                    self._error(404, "NOT_FOUND", "evidence image not found")
+                    return
+                metadata, content = found
+                self._send_bytes(
+                    200,
+                    content,
+                    content_type=str(metadata["contentType"]),
+                    headers={
+                        "content-disposition": 'inline; filename="evidence-image"',
+                        "x-image-sha256": str(metadata["sha256"]),
+                    },
+                )
+                return
             if path == "/v1/deliveries":
                 query = parse_qs(urlparse(self.path).query)
                 state = (query.get("state") or [None])[0]
@@ -115,7 +159,23 @@ class EdgeApiHandler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         try:
-            body = self._read_json()
+            body = self._read_json(_MAX_IMAGE_BODY if path == "/v1/evidence/images" else _MAX_BODY)
+            if path == "/v1/evidence/images":
+                image_id = str(body.get("imageId") or "").strip()
+                encoded = str(body.get("imageBase64") or "").split(",", 1)[-1]
+                try:
+                    content = base64.b64decode(encoded, validate=True)
+                except ValueError as exc:
+                    raise ValueError("imageBase64 is not valid Base64") from exc
+                metadata, duplicate = self.store.store_evidence_image(
+                    image_id,
+                    content,
+                    expected_sha256=body.get("sha256"),
+                )
+                self._send_json(200 if duplicate else 201, metadata, {
+                    "Idempotent-Replay": "true" if duplicate else "false",
+                })
+                return
             if path == "/v1/inspection-events":
                 self._ingest(body)
                 return

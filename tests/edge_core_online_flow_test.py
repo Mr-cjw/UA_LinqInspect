@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import secrets
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -489,6 +491,60 @@ def main() -> int:
             "operator console exposes the same quality evidence bundle",
             operator_evidence.get("data", {}).get("bundleSha256") == evidence.get("bundleSha256"),
             f"(bundle={operator_evidence.get('data', {}).get('bundleSha256', '')[:16]})",
+        )
+
+        image_id = str(evidence["inspection"]["imageId"])
+        image_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII="
+        )
+        image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+        upload = http_json(
+            edge_api_base + "/v1/evidence/images",
+            headers=api_headers,
+            method="POST",
+            payload={
+                "imageId": image_id,
+                "imageBase64": base64.b64encode(image_bytes).decode("ascii"),
+                "sha256": image_sha256,
+            },
+        )
+        image_bundle = http_json(
+            edge_api_base + f"/v1/deliveries/{ng_delivery['deliveryId']}/evidence",
+            headers=api_headers,
+        )
+        check(
+            "image evidence is retained and linked into the bundle",
+            upload.get("sha256") == image_sha256
+            and image_bundle.get("imageEvidence", {}).get("available") is True
+            and image_bundle.get("completeness", {}).get("imageBinaryStored") is True,
+            json.dumps({
+                "imageId": image_id,
+                "sha256": upload.get("sha256"),
+                "imageEvidence": image_bundle.get("imageEvidence"),
+                "completeness": image_bundle.get("completeness"),
+            }, ensure_ascii=False),
+        )
+        image_request = urllib.request.Request(
+            operator_base + f"/api/evidence/{ng_delivery['deliveryId']}/image",
+            headers=operator_headers,
+        )
+        with urllib.request.urlopen(image_request, timeout=10) as image_response:
+            proxied_image = image_response.read()
+            proxied_type = image_response.headers.get_content_type()
+        check(
+            "operator console proxies the retained evidence image",
+            proxied_image == image_bytes and proxied_type == "image/png",
+            f"(type={proxied_type}, bytes={len(proxied_image)})",
+        )
+        receipt_no = ng_delivery["mesReceipt"]["receiptNo"]
+        search = http_json(
+            edge_api_base + "/v1/evidence/search?" + urllib.parse.urlencode({"q": receipt_no}),
+            headers=api_headers,
+        )
+        check(
+            "evidence search finds the delivery by MES receipt number",
+            any(item.get("deliveryId") == ng_delivery["deliveryId"] for item in search.get("items", [])),
+            f"(query={receipt_no}, results={len(search.get('items', []))})",
         )
 
         edge_status = http_json(edge_api_base + "/v1/status", headers=api_headers)

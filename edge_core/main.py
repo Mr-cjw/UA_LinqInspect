@@ -14,7 +14,11 @@ from .worker import DeliveryWorker
 
 def main() -> int:
     config = load_config()
-    store = DeliveryStore(config.db_path)
+    store = DeliveryStore(
+        config.db_path,
+        evidence_image_dir=config.evidence_image_dir,
+        image_max_bytes=config.evidence_image_max_bytes,
+    )
     authority = None
     worker = None
     if config.delivery_authority == "edge-core":

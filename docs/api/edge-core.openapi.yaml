@@ -135,6 +135,102 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/evidence/search:
+    get:
+      tags: [Deliveries]
+      operationId: searchEvidence
+      summary: 按工单、SN、回执号或 correlationId 检索证据
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        '200':
+          description: 证据摘要列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/evidence/images:
+    post:
+      tags: [Deliveries]
+      operationId: storeEvidenceImage
+      summary: 持久化一张质量证据图片
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceImageUpload'
+      responses:
+        '201':
+          description: 图片已保存
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceImageMetadata'
+        '200':
+          description: 相同 imageId 和内容已存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceImageMetadata'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/evidence/images/{imageId}:
+    get:
+      tags: [Deliveries]
+      operationId: getEvidenceImage
+      summary: 读取质量证据图片二进制
+      parameters:
+        - name: imageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 图片二进制
+          headers:
+            X-Image-Sha256:
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/deliveries/{deliveryId}/ua-write-result:
     post:
       tags: [Deliveries]
@@ -444,6 +540,41 @@ components:
           metadata:
             source: third-party-vision
 
+    EvidenceImageUpload:
+      type: object
+      required: [imageId, imageBase64]
+      properties:
+        imageId:
+          type: string
+          maxLength: 200
+        imageBase64:
+          type: string
+        sha256:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+
+    EvidenceImageMetadata:
+      type: object
+      required: [imageId, sha256, contentType, bytes, relativePath, createdAt, available]
+      properties:
+        imageId:
+          type: string
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        contentType:
+          enum: [image/png, image/jpeg, image/webp]
+        bytes:
+          type: integer
+          minimum: 1
+        relativePath:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        available:
+          type: boolean
+
     EvidenceBundle:
       type: object
       required:
@@ -460,6 +591,7 @@ components:
         - ua
         - audit
         - deadLetter
+        - imageEvidence
         - completeness
         - limitations
         - bundleSha256
@@ -499,6 +631,9 @@ components:
             type: object
             additionalProperties: true
         deadLetter:
+          type: [object, 'null']
+          additionalProperties: true
+        imageEvidence:
           type: [object, 'null']
           additionalProperties: true
         completeness:

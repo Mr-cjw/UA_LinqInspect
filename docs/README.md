@@ -110,13 +110,13 @@
 - outbox 状态接口：9/9 PASS（含容量拒收不 ACK）
 - 工位状态 SIGKILL 重启：13/13 PASS
 - 事件 outbox SIGKILL 恢复：18/18 PASS（稳定事件 ID、ACK 幂等、积压状态与背压恢复）
-- Edge Core API/状态机：15/15 PASS（含质量证据包）（含严格输入约束、MES Bearer/Basic 鉴权校验与事件类型专属回执）
+- Edge Core API/状态机：16/16 PASS（含质量证据包）（含严格输入约束、MES Bearer/Basic 鉴权校验与事件类型专属回执）
 - Edge Core 入站：7/7 PASS（Node-RED 直写 202 后 ACK，503 不 ACK）
 - 发送权并发：3/3 PASS（Node/Python 单赢家、租约释放与恢复）
 - 受控迁移/回滚：1/1 PASS（真实 Edge Core 进程、离线迁移、源库保留）
-- 本地操作台：8/8 PASS（鉴权、CSRF、开检、完工、死信、快照）
-- 质量证据包：Edge Core 持久化事实 + 操作台代理 + 真实在线链路验证
-- Node-RED 在线全链路：19/19 PASS（操作台、Edge Core 权威、MES Basic、真实 UA 写回、证据包与回滚）
+- 本地操作台：10/10 PASS（鉴权、CSRF、开检、完工、死信、快照）
+- 质量证据包：证据重建 + 图片留存 + 多维检索 + 操作台预览/HTML 摘要 + 真实在线验证
+- Node-RED 在线全链路：22/22 PASS（操作台、Edge Core 权威、MES Basic、真实 UA 写回、证据包与回滚）
 - MES 契约体检：5/5 PASS（dry-run、严格通过、非幂等警告、非法 2xx 失败、写入确认）
 - 无硬件五分钟演示：4/4 PASS（超时、重建、死信重放、唯一回执与 UA 确认）
 - Node-RED 到 Edge Core 迁移：5/5 PASS（dry-run、幂等导入、状态/回执/死信保留与冲突拒绝）
@@ -141,7 +141,7 @@
 - 短断网恢复：10/10 PASS
 - 60 秒陈旧事件过滤：7/7 PASS
 - UA Server 重启与事件订阅重建：14/14 PASS
-- 一键隔离回归合计：668/668 PASS（42 个测试模块）
+- 一键隔离回归合计：674/674 PASS（42 个测试模块）
 
 一键命令、隔离策略和测试产物见 [08_Phase0回归与安全测试.md](08_Phase0回归与安全测试.md)。工位状态单写者与恢复边界见 [16_状态源重构与持久化恢复.md](16_状态源重构与持久化恢复.md)；Phase 1 的关联链、错误码矩阵见 [09_Phase1关联追踪与MES错误分类.md](09_Phase1关联追踪与MES错误分类.md)；SQLite 事务与崩溃恢复见 [10_Phase2A_SQLite事务队列与崩溃恢复.md](10_Phase2A_SQLite事务队列与崩溃恢复.md)；指标与备份见 [11_Phase2B可观测性与SQLite备份.md](11_Phase2B可观测性与SQLite备份.md)；部署、告警与恢复演练见 [15_Phase2C部署运维与恢复演练.md](15_Phase2C部署运维与恢复演练.md)。环境迁移历史见 [07_Ubuntu迁移与验证报告.md](07_Ubuntu迁移与验证报告.md)。
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import tempfile
 import time
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -383,6 +385,67 @@ class EdgeCoreTests(unittest.TestCase):
         self.assertIn(("SENDING", "UA_WRITE_PENDING"), transitions)
         self.assertIn(("UA_WRITE_PENDING", "DONE"), transitions)
         self.assertEqual(len(bundle["bundleSha256"]), 64)
+
+    def test_evidence_image_upload_search_and_binary_readback(self):
+        event = make_event()
+        delivery, _ = self.store.enqueue(
+            event,
+            url=self.mes_url + "/mes/ng-order",
+            idempotency_key=str(uuid.uuid4()),
+            correlation_id=event["correlationId"],
+        )
+        image = b"\x89PNG\r\n\x1a\n" + b"evidence-image-content"
+        digest = hashlib.sha256(image).hexdigest()
+        api = create_api_server("127.0.0.1", 0, self.store, "test-token", self.mes_url)
+        api.quiet = True  # type: ignore[attr-defined]
+        thread = threading.Thread(target=api.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{api.server_address[1]}"
+        headers = {"authorization": "Bearer test-token", "content-type": "application/json"}
+        try:
+            upload = urllib.request.Request(
+                base + "/v1/evidence/images",
+                data=json.dumps({
+                    "imageId": event["imageId"],
+                    "imageBase64": base64.b64encode(image).decode("ascii"),
+                    "sha256": digest,
+                }).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(upload, timeout=5) as response:
+                self.assertEqual(response.status, 201)
+                uploaded = json.loads(response.read().decode("utf-8"))
+            image_request = urllib.request.Request(
+                base + "/v1/evidence/images/" + event["imageId"],
+                headers={"authorization": "Bearer test-token"},
+            )
+            with urllib.request.urlopen(image_request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), "image/png")
+                self.assertEqual(response.read(), image)
+            search_url = base + "/v1/evidence/search?" + urllib.parse.urlencode({"q": event["sourceEventId"]})
+            with urllib.request.urlopen(
+                urllib.request.Request(search_url, headers={"authorization": "Bearer test-token"}), timeout=5
+            ) as response:
+                found = json.loads(response.read().decode("utf-8"))["items"]
+            evidence_url = base + f"/v1/deliveries/{delivery['deliveryId']}/evidence"
+            with urllib.request.urlopen(
+                urllib.request.Request(evidence_url, headers={"authorization": "Bearer test-token"}), timeout=5
+            ) as response:
+                bundle = json.loads(response.read().decode("utf-8"))
+        finally:
+            api.shutdown()
+            api.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(uploaded["sha256"], digest)
+        self.assertEqual(uploaded["bytes"], len(image))
+        self.assertEqual(found[0]["deliveryId"], delivery["deliveryId"])
+        self.assertEqual(bundle["inspection"]["imageId"], event["imageId"])
+        self.assertTrue(bundle["imageEvidence"]["available"])
+        self.assertTrue(bundle["completeness"]["imageBinaryStored"])
+        self.assertFalse(bundle["completeness"]["imageReferenceOnly"])
 
     def test_business_key_survives_store_reopen(self):
         event = make_event(source_event_id="evt-persisted")

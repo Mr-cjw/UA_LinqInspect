@@ -14,6 +14,15 @@ function clearAlert() {
   alertBox.classList.add('hidden');
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function formatValue(value, fallback = '—') {
   if (value === null || value === undefined || value === '') return fallback;
   return String(value);
@@ -212,6 +221,14 @@ async function showEvidence(deliveryId, workOrderId) {
     ];
     byId('evidence-summary').textContent = lines.join('\n');
     byId('evidence-json').textContent = JSON.stringify(evidence, null, 2);
+    const imageWrap = byId('evidence-image-wrap');
+    if (evidence.completeness?.imageBinaryStored && inspection.imageId) {
+      byId('evidence-image').src = `/api/evidence/${encodeURIComponent(deliveryId)}/image?ts=${Date.now()}`;
+      imageWrap.classList.remove('hidden');
+    } else {
+      byId('evidence-image').removeAttribute('src');
+      imageWrap.classList.add('hidden');
+    }
     byId('evidence-panel').classList.remove('hidden');
     byId('evidence-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
@@ -226,6 +243,80 @@ function downloadEvidence() {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = state.evidenceName || 'qc-evidence.json';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function searchEvidence(event) {
+  event.preventDefault();
+  const query = byId('evidence-search-input').value.trim();
+  if (!query) return;
+  const container = byId('evidence-search-results');
+  container.replaceChildren();
+  const loading = document.createElement('p');
+  loading.className = 'empty';
+  loading.textContent = '正在搜索…';
+  container.appendChild(loading);
+  try {
+    const payload = await request(`/api/evidence/search?q=${encodeURIComponent(query)}&limit=30`);
+    const items = payload.data?.items || [];
+    container.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty';
+      empty.textContent = '未找到匹配证据。';
+      container.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'search-result';
+      const meta = document.createElement('div');
+      meta.className = 'search-result-meta';
+      meta.textContent = `${item.eventType === 'COMPLETION_REPORT' ? '完工' : 'NG'} · ${formatValue(item.workOrderId)} · ${formatValue(item.serialNumber)} · ${item.state} · ${formatValue(item.receiptNo)}`;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'button small primary';
+      button.textContent = '查看证据';
+      button.addEventListener('click', () => showEvidence(item.deliveryId, item.workOrderId));
+      row.append(meta, button);
+      container.appendChild(row);
+    }
+  } catch (error) {
+    container.replaceChildren();
+    showAlert(error.message);
+  }
+}
+
+function downloadEvidenceHtml() {
+  const evidence = state.currentEvidence;
+  if (!evidence) return;
+  const inspection = evidence.inspection || {};
+  const lineage = evidence.visionLineage || {};
+  const mes = evidence.mes || {};
+  const rows = [
+    ['工单', inspection.workOrderId],
+    ['SN', inspection.serialNumber],
+    ['结果', inspection.result],
+    ['缺陷', inspection.defectType],
+    ['置信度', inspection.confidence],
+    ['图片 ID', inspection.imageId],
+    ['模型版本', lineage.modelVersion],
+    ['模型 SHA-256', lineage.modelSha256],
+    ['MES 回执', mes.receipt?.receiptNo],
+    ['UA 写回确认', evidence.ua?.writeConfirmed ? '是' : '否'],
+    ['correlationId', evidence.correlationId],
+    ['bundleSha256', evidence.bundleSha256],
+  ];
+  const table = rows.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(formatValue(value))}</td></tr>`).join('');
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>质量证据摘要</title><style>body{font-family:"Microsoft YaHei",sans-serif;max-width:900px;margin:40px auto;padding:0 24px;color:#17212b}h1{border-bottom:3px solid #145c8f;padding-bottom:12px}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{border:1px solid #ccd5dc;padding:10px;text-align:left;vertical-align:top}th{width:180px;background:#eef2f5}.notice{background:#fff7e0;border:1px solid #e5c66a;padding:12px;border-radius:8px}code{word-break:break-all}</style></head><body><h1>质量证据摘要</h1><p>生成时间：${escapeHtml(formatTime(evidence.generatedAt))}</p><table>${table}</table><div class="notice"><strong>边界说明</strong><ul>${(evidence.limitations || []).map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div><p><small>本摘要来自 Edge Core 持久化投递状态，bundleSha256 是内容完整性哈希，不是数字签名。</small></p></body></html>`;
+  const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `qc-evidence-${inspection.workOrderId || evidence.deliveryId}.html`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -310,6 +401,8 @@ byId('start-form').addEventListener('submit', submitStart);
 byId('complete-button').addEventListener('click', completeWorkOrder);
 byId('refresh-button').addEventListener('click', refresh);
 byId('download-report').addEventListener('click', () => window.location.assign('/api/report'));
+byId('evidence-search-form').addEventListener('submit', searchEvidence);
+byId('download-evidence-html').addEventListener('click', downloadEvidenceHtml);
 byId('download-evidence').addEventListener('click', downloadEvidence);
 byId('close-evidence').addEventListener('click', () => byId('evidence-panel').classList.add('hidden'));
 refresh();
