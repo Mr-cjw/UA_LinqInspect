@@ -174,13 +174,13 @@ h3{font-size:16px;line-height:1.3;margin-bottom:7px;font-weight:900}
       <div class="eyebrow">PRE-SEED / ANGEL · SOFTWARE-FIRST</div>
       <h1>让每一张 NG<br><em>不丢、不重、可对账</em></h1>
       <p class="lede">工厂不缺摄像头，也不缺 MES。真正缺的是质检结果进入 MES 的最后一公里，以及发生设备损失时能解释清楚。我们已经把这段底座做成可运行软件，下一步用 90 天买出付费证据。</p>
-      <div class="chips"><span class="chip gold">可运行软件</span><span class="chip">本地真实推理</span><span class="chip">664/664 自动回归</span><span class="chip">0 客户案例 · 不编案例</span></div>
+      <div class="chips"><span class="chip gold">可运行软件</span><span class="chip">本地真实推理</span><span class="chip">682/682 自动回归</span><span class="chip">0 客户案例 · 不编案例</span></div>
     </div>
     <aside class="cover-panel">
       <div class="panel-label">当前阶段 / 诚实边界</div>
       <div class="big">软件已跑通<br><span class="gold">需求待付费验证</span></div>
       <div class="mini">合成数据不是现场精度；本地 MES/PLC 是模拟；还没有真实客户、付费试点或投资承诺。</div>
-      <div class="metric"><span>自动回归</span><b class="mint">664 / 664</b></div>
+      <div class="metric"><span>自动回归</span><b class="mint">682 / 682</b></div>
       <div class="metric"><span>视觉入口</span><b>5 类缺陷</b></div>
       <div class="metric"><span>本轮目标</span><b class="gold">3 个付费诊断</b></div>
       <div class="metric"><span>融资用途</span><b>买 90 天证据</b></div>
@@ -232,7 +232,7 @@ h3{font-size:16px;line-height:1.3;margin-bottom:7px;font-weight:900}
       <div class="shot"><img src="__VISION_IMG__" alt="AI 质检最小闭环"><div class="cap"><b>/vision</b><span>图像质量门禁 + 本地推理</span></div></div>
     </div>
     <div class="proof-row">
-      <div class="proof"><b>664 / 664</b><span>当前合并自动回归</span></div>
+      <div class="proof"><b>682 / 682</b><span>当前合并自动回归</span></div>
       <div class="proof"><b>5 类</b><span>OK / 划痕 / 凹坑 / 污渍 / 缺件</span></div>
       <div class="proof"><b>本地</b><span>推理不依赖外部云</span></div>
       <div class="proof"><b>可复跑</b><span>每次生成新业务编号与回执</span></div>
